@@ -186,6 +186,8 @@ ok  $H start-task gamma                          # parallel, from main
 check '[ -f "$T/beta/tests/test_alpha.py" ] && [ ! -f "$T/gamma/tests/test_alpha.py" ]' "--from base not applied"
 check 'grep -q "^Status: Draft" "$T/beta/contract.md"' "beta didn't get a fresh contract"
 nok $H finish-task gamma                         # not Done
+nok "$PYBIN" "$PLUGIN/scripts/install.py" "$PLUGIN" "$T"   # the folder holding the worktrees isn't a project
+check '[ ! -e "$T/.git" ] && [ ! -e "$T/contract.md" ]' "install created a repo in the tasks folder"
 flow "$T/beta" beta                              # alpha's test passes at beta's red gate; AC-1 reused
 flow "$T/gamma" gamma
 cd "$M"; export HARNESS_ROOT="$M" CLAUDE_PROJECT_DIR="$M"

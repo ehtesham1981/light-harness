@@ -9,7 +9,7 @@ You are running **/light-harness:task-init** for this one-off task. Task name hi
 
 0. **Install or update the harness in this checkout** (safe to repeat). Run from the repo root:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/install.py" "${CLAUDE_PLUGIN_ROOT}" "$(pwd)"`
-   (use `python` or `py -3` if `python3` isn't available). It copies `contract.md`, `scripts/harness.py` and `.harness/config.json`, appends the harness rules to `CLAUDE.md`, and merges the harness permission rules into `.claude/settings.json`. If the plugin is newer, it also updates `scripts/harness.py`.
+   (use `python` or `py -3` if `python3` isn't available). It copies `contract.md`, `scripts/harness.py` and `.harness/config.json`, appends the harness rules to `CLAUDE.md`, and merges the harness permission rules into `.claude/settings.json`. If the plugin is newer, it also updates `scripts/harness.py`. If it refuses because this folder holds task worktrees, stop and relay its message: the human opened the folder that contains the tasks instead of a task folder.
 
 1. Run `python3 scripts/harness.py status` and read the **Task:** line. (Don't run `init --name` in the main checkout: its contract.md must stay a blank template for future tasks.)
 
@@ -17,7 +17,7 @@ You are running **/light-harness:task-init** for this one-off task. Task name hi
    - Ask the human for a short task name if `$ARGUMENTS` is empty.
    - Ask whether this task **builds on a finished task** (list them with `python3 scripts/harness.py tasks`) or is **independent**.
    - Run `python3 scripts/harness.py start-task "<name>"`, adding `--from done/<earlier-task>` if it builds on one. It commits the harness files on this branch if they aren't committed yet, then creates the worktree and branch `task/<name>`.
-   - Tell the human the worktree path and: "Open a new Claude Code session in that folder and run `/light-harness:task-init` there." Then **stop**. The interview happens in the task's own session.
+   - Tell the human the full worktree path and: "Open a new Claude Code session in **exactly this folder** (the task folder itself, not the `…-tasks` folder that contains it) and run `/light-harness:task-init` there." Then **stop**. The interview happens in the task's own session.
 
    **Main checkout with status beyond Draft**: this repo predates worktrees and runs its task in place. Carry on below in this checkout.
 

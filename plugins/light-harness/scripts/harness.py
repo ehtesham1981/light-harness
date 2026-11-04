@@ -28,7 +28,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
 # on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
@@ -666,7 +666,8 @@ def cmd_start_task(args):
     (path / "contract.md").write_text(text.replace("<task name>", args.name, 1), encoding=UTF8)
     commit(f"harness: task-start {slug} [base:{sha[:12]}]", paths=["contract.md"], cwd=path)
     print(f"✓ Task '{slug}' started\n  worktree: {path}\n  branch:   {branch} (from {ref} @ {sha[:8]})\n"
-          f"Next: open a new Claude Code session in that folder and run /light-harness:task-init")
+          f"Next: open a new Claude Code session in exactly this folder (not its parent {path.parent.name}):\n"
+          f"  {path}\nand run /light-harness:task-init there")
 
 
 def cmd_finish_task(args):

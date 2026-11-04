@@ -24,6 +24,16 @@ plugin = Path(sys.argv[1]).resolve()
 project = Path(sys.argv[2]).resolve()
 tpl = plugin / "template"
 
+# A folder of task worktrees (e.g. ../<repo>-tasks) isn't a project. Installing there would git-init
+# a second, unrelated repo, so stop and point at the task folders instead.
+task_dirs = sorted(c for c in project.iterdir() if c.is_dir() and (c / ".git").is_file())
+if task_dirs:
+    print(f"✗ {project} holds task worktrees; it isn't a project, so the harness won't be installed here.\n"
+          "  Open a Claude Code session in one of the task folders themselves:\n"
+          + "\n".join(f"    {d}" for d in task_dirs)
+          + "\n  or in the project's main folder to start a new task.", file=sys.stderr)
+    sys.exit(2)
+
 copies = {
     "contract.md": "contract.md",
     ".harness/config.json": ".harness/config.json",
