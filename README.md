@@ -22,11 +22,11 @@ task-init ─► Initialize ─► task-plan ─► Plan ─[human approves]─�
 In Claude Code:
 
 ```
-/plugin marketplace add your-org/light-harness
+/plugin marketplace add ehtesham1981/light-harness
 /plugin install light-harness@light-harness
 ```
 
-On Claude Code 2.1.275 or later, one step also works: `/plugin install light-harness --marketplace your-org/light-harness`.
+On Claude Code 2.1.275 or later, one step also works: `/plugin install light-harness --marketplace ehtesham1981/light-harness`.
 
 From a local clone: `/plugin marketplace add ./light-harness`. To try it without installing: `claude --plugin-dir ./light-harness/plugins/light-harness`.
 
@@ -35,7 +35,7 @@ From a local clone: `/plugin marketplace add ./light-harness`. To try it without
 ```json
 {
   "extraKnownMarketplaces": {
-    "light-harness": { "source": { "source": "github", "repo": "your-org/light-harness" } }
+    "light-harness": { "source": { "source": "github", "repo": "ehtesham1981/light-harness" } }
   },
   "enabledPlugins": { "light-harness@light-harness": true }
 }

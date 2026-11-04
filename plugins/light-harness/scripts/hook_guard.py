@@ -41,8 +41,10 @@ def owned_snapshot(text: str):
 
 def main():
     try:
-        data = json.load(sys.stdin)
-    except json.JSONDecodeError:
+        # Claude Code sends UTF-8; decode explicitly so contract.md rewrites compare correctly
+        # against the file (read as UTF-8) instead of being misread with the locale's codepage.
+        data = json.loads(sys.stdin.buffer.read().decode(H.UTF8))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         sys.exit(0)
     tool = data.get("tool_name", "")
     ti = data.get("tool_input", {}) or {}
@@ -60,7 +62,7 @@ def main():
     # Only act inside a harness task repo (matters when installed as a plugin: hooks fire everywhere)
     if not H.CONTRACT.exists():
         sys.exit(0)
-    current = H.CONTRACT.read_text()
+    current = H.CONTRACT.read_text(encoding=H.UTF8)
     if "<!-- harness:plan -->" not in current:
         sys.exit(0)
 

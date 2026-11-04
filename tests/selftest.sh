@@ -25,10 +25,10 @@ nok()  { if "$@" >/dev/null 2>&1; then echo "  ✗ expected failure: $*"; FAIL=$
 hook() { echo "$1" | sh "$PLUGIN/scripts/guard.sh" >/dev/null 2>&1; echo $?; }
 edit() { "$PYBIN" - "$@" <<'EOF'
 import sys; from pathlib import Path
-p=Path(sys.argv[1]); t=p.read_text()
+p=Path(sys.argv[1]); t=p.read_text(encoding="utf-8")
 for a,b in zip(sys.argv[2::2], sys.argv[3::2]):
     assert a in t, a; t=t.replace(a,b,1)
-p.write_text(t)
+p.write_text(t, encoding="utf-8")
 EOF
 }
 

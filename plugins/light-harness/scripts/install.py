@@ -13,6 +13,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+UTF8 = "utf-8"  # never the locale default (cp1252 on Windows can't print ✓)
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding=UTF8, errors="replace")
+
 plugin = Path(sys.argv[1]).resolve()
 project = Path(sys.argv[2]).resolve()
 tpl = plugin / "template"
@@ -34,21 +39,23 @@ for src, dst in copies.items():
     print(f"  created  {dst}")
 
 # Harness rules: CLAUDE.md in a plugin isn't loaded, so add them to the project's CLAUDE.md
-rules = (tpl / "CLAUDE.md").read_text()
+rules = (tpl / "CLAUDE.md").read_text(encoding=UTF8)
 marker = "<!-- light-harness rules -->"
 cm = project / "CLAUDE.md"
-existing = cm.read_text() if cm.exists() else ""
+# surrogateescape round-trips any bytes in a user's existing CLAUDE.md that aren't valid UTF-8
+existing = cm.read_text(encoding=UTF8, errors="surrogateescape") if cm.exists() else ""
 if marker not in existing:
-    cm.write_text((existing.rstrip() + "\n\n" if existing.strip() else "") + marker + "\n" + rules)
+    cm.write_text((existing.rstrip() + "\n\n" if existing.strip() else "") + marker + "\n" + rules,
+                  encoding=UTF8, errors="surrogateescape")
     print("  updated  CLAUDE.md (harness rules)")
 else:
     print("  kept     CLAUDE.md")
 
 # Merge permission rules
 sp = project / ".claude" / "settings.json"
-settings = json.loads(sp.read_text()) if sp.exists() else {}
+settings = json.loads(sp.read_text(encoding=UTF8)) if sp.exists() else {}
 perms = settings.setdefault("permissions", {})
-add = json.loads((tpl / "permissions.json").read_text())
+add = json.loads((tpl / "permissions.json").read_text(encoding=UTF8))
 added = 0
 for key, rules_ in add.items():
     cur = perms.setdefault(key, [])
@@ -57,7 +64,7 @@ for key, rules_ in add.items():
             cur.append(r)
             added += 1
 sp.parent.mkdir(parents=True, exist_ok=True)
-sp.write_text(json.dumps(settings, indent=2) + "\n")
+sp.write_text(json.dumps(settings, indent=2) + "\n", encoding=UTF8)
 print(f"  merged   .claude/settings.json (+{added} permission rules)")
 
 if not (project / ".git").exists():

@@ -24,6 +24,14 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+# All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
+# on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
+UTF8 = "utf-8"
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding=UTF8, errors="replace")
+
+
 def _find_root() -> Path:
     """Task repo root: $HARNESS_ROOT, else $CLAUDE_PROJECT_DIR, else nearest dir with contract.md
     or .git above the cwd. Works when the script is vendored in the repo or shipped in a plugin."""
@@ -99,7 +107,7 @@ def die(msg: str, code: int = 1):
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG.exists():
-        cfg.update(json.loads(CONFIG.read_text()))
+        cfg.update(json.loads(CONFIG.read_text(encoding=UTF8)))
     return cfg
 
 
@@ -120,7 +128,8 @@ def filled(s: str) -> bool:
 
 # --- git ----------------------------------------------------------------------
 def git(*args: str, check: bool = True, binary: bool = False):
-    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=not binary)
+    text_kw = {} if binary else {"encoding": UTF8, "errors": "replace"}
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, **text_kw)
     if check and r.returncode != 0:
         die(f"git {' '.join(args)} failed: {r.stderr}")
     return r.stdout
@@ -173,7 +182,7 @@ def all_files() -> list[str]:
 def added_lines(base: str, path: str) -> list[str]:
     if path in git("ls-files", "--others", "--exclude-standard").splitlines():
         try:
-            return (ROOT / path).read_text(errors="ignore").splitlines()
+            return (ROOT / path).read_text(encoding=UTF8, errors="ignore").splitlines()
         except (IsADirectoryError, FileNotFoundError):
             return []
     diff = git("diff", "-U0", base, "--", path)
@@ -184,7 +193,7 @@ def added_lines(base: str, path: str) -> list[str]:
 def contract() -> str:
     if not CONTRACT.exists():
         die("contract.md not found. Run `python3 scripts/harness.py init`.")
-    return CONTRACT.read_text()
+    return CONTRACT.read_text(encoding=UTF8)
 
 
 def block_span(text: str, name: str):
@@ -204,7 +213,7 @@ def set_block(name: str, body: str):
     if not m:
         die(f"contract.md is missing the harness:{name} block")
     new = text[:m.start(1)] + body.rstrip() + "\n" + text[m.end(1):]
-    CONTRACT.write_text(new)
+    CONTRACT.write_text(new, encoding=UTF8)
 
 
 def get_status(text: str | None = None) -> str:
@@ -216,7 +225,7 @@ def write_status(new: str, note: str = ""):
     text = contract()
     old = get_status(text)
     text = re.sub(r"^Status:\s*\S+", f"Status: {new}", text, count=1, flags=re.M)
-    CONTRACT.write_text(text)
+    CONTRACT.write_text(text, encoding=UTF8)
     log = block("status-log").rstrip()
     entry = f"- {now()}: {old} → {new}" + (f" ({note})" if note else "")
     set_block("status-log", (log + "\n" if log else "") + entry)
@@ -338,7 +347,7 @@ def run_tests(cfg):
     junit_path.unlink(missing_ok=True)
     if cfg.get("junit_arg"):
         cmd.append(cfg["junit_arg"].format(path=str(junit_path)))
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace")
     results = {}
     if junit_path.exists():
         for tc in ET.parse(junit_path).getroot().iter("testcase"):
@@ -376,14 +385,23 @@ def verify(write: bool = True) -> bool:
 
     if rg_ok:
         # 1. test integrity: red-gate tests and protected files byte-identical
-        rg_tree = git("ls-tree", "-r", "--name-only", rg_sha).splitlines()
+        rg_blobs = {}  # path -> blob id at the red gate (-z: paths are never quoted)
+        for entry in git("ls-tree", "-r", "-z", rg_sha).split("\0"):
+            if entry:
+                meta, _, path = entry.partition("\t")
+                rg_blobs[path] = meta.split()[2]
+        rg_tree = set(rg_blobs)
         guarded = [f for f in rg_tree if matches(f, cfg["test_globs"] + cfg["protected_globs"])
                    and not matches(f, cfg["always_allowed"])]
-        for f in guarded:
-            p = ROOT / f
-            if not p.exists():
-                fails.append(f"Anti-gaming: red-gate file deleted: {f}")
-            elif p.read_bytes() != git("show", f"{rg_sha}:{f}", binary=True):
+        present = sorted(f for f in guarded if (ROOT / f).is_file())
+        for f in sorted(set(guarded) - set(present)):
+            fails.append(f"Anti-gaming: red-gate file deleted: {f}")
+        # Compare blob ids, not raw bytes: hash-object applies the same EOL/clean filters as
+        # `git add`, so an unchanged file checked out with CRLF (core.autocrlf=true, the Git for
+        # Windows default) still matches, while any real content change does not.
+        current = git("hash-object", "--", *present).split() if present else []
+        for f, blob in zip(present, current):
+            if blob != rg_blobs[f]:
                 fails.append(f"Anti-gaming: red-gate test/protected file modified: {f}")
         for f in all_files():
             if f in rg_tree:
@@ -416,7 +434,7 @@ def verify(write: bool = True) -> bool:
         test_lits = set()
         for f in test_files(cfg):
             try:
-                lines = (ROOT / f).read_text(errors="ignore").splitlines()
+                lines = (ROOT / f).read_text(encoding=UTF8, errors="ignore").splitlines()
             except (IsADirectoryError, FileNotFoundError):
                 continue
             test_lits |= string_literals([l for l in lines if re.search(r"assert|expect", l)])
@@ -459,7 +477,7 @@ def verify(write: bool = True) -> bool:
                 fails.append(f"Anti-drift: {f} changed but is outside §8.1 scope and not declared in §10.3")
 
     # 5. traceability: every AC still exercised by tests
-    alltests = "\n".join((ROOT / f).read_text(errors="ignore") for f in test_files(cfg)
+    alltests = "\n".join((ROOT / f).read_text(encoding=UTF8, errors="ignore") for f in test_files(cfg)
                          if (ROOT / f).is_file())
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", alltests)]
     if missing:
@@ -485,7 +503,7 @@ def cmd_init(args):
         die("contract.md template missing; copy it from the harness template")
     t = contract()
     if args.name and "<task name>" in t:
-        CONTRACT.write_text(t.replace("<task name>", args.name, 1))
+        CONTRACT.write_text(t.replace("<task name>", args.name, 1), encoding=UTF8)
     print(f"✓ Harness ready. Status: {get_status()}. Next: /task-init")
 
 
@@ -588,7 +606,8 @@ def cmd_redgate(args):
     tests = test_files(cfg)
     if not tests:
         die("no test files found (see test_globs in .harness/config.json)")
-    alltests = "\n".join((ROOT / f).read_text(errors="ignore") for f in tests if (ROOT / f).is_file())
+    alltests = "\n".join((ROOT / f).read_text(encoding=UTF8, errors="ignore")
+                         for f in tests if (ROOT / f).is_file())
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", alltests)]
     if missing:
         die(f"tests don't reference: {', '.join(missing)} (each AC needs at least one test)")
@@ -610,7 +629,7 @@ def cmd_redgate(args):
     meta = {"tests": sorted(results), "passing_at_red": passing, "allow_passing": args.allow_passing,
             "plan_hash": plan_hash(text), "when": now()}
     (ROOT / ".harness").mkdir(exist_ok=True)
-    (ROOT / REDGATE_FILE).write_text(json.dumps(meta, indent=2))
+    (ROOT / REDGATE_FILE).write_text(json.dumps(meta, indent=2), encoding=UTF8)
     lines = [f"**Passed** {now()} — {len(results) or '?'} tests, all failing against stubs.",
              f"- Test files locked: {', '.join(tests)}",
              f"- ACs covered: {', '.join(acs(text))}"]

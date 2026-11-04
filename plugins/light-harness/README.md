@@ -5,7 +5,7 @@ Lightweight gated harness for one-off development tasks in Claude Code: contract
 Install:
 
 ```
-/plugin install light-harness --marketplace your-org/light-harness
+/plugin install light-harness --marketplace ehtesham1981/light-harness
 ```
 
 Commands: `/light-harness:task-init`, `/light-harness:task-plan`, `/light-harness:task-implement`, `/light-harness:task-review`.
