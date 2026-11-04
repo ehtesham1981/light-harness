@@ -2,12 +2,14 @@
 """Install the one-off harness into a project (used by the plugin's /task-init).
 
 Copies the contract template, team rules and harness script into the project without
-overwriting anything, and merges the harness permission rules into .claude/settings.json
+overwriting anything (except scripts/harness.py, which is replaced when the plugin's copy is a
+newer version), and merges the harness permission rules into .claude/settings.json
 (plugins can't ship permission rules themselves). Safe to run repeatedly.
 
 usage: python3 install.py <plugin_root> <project_dir>
 """
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -29,9 +31,20 @@ copies = {
     "env.example": ".env.example",
     "../scripts/harness.py": "scripts/harness.py",
 }
+def version(path: Path):
+    m = re.search(r'^__version__\s*=\s*"([0-9.]+)"', path.read_text(encoding=UTF8, errors="replace"), re.M)
+    return tuple(int(x) for x in m.group(1).split(".")) if m else (0,)
+
+
 for src, dst in copies.items():
     d = project / dst
     if d.exists():
+        # The gate engine is harness machinery (agents can't edit it), so a newer plugin replaces it.
+        # This keeps the CLI in step with the hook, which always runs the plugin's own copy.
+        if dst == "scripts/harness.py" and version(tpl / src) > version(d):
+            shutil.copy2(tpl / src, d)
+            print(f"  updated  {dst} (to v{'.'.join(map(str, version(d)))})")
+            continue
         print(f"  kept     {dst}")
         continue
     d.parent.mkdir(parents=True, exist_ok=True)

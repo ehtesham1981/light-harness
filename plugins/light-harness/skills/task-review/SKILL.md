@@ -20,5 +20,7 @@ You are running **/light-harness:task-review**.
    The harness refuses PASS if any Critical/High/Medium issue is unresolved, any AC is unticked, or verification fails. If it refuses, record **FAIL**. Never edit issues to get a pass.
 
 5. Report to the human:
-   - **PASS** → status **Done**. Summarise the evidence and any open Low issues. Then offer the close-out: archive the repo, or promote it into a permanent repo with a backfilled story that links to contract.md and brings the tests along.
+   - **PASS** → status **Done**. Summarise the evidence and any open Low issues. Then offer the close-out:
+     - **Finish the task** (default): with the human's OK, run `python3 scripts/harness.py finish-task`. It tags the work `done/<name>`; later tasks can build on it with `start-task <name> --from done/<name>`. Then tell the human to close this session and run `python3 scripts/harness.py finish-task <name>` from the main checkout, which removes this worktree and the `task/<name>` branch. The tag keeps everything.
+     - **Promote it** into a permanent repo with a backfilled story that links to contract.md and brings the tests along.
    - **FAIL** → status **Rework**. List the blocking issues (ID, severity, one line each). Next: `/light-harness:task-implement` to fix them, then `/light-harness:task-review` again.

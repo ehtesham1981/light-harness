@@ -1,17 +1,27 @@
 ---
 name: task-init
-description: Stage 1. Interview the human to capture the task, business rules, examples and acceptance criteria in contract.md, then set status to Initialize.
+description: Stage 1. In the main checkout, start a task in its own worktree. In a task worktree, interview the human to capture the task, business rules, examples and acceptance criteria in contract.md, then set status to Initialize.
 disable-model-invocation: true
 argument-hint: [short task name]
 ---
 
 You are running **/light-harness:task-init** for this one-off task. Task name hint: `$ARGUMENTS`
 
-0. **Install the harness into this repo** (first run only; safe to repeat). Run from the task repo root, a fresh dedicated directory per task:
+0. **Install or update the harness in this checkout** (safe to repeat). Run from the repo root:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/install.py" "${CLAUDE_PLUGIN_ROOT}" "$(pwd)"`
-   (use `python` or `py -3` if `python3` isn't available). It copies `contract.md`, `scripts/harness.py` and `.harness/config.json`, appends the harness rules to `CLAUDE.md`, and merges the harness permission rules into `.claude/settings.json`.
+   (use `python` or `py -3` if `python3` isn't available). It copies `contract.md`, `scripts/harness.py` and `.harness/config.json`, appends the harness rules to `CLAUDE.md`, and merges the harness permission rules into `.claude/settings.json`. If the plugin is newer, it also updates `scripts/harness.py`.
 
-1. Run `python3 scripts/harness.py init --name "$ARGUMENTS"`, then `python3 scripts/harness.py status`. If status is beyond Initialize, tell the human that re-initialising will invalidate the plan approval, and ask whether to continue before doing anything.
+1. Run `python3 scripts/harness.py status` and read the **Task:** line. (Don't run `init --name` in the main checkout: its contract.md must stay a blank template for future tasks.)
+
+   **Main checkout** (`Task: main checkout`) with status **Draft**: tasks don't run here. Start one in its own worktree:
+   - Ask the human for a short task name if `$ARGUMENTS` is empty.
+   - Ask whether this task **builds on a finished task** (list them with `python3 scripts/harness.py tasks`) or is **independent**.
+   - Run `python3 scripts/harness.py start-task "<name>"`, adding `--from done/<earlier-task>` if it builds on one. It commits the harness files on this branch if they aren't committed yet, then creates the worktree and branch `task/<name>`.
+   - Tell the human the worktree path and: "Open a new Claude Code session in that folder and run `/light-harness:task-init` there." Then **stop**. The interview happens in the task's own session.
+
+   **Main checkout with status beyond Draft**: this repo predates worktrees and runs its task in place. Carry on below in this checkout.
+
+   **Task worktree** (`Task: <name> (worktree …)`): carry on below. If status is beyond Initialize, tell the human that re-initialising will invalidate the plan approval, and ask whether to continue before doing anything.
 
 2. **Interview the human, one question at a time.** Wait for each answer. Ask follow-ups where an answer is vague. Cover, in order:
    1. **Goal**: what outcome, for whom, and why now?
@@ -23,7 +33,7 @@ You are running **/light-harness:task-init** for this one-off task. Task name hi
 
    Keep it to about 8 questions unless the task is genuinely complex. Never invent rules or expected outputs; anything unconfirmed goes in §6 Open Questions.
 
-3. **Fill contract.md §1–§6** with the confirmed answers, using the IDs `BR-n`, `EX-n` and `AC-n`. Every AC must be observable and testable. Edit only these sections.
+3. **Fill contract.md §1–§6** with the confirmed answers, using the IDs `BR-n`, `EX-n` and `AC-n` (numbered from 1 in every task). Every AC must be observable and testable. Edit only these sections.
 
 4. Show the human a compact summary (goal, rules, examples, ACs, open questions) and ask for explicit confirmation. Apply any corrections.
 

@@ -9,6 +9,10 @@ State lives in two places, both reviewable:
                    test unlocks, verdicts). Gates are recomputed from these, not from
                    a side file, so they can't be satisfied by editing a JSON blob.
 
+Tasks: each task runs in its own git worktree on branch task/<name> (`start-task`), so parallel
+sessions never share a checkout. A finished task is kept as tag done/<name> and its worktree and
+branch are removed (`finish-task`). Nothing is merged into the main branch.
+
 Run `python3 scripts/harness.py --help` for commands.
 """
 from __future__ import annotations
@@ -23,6 +27,8 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+__version__ = "1.2.0"
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
 # on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
@@ -51,6 +57,12 @@ CONTRACT = ROOT / "contract.md"
 CONFIG = ROOT / ".harness" / "config.json"
 JUNIT = ROOT / ".harness" / "junit.xml"
 REDGATE_FILE = ".harness/redgate.json"
+BASELINE_FILE = ".harness/baseline.json"   # tests that passed before the current task started
+TASK_PREFIX, DONE_PREFIX = "task/", "done/"
+# Files the harness installs; committed on the main checkout so every task worktree gets them
+HARNESS_FILES = ["contract.md", "CLAUDE.md", ".claude/settings.json", ".harness/config.json",
+                 "scripts/harness.py", ".gitignore", ".env.example"]
+LAST_RESULTS: dict = {}  # test outcomes from the most recent run_tests()
 
 TRANSITIONS = {
     "Draft": {"Initialize"},
@@ -74,6 +86,7 @@ DEFAULT_CONFIG = {
     "protected_globs": ["conftest.py", "pytest.ini", "tox.ini", "setup.cfg",
                         "jest.config.*", "vitest.config.*", "samples/**"],
     "always_allowed": ["contract.md", ".harness/**", ".gitignore", "README.md"],
+    "worktree_dir": "../{repo}-tasks",
 }
 
 # --- anti-gaming patterns ----------------------------------------------------
@@ -127,9 +140,9 @@ def filled(s: str) -> bool:
 
 
 # --- git ----------------------------------------------------------------------
-def git(*args: str, check: bool = True, binary: bool = False):
+def git(*args: str, check: bool = True, binary: bool = False, cwd: Path | None = None):
     text_kw = {} if binary else {"encoding": UTF8, "errors": "replace"}
-    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, **text_kw)
+    r = subprocess.run(["git", *args], cwd=cwd or ROOT, capture_output=True, **text_kw)
     if check and r.returncode != 0:
         die(f"git {' '.join(args)} failed: {r.stderr}")
     return r.stdout
@@ -140,13 +153,18 @@ def ensure_repo():
         git("init", "-q")
 
 
-def commit(msg: str):
-    ident = []
-    if not git("config", "user.name", check=False).strip():
-        ident = ["-c", "user.name=light-harness", "-c", "user.email=harness@localhost"]
-    git("add", "-A")
-    subprocess.run(["git", *ident, "commit", "-q", "--allow-empty", "--no-verify", "-m", msg],
-                   cwd=ROOT, check=True)
+def ident(cwd: Path | None = None) -> list[str]:
+    if git("config", "user.name", check=False, cwd=cwd).strip():
+        return []
+    return ["-c", "user.name=light-harness", "-c", "user.email=harness@localhost"]
+
+
+def commit(msg: str, paths: list[str] | None = None, cwd: Path | None = None):
+    """Commit everything (default), or only `paths` (leaves the rest of the index alone)."""
+    cwd = cwd or ROOT
+    git("add", "-A", *(["--", *paths] if paths else []), cwd=cwd)
+    subprocess.run(["git", *ident(cwd), "commit", "-q", "--allow-empty", "--no-verify", "-m", msg,
+                    *(["--", *paths] if paths else [])], cwd=cwd, check=True)
 
 
 def harness_log() -> list[tuple[int, str, str]]:
@@ -167,6 +185,53 @@ def latest(prefix: str):
         if row[2].startswith(prefix):
             return row
     return None
+
+
+def task_base_row():
+    """The harness commit the current task started from: the newest `task-start` (new worktree) or
+    `verdict pass` (previous task in this checkout). Once the task's plan is approved, that is the
+    newest one older than the approval, so the task's own PASS verdict doesn't count.
+    None for the first task in a repo."""
+    pre_approval = get_status() in ("Draft", "Initialize", "Plan")
+    appr = None if pre_approval else latest("harness: plan-approved")
+    for row in harness_log():
+        if appr and row[0] <= appr[0]:
+            continue
+        if row[2].startswith(("harness: task-start", "harness: verdict pass")):
+            return row
+    return None
+
+
+def _baseline_at(sha: str):
+    raw = git("show", f"{sha}:{BASELINE_FILE}", check=False)
+    if not raw.strip():
+        return None
+    try:
+        return set(json.loads(raw).get("passing", []))
+    except json.JSONDecodeError:
+        return None
+
+
+def baseline_tests():
+    """Tests that passed before this task started (earlier tasks or existing code). They must
+    keep passing, and are allowed to pass at the red gate. None if nothing was recorded."""
+    base = task_base_row()
+    for row in harness_log():
+        if base and row[0] >= base[0]:
+            break
+        if row[2].startswith("harness: baseline"):
+            return _baseline_at(row[1])
+    return _baseline_at(base[1]) if base else None
+
+
+def task_test_files(cfg, base=None) -> list[str]:
+    """Test files added or changed by this task (all test files when there is no task base)."""
+    base = base if base is not None else task_base_row()
+    tests = test_files(cfg)
+    if not base:
+        return tests
+    changed = set(changed_files(base[1]))
+    return [f for f in tests if f in changed]
 
 
 def changed_files(base: str) -> list[str]:
@@ -311,7 +376,11 @@ def check_plan(text: str) -> list[str]:
 def approval_state(text: str | None = None):
     """Return (ok, message, log_index)."""
     row = latest("harness: plan-approved")
-    if not row:
+    # An approval older than this task's start belongs to an earlier task. A task starts at
+    # `task-start` (new worktree) or, once reopened in place, at the previous task's PASS verdict.
+    markers = ("harness: task-start",) + (() if get_status(text) == "Done" else ("harness: verdict pass",))
+    start = next((r for r in harness_log() if r[2].startswith(markers)), None)
+    if not row or (start and start[0] < row[0]):
         return False, "plan has not been approved by a human", None
     m = re.search(r"\[plan:([0-9a-f]+)\]", row[2])
     current = plan_hash(text)
@@ -358,6 +427,8 @@ def run_tests(cfg):
                     outcome = label
                     break
             results[name] = outcome
+    LAST_RESULTS.clear()
+    LAST_RESULTS.update(results)
     return r.returncode, (r.stdout + r.stderr), results
 
 
@@ -476,14 +547,14 @@ def verify(write: bool = True) -> bool:
             else:
                 fails.append(f"Anti-drift: {f} changed but is outside §8.1 scope and not declared in §10.3")
 
-    # 5. traceability: every AC still exercised by tests
-    alltests = "\n".join((ROOT / f).read_text(encoding=UTF8, errors="ignore") for f in test_files(cfg)
+    # 5. traceability: every AC exercised by this task's tests (earlier tasks may reuse AC ids)
+    alltests = "\n".join((ROOT / f).read_text(encoding=UTF8, errors="ignore") for f in task_test_files(cfg)
                          if (ROOT / f).is_file())
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", alltests)]
     if missing:
-        fails.append(f"Traceability: no test references {', '.join(missing)}")
+        fails.append(f"Traceability: no test added or changed in this task references {', '.join(missing)}")
     else:
-        info.append(f"Traceability: all {len(acs(text))} ACs referenced by tests")
+        info.append(f"Traceability: all {len(acs(text))} ACs referenced by this task's tests")
 
     passed = not fails
     report = [f"**Result: {'PASS' if passed else 'FAIL'}** — {now()} (plan {plan_hash(text)})", ""]
@@ -494,6 +565,159 @@ def verify(write: bool = True) -> bool:
     if write:
         set_block("verify", "\n".join(report))
     return passed
+
+
+def write_baseline(source: str):
+    passing = sorted(n for n, o in LAST_RESULTS.items() if o == "passed")
+    (ROOT / ".harness").mkdir(exist_ok=True)
+    (ROOT / BASELINE_FILE).write_text(json.dumps({"source": source, "when": now(), "passing": passing},
+                                                 indent=2) + "\n", encoding=UTF8)
+    return passing
+
+
+def ensure_baseline():
+    """Record which tests already pass before this task changes any code (an existing codebase).
+    Runs once per task, on entering Build; skipped when a baseline came with the task's base
+    (a previous task's passed verdict) or when there are no tests yet (new development)."""
+    cfg = load_config()
+    if baseline_tests() is not None or not test_files(cfg):
+        return
+    rc, out, results = run_tests(cfg)
+    if not results:
+        print(f"⚠ Couldn't read per-test results from the existing suite (exit {rc}); no baseline "
+              f"recorded. Existing tests that pass at the red gate will need --allow-passing.\n{tail(out, 10)}")
+        return
+    passing = write_baseline("existing tests before this task")
+    commit(f"harness: baseline ({len(passing)} existing tests passing)")
+    print(f"✓ Baseline: {len(passing)} existing tests pass before this task (they must keep passing)")
+
+
+# --- tasks: one worktree + branch per task, a tag when done -------------------
+def same_path(a: Path, b: Path) -> bool:
+    import os
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def slugify(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60].strip("-")
+    if not s:
+        die(f"can't make a task name from {name!r}; use letters or digits")
+    return s
+
+
+def worktrees() -> list[dict]:
+    """`git worktree list --porcelain` as dicts; the first entry is the main checkout."""
+    items, cur = [], {}
+    for line in git("worktree", "list", "--porcelain").splitlines() + [""]:
+        if not line:
+            if cur:
+                items.append(cur)
+            cur = {}
+            continue
+        k, _, v = line.partition(" ")
+        cur[k] = v
+    return items
+
+
+def ref_sha(ref: str) -> str:
+    return git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}", check=False).strip()
+
+
+def task_slug():
+    b = git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    return b[len(TASK_PREFIX):] if b.startswith(TASK_PREFIX) else None
+
+
+def cmd_start_task(args):
+    main_wt = Path(worktrees()[0]["worktree"]).resolve()
+    if not same_path(ROOT, main_wt):
+        die(f"run start-task from the main checkout ({main_wt}), not from a task worktree")
+    text = contract()
+    if "<!-- harness:plan -->" not in text:
+        die("the harness isn't installed here; run /light-harness:task-init first")
+    if get_status(text) != "Draft":
+        die(f"this checkout's contract.md is at {get_status(text)}, so it holds a task of its own. "
+            "With worktrees, the main checkout keeps the blank contract template; finish that task "
+            "here first, or restore contract.md from the plugin template.")
+    slug = slugify(args.name)
+    branch, tag = TASK_PREFIX + slug, DONE_PREFIX + slug
+    if ref_sha(f"refs/heads/{branch}"):
+        die(f"task {slug!r} already exists (branch {branch})")
+    if ref_sha(f"refs/tags/{tag}"):
+        die(f"task {slug!r} already finished (tag {tag}); pick another name")
+
+    # Worktrees are made from commits, so the harness files must be committed here first
+    present = [f for f in HARNESS_FILES if (ROOT / f).exists()]
+    if git("status", "--porcelain", "--", *present).strip() or not ref_sha("HEAD"):
+        commit(f"harness: install light-harness {__version__}", paths=present)
+        print(f"✓ Committed the harness files on {git('rev-parse', '--abbrev-ref', 'HEAD').strip()}")
+
+    ref = args.from_ref or "HEAD"
+    sha = ref_sha(ref)
+    if not sha:
+        die(f"unknown ref {ref!r} (use a done/<task> tag, a branch or a commit)")
+    wdir = Path(load_config().get("worktree_dir", "../{repo}-tasks").format(repo=ROOT.name))
+    path = (wdir if wdir.is_absolute() else ROOT / wdir).resolve() / slug
+    if path.exists():
+        die(f"{path} already exists")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git("worktree", "add", "-q", "-b", branch, str(path), sha)
+    # A fresh contract for this task (a done/ base carries the previous task's finished contract)
+    (path / "contract.md").write_text(text.replace("<task name>", args.name, 1), encoding=UTF8)
+    commit(f"harness: task-start {slug} [base:{sha[:12]}]", paths=["contract.md"], cwd=path)
+    print(f"✓ Task '{slug}' started\n  worktree: {path}\n  branch:   {branch} (from {ref} @ {sha[:8]})\n"
+          f"Next: open a new Claude Code session in that folder and run /light-harness:task-init")
+
+
+def cmd_finish_task(args):
+    slug = slugify(args.name) if args.name else task_slug()
+    if not slug:
+        die("not in a task worktree; pass the task name: finish-task <name>")
+    branch, tag = TASK_PREFIX + slug, DONE_PREFIX + slug
+    tip = ref_sha(f"refs/heads/{branch}")
+    tagged = ref_sha(f"refs/tags/{tag}")
+    if not tip:
+        if tagged:
+            print(f"✓ Task '{slug}' is already finished (tag {tag})")
+            return
+        die(f"no task {slug!r} (no branch {branch})")
+    wt = next((w for w in worktrees() if w.get("branch") == f"refs/heads/{branch}"), None)
+    wt_path = Path(wt["worktree"]).resolve() if wt else None
+    status = get_status(git("show", f"{tip}:contract.md", check=False))
+    if status != "Done":
+        die(f"task {slug!r} is at {status}; only a task with a PASS verdict (Done) can be finished")
+    if wt_path and git("status", "--porcelain", cwd=wt_path).strip():
+        die(f"{wt_path} has uncommitted changes; commit or discard them first")
+    if tagged and tagged != tip:
+        die(f"tag {tag} already exists at another commit")
+    if not tagged:
+        subprocess.run(["git", *ident(), "tag", "-a", tag, tip, "-m", f"light-harness: task {slug} done"],
+                       cwd=ROOT, check=True, capture_output=True)
+    if wt_path and same_path(wt_path, ROOT):
+        main_wt = worktrees()[0]["worktree"]
+        print(f"✓ Tagged {tag}. To remove this worktree and its branch, close this session, then run\n"
+              f"  python3 scripts/harness.py finish-task {slug}\nfrom the main checkout ({main_wt}).")
+        return
+    if wt_path:
+        git("worktree", "remove", str(wt_path))
+    git("branch", "-D", branch)
+    print(f"✓ Task '{slug}' finished: kept as tag {tag}; worktree and branch {branch} removed")
+
+
+def cmd_tasks(args):
+    open_ = [w for w in worktrees() if w.get("branch", "").startswith(f"refs/heads/{TASK_PREFIX}")]
+    print(f"In progress ({len(open_)}):")
+    for w in open_:
+        p = Path(w["worktree"])
+        st = get_status((p / "contract.md").read_text(encoding=UTF8)) if (p / "contract.md").exists() else "?"
+        print(f"  {w['branch'][len('refs/heads/' + TASK_PREFIX):]:<30} {st:<10} {p}")
+    done = git("for-each-ref", "--sort=-creatordate", "--format=%(refname:short)  %(creatordate:short)",
+               f"refs/tags/{DONE_PREFIX}").splitlines()
+    print(f"Done ({len(done)}){', newest first' if done else ''}:")
+    for line in done[: args.limit]:
+        print(f"  {line}")
+    if len(done) > args.limit:
+        print(f"  … {len(done) - args.limit} more (git tag -l '{DONE_PREFIX}*')")
 
 
 # --- commands -----------------------------------------------------------------
@@ -516,7 +740,12 @@ def cmd_status(args):
            "Plan": "human approval, then /task-implement" if not ok else "/task-implement",
            "Build": "finish build and `verify`, then /task-review",
            "Review": "reviewer records verdict", "Rework": "/task-implement (fix review issues)",
-           "Done": "close out (archive or promote)"}[st]
+           "Done": "finish-task (keeps the work as a done/ tag), or promote it"}[st]
+    slug = task_slug()
+    base = task_base_row()
+    print(f"Task:      {slug + ' (worktree, branch task/' + slug + ')' if slug else 'main checkout'}")
+    if base:
+        print(f"Base:      {base[1][:8]} {base[2].removeprefix('harness: ')}")
     print(f"Status:    {st}\nPlan hash: {plan_hash(text)}\nApproval:  {'✓ ' if ok else '✗ '}{msg}\n"
           f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nACs:       {', '.join(acs(text)) or 'none'}\n"
           f"Next:      {nxt}")
@@ -546,6 +775,8 @@ def cmd_set_status(args):
     elif target == "Build":
         ok, msg, _ = approval_state(text)
         probs = [] if ok else [msg]
+        if ok and cur == "Plan":
+            ensure_baseline()
     elif target == "Review":
         probs = [] if verify() else ["verification failed (see report above)"]
     else:
@@ -606,11 +837,15 @@ def cmd_redgate(args):
     tests = test_files(cfg)
     if not tests:
         die("no test files found (see test_globs in .harness/config.json)")
+    base = task_base_row()
+    mine = task_test_files(cfg, base)
+    if not mine:
+        die("no test files were added or changed in this task; write this task's tests first")
     alltests = "\n".join((ROOT / f).read_text(encoding=UTF8, errors="ignore")
-                         for f in tests if (ROOT / f).is_file())
+                         for f in mine if (ROOT / f).is_file())
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", alltests)]
     if missing:
-        die(f"tests don't reference: {', '.join(missing)} (each AC needs at least one test)")
+        die(f"this task's tests don't reference: {', '.join(missing)} (each AC needs at least one test)")
     rc, out, results = run_tests(cfg)
     if rc == 0:
         die("tests PASS before implementation — they don't prove anything yet. "
@@ -618,21 +853,31 @@ def cmd_redgate(args):
     if rc not in cfg["red_exit_codes"]:
         die(f"test run exited {rc} (collection/usage error, not test failures). Make sure stubs "
             f"exist so tests import and fail on assertions.\n{tail(out)}")
-    passing = sorted(n for n, o in results.items() if o == "passed")
+    # Tests that passed before this task (earlier tasks, existing code) are expected to pass;
+    # only this task's new tests must fail against the stubs.
+    existing = (baseline_tests() or set()) & set(results)
+    passing = sorted(n for n, o in results.items() if o == "passed" and n not in existing)
+    broken = sorted(n for n in existing if results[n] != "passed")
     skipped = sorted(n for n, o in results.items() if o == "skipped")
     errors = sorted(n for n, o in results.items() if o == "error")
     if skipped:
         die("skipped tests at red gate: " + ", ".join(skipped))
     if passing and not args.allow_passing:
-        die("these tests already pass against the stubs (they may be vacuous):\n  " + "\n  ".join(passing) +
+        die("these new tests already pass against the stubs (they may be vacuous):\n  " + "\n  ".join(passing) +
             "\nFix them, or re-run with --allow-passing \"<reason>\" (recorded in the contract).")
-    meta = {"tests": sorted(results), "passing_at_red": passing, "allow_passing": args.allow_passing,
+    meta = {"tests": sorted(results), "existing": sorted(existing), "passing_at_red": passing,
+            "allow_passing": args.allow_passing, "base": base[1] if base else None,
             "plan_hash": plan_hash(text), "when": now()}
     (ROOT / ".harness").mkdir(exist_ok=True)
     (ROOT / REDGATE_FILE).write_text(json.dumps(meta, indent=2), encoding=UTF8)
-    lines = [f"**Passed** {now()} — {len(results) or '?'} tests, all failing against stubs.",
+    new_count = len(results) - len(existing)
+    lines = [f"**Passed** {now()} — {new_count if results else '?'} new tests, all failing against stubs.",
              f"- Test files locked: {', '.join(tests)}",
              f"- ACs covered: {', '.join(acs(text))}"]
+    if existing:
+        lines.append(f"- Existing tests (passed before this task; must keep passing): {len(existing)}")
+    if broken:
+        lines.append(f"- ⚠ Existing tests failing against the stubs (must pass again at verify): {', '.join(broken)}")
     if errors:
         lines.append(f"- ⚠ {len(errors)} tests errored (not failed) at red gate: {', '.join(errors)}")
     if passing:
@@ -685,6 +930,8 @@ def cmd_verdict(args):
             die("PASS refused:\n  - " + "\n  - ".join(problems))
         if not verify():
             die("PASS refused: verification fails on the current tree")
+        # Everything passing now is the baseline for the next task built on this one
+        write_baseline(f"verdict pass ({task_slug() or ROOT.name})")
     elif not unresolved:
         die("FAIL needs at least one unresolved issue in §11.2 so the implementer knows what to fix")
 
@@ -721,6 +968,16 @@ def main():
     s = sub.add_parser("verdict", help="record the review verdict (pass is gated)")
     s.add_argument("result", choices=["pass", "fail"]); s.add_argument("--by", default="reviewer")
     s.set_defaults(f=cmd_verdict)
+    s = sub.add_parser("start-task", help="start a task in its own worktree and branch (run in the main checkout)")
+    s.add_argument("name"); s.add_argument("--from", dest="from_ref", metavar="REF",
+                                           help="build on this ref, e.g. done/<earlier-task> (default: HEAD)")
+    s.set_defaults(f=cmd_start_task)
+    s = sub.add_parser("finish-task", help="tag a Done task as done/<name>, then remove its worktree and branch")
+    s.add_argument("name", nargs="?"); s.set_defaults(f=cmd_finish_task)
+    s = sub.add_parser("tasks", help="list tasks in progress and finished")
+    s.add_argument("--limit", type=int, default=20); s.set_defaults(f=cmd_tasks)
+    s = sub.add_parser("version", help="print the harness version")
+    s.set_defaults(f=lambda a: print(__version__))
     args = ap.parse_args()
     args.f(args)
 

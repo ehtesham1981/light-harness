@@ -22,10 +22,11 @@ Review what it wrote: every AC covered, examples used verbatim, real assertions.
 Create the minimal stubs from §8.2 (correct signatures, bodies raising `NotImplementedError`) in files within §8.1 scope, so tests import and fail on behaviour, not on collection errors. Write no logic yet.
 
 ### 3. Red gate
-Run `python3 scripts/harness.py redgate`. It checks that every AC is referenced by a test, that the suite fails against the stubs, and that no test passes vacuously. It then locks the tests (a git commit).
+Run `python3 scripts/harness.py redgate`. It checks that every AC is referenced by a test added or changed in this task, that the suite fails against the stubs, and that none of this task's new tests passes vacuously. Tests that already passed before the task started (from the task it builds on, or existing code) are expected to pass and must keep passing. It then locks the tests (a git commit).
 - If tests error on import, fix the **stubs**.
-- If a test passes against the stubs, send it back to the test-author.
-- Use `--allow-passing "<reason>"` only for a test that legitimately passes on stubs (e.g. "input validation already handled by the framework"), and tell the human you did.
+- If a new test passes against the stubs, send it back to the test-author.
+- If the red gate warns that an existing test fails against the stubs, the stubs replaced working code. Keep that behaviour, because `verify` requires every existing test to pass again.
+- Use `--allow-passing "<reason>"` only for a new test that legitimately passes on stubs (e.g. "input validation already handled by the framework"), and tell the human you did.
 
 ### 4. Implement the plan
 Work through §8.3 step by step:

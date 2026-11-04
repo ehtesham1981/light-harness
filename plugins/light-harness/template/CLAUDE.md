@@ -1,6 +1,8 @@
 # Light Harness: Working Rules
 
-This repo runs a single one-off task through four gated stages. **`contract.md` is the single source of truth**: requirements, plan, approval, build record, review and verdict all live there.
+Each task runs through four gated stages in its own git worktree, on branch `task/<name>`. **That worktree's `contract.md` is the single source of truth** for the task: requirements, plan, approval, build record, review and verdict all live there.
+
+The main checkout holds only the harness and a blank contract template. Tasks start there with `python3 scripts/harness.py start-task <name>` (add `--from done/<earlier-task>` to build on a finished task), and each one is worked in its own Claude Code session opened in its worktree. A finished task is kept as tag `done/<name>` (`finish-task`); nothing is merged into the main branch.
 
 ## Stage flow
 
@@ -22,7 +24,8 @@ Check where you are at any time with `python3 scripts/harness.py status`.
 5. **No gaming.** Do not special-case test inputs, detect the test runtime, skip or xfail tests, weaken assertions, swallow exceptions to get green, or edit test configuration. `verify` scans for these patterns, and the reviewer looks for the subtler ones.
 6. **Stay in scope.** Only change files listed in §8.1. If you must change anything else, record it in §10.3 (`- path — reason`) before changing it.
 7. **Editing §1–§8 after approval invalidates the approval.** If requirements or the plan must change, say so and go back through `/light-harness:task-plan`.
-8. Never hardcode secrets; read them from env (`.env` is git-ignored and unreadable to agents). Ask before touching any production system, network endpoint, or real data, unless §1 Constraints explicitly allows it.
+8. **Stay on your task's branch.** Never switch branches, merge, rebase, delete branches or tags, or add/remove worktrees. Other sessions may be working in other worktrees of the same repo. Tasks are started and finished only with `harness.py start-task` / `finish-task`.
+9. Never hardcode secrets; read them from env (`.env` is git-ignored and unreadable to agents). Ask before touching any production system, network endpoint, or real data, unless §1 Constraints explicitly allows it.
 
 ## Defaults
 
@@ -30,6 +33,7 @@ Check where you are at any time with `python3 scripts/harness.py status`.
 
 - Stack: Python 3.12 + pytest unless the task says otherwise. For a different stack, update `test_cmd`, `test_globs` and `protected_globs` in `.harness/config.json` **during /light-harness:task-plan**, before approval.
 - Commit after each plan step with `step N: <summary>`.
+- Tests that passed before the task started (from an earlier task or existing code) must keep passing; only the task's new tests must fail at the red gate. AC/BR/EX numbering starts at 1 in every task.
 - Prefer the simplest implementation that satisfies the contract. No speculative features.
 
 ## Subagents
