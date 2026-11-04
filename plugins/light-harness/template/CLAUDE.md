@@ -1,8 +1,8 @@
 # Light Harness: Working Rules
 
-Each task runs through four gated stages in its own git worktree, on branch `task/<name>`. **That worktree's `contract.md` is the single source of truth** for the task: requirements, plan, approval, build record, review and verdict all live there.
+Each task runs through four gated stages in its own folder, `.tasks/<name>/` (a git worktree on branch `task/<name>`). **That folder's `contract.md` is the single source of truth** for the task: requirements, plan, approval, build record, review and verdict all live there.
 
-The main checkout holds only the harness and a blank contract template. Tasks start there with `python3 scripts/harness.py start-task <name>` (add `--from done/<earlier-task>` to build on a finished task), and each one is worked in its own Claude Code session opened in its worktree. A finished task is kept as tag `done/<name>` (`finish-task`); nothing is merged into the main branch.
+The main checkout holds only the harness and a blank contract template; never edit its `contract.md` or write code there. `/light-harness:task-init` starts a task (`harness.py start-task <name>`, with `--from done/<earlier-task>` to build on a finished one), and the same session then works on it. A session works on one task: add `--task <name>` to every `python3 scripts/harness.py` command, and edit, test and commit inside `.tasks/<name>/`. Other sessions may be working on other tasks at the same time. A finished task is kept as tag `done/<name>` (`finish-task`); nothing is merged into the main branch.
 
 ## Stage flow
 

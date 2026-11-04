@@ -107,7 +107,7 @@ grep -q "^Status: Done" contract.md && PASS=$((PASS+1)) || { echo "  ✗ not Don
 check() { if eval "$1"; then PASS=$((PASS+1)); else echo "  ✗ $2"; FAIL=$((FAIL+1)); fi; }
 check '[ -f .harness/baseline.json ] && grep -q test_ac2 .harness/baseline.json' "verdict pass didn't record the test baseline"
 
-approve() { script -qec "$PYBIN scripts/harness.py approve --name 'Human Approver'" /dev/null <<< "APPROVE" >/dev/null 2>&1; }
+approve() { script -qec "$PYBIN scripts/harness.py approve --name 'Human Approver' $*" /dev/null <<< "APPROVE" >/dev/null 2>&1; }
 
 echo "Next task in the same checkout (earlier tests pass, AC ids reused)"
 ok  $H set-status Initialize
@@ -136,64 +136,71 @@ ok  $H verify
 ok  $H set-status Review
 ok  $H verdict pass
 
-echo "Worktrees: one per task, tagged when done"
+echo "Task folders: one per task in .tasks/, tagged when done"
 M="$W/proj"; mkdir -p "$M"; cd "$M"
 export HARNESS_ROOT="$M" CLAUDE_PROJECT_DIR="$M"
 "$PYBIN" "$PLUGIN/scripts/install.py" "$PLUGIN" "$M" >/dev/null
 git config user.name "Self Test"; git config user.email t@t
 ok  $H start-task "Alpha"
-T="$W/proj-tasks"
-check '[ -f "$T/alpha/contract.md" ] && [ "$(git -C "$T/alpha" rev-parse --abbrev-ref HEAD)" = task/alpha ]' "worktree task/alpha not created"
+T="$M/.tasks"
+check '[ -f "$T/alpha/contract.md" ] && [ "$(git -C "$T/alpha" rev-parse --abbrev-ref HEAD)" = task/alpha ]' "task folder .tasks/alpha not created"
 check 'grep -q "^Status: Draft" contract.md && grep -q "<task name>" contract.md' "main checkout contract isn't a blank template"
+check 'grep -qx ".tasks/" .gitignore && [ -z "$(git status --porcelain)" ]' ".tasks/ not ignored, or main checkout left dirty"
 nok $H start-task "alpha"                        # duplicate name
-check '! (cd "$T/alpha" && HARNESS_ROOT="$T/alpha" CLAUDE_PROJECT_DIR="$T/alpha" $H start-task beta >/dev/null 2>&1)' "start-task ran inside a task worktree"
+nok $H status --task nosuch                      # unknown task
+check '! (cd "$T/alpha" && HARNESS_ROOT="$T/alpha" CLAUDE_PROJECT_DIR="$T/alpha" $H start-task beta >/dev/null 2>&1)' "start-task ran inside a task folder"
+[ "$(hook "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$M/contract.md\",\"old_string\":\"a\",\"new_string\":\"b\"}}")" = 2 ] && PASS=$((PASS+1)) || { echo "  ✗ hook allowed editing the main checkout's template contract"; FAIL=$((FAIL+1)); }
+[ "$(hook "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$T/alpha/src/x.py\",\"content\":\"x\"}}")" = 2 ] && PASS=$((PASS+1)) || { echo "  ✗ hook allowed code in a Draft task folder"; FAIL=$((FAIL+1)); }
 
-# flow <dir> <name>: one AC, square(x)
+# flow <task dir> <name> [main]: one AC, square(x). "main" drives it from the main checkout with
+# --task, as a single Claude Code session does; otherwise from inside the task folder.
 flow() {
-  cd "$1"; export HARNESS_ROOT="$1" CLAUDE_PROJECT_DIR="$1"
-  edit contract.md "<one or two sentences: what outcome, for whom>" "$2" \
+  local X=""; if [ "${3:-}" = main ]; then X="--task $2"; cd "$M"; export HARNESS_ROOT="$M" CLAUDE_PROJECT_DIR="$M"
+  else cd "$1"; export HARNESS_ROOT="$1" CLAUDE_PROJECT_DIR="$1"; fi
+  edit "$1/contract.md" "<one or two sentences: what outcome, for whom>" "$2" \
     "| EX-1 | <input> | <expected> | <happy path / edge / error> |" "| EX-1 | 3 | 9 | happy |" \
     "- AC-1: <Given … When … Then …>" "- AC-1: Given x, then x squared"
-  ok  $H set-status Initialize
-  edit contract.md "| R-1 | <risk> | <L/M/H> | <L/M/H> | <mitigation> |" "| R-1 | none | L | L | n/a |" \
+  ok  $H set-status Initialize $X
+  edit "$1/contract.md" "| R-1 | <risk> | <L/M/H> | <L/M/H> | <mitigation> |" "| R-1 | none | L | L | n/a |" \
     "| <area> | <change> | <who/what is affected> | <how to undo> |" "| src | new | none | delete |" \
     "- <src/path/or/glob>" "- src/**
 - tests/**" "1. <step> (AC-1)" "1. square (AC-1)"
-  ok  $H set-status Plan
-  check approve "approve ($2)"
-  ok  $H set-status Build
-  mkdir -p src tests; touch src/__init__.py
-  printf 'from src.%s import f\ndef test_%s():\n    """AC-1"""\n    assert f(3) == 9\n' "$2" "$2" > "tests/test_$2.py"
-  printf 'def f(x):\n    raise NotImplementedError\n' > "src/$2.py"
-  ok  $H redgate
-  printf 'def f(x):\n    return x * x\n' > "src/$2.py"
-  ok  $H verify
-  ok  $H set-status Review
-  edit contract.md "- [ ] AC-1" "- [x] AC-1"
-  ok  $H verdict pass
+  ok  $H set-status Plan $X
+  check "approve $X" "approve ($2)"
+  ok  $H set-status Build $X
+  [ "$(hook "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$1/src/$2.py\",\"content\":\"x\"}}")" = 0 ] && PASS=$((PASS+1)) || { echo "  ✗ hook blocked code in a Build task folder ($2)"; FAIL=$((FAIL+1)); }
+  mkdir -p "$1/src" "$1/tests"; touch "$1/src/__init__.py"
+  printf 'from src.%s import f\ndef test_%s():\n    """AC-1"""\n    assert f(3) == 9\n' "$2" "$2" > "$1/tests/test_$2.py"
+  printf 'def f(x):\n    raise NotImplementedError\n' > "$1/src/$2.py"
+  ok  $H redgate $X
+  printf 'def f(x):\n    return x * x\n' > "$1/src/$2.py"
+  ok  $H verify $X
+  ok  $H set-status Review $X
+  edit "$1/contract.md" "- [ ] AC-1" "- [x] AC-1"
+  ok  $H verdict pass $X
 }
 flow "$T/alpha" alpha
-ok  $H finish-task                               # inside the worktree: tags only
-check 'git rev-parse -q --verify refs/tags/done/alpha >/dev/null && [ -d "$T/alpha" ]' "finish-task inside the worktree should tag and keep the worktree"
+ok  $H finish-task                               # run inside the task folder: tags only
+check 'git rev-parse -q --verify refs/tags/done/alpha >/dev/null && [ -d "$T/alpha" ]' "finish-task inside the task folder should tag and keep the folder"
 cd "$M"; export HARNESS_ROOT="$M" CLAUDE_PROJECT_DIR="$M"
 ok  $H finish-task alpha
-check '[ ! -d "$T/alpha" ] && ! git rev-parse -q --verify refs/heads/task/alpha >/dev/null && git rev-parse -q --verify refs/tags/done/alpha >/dev/null' "finish-task should remove worktree + branch and keep the tag"
+check '[ ! -d "$T/alpha" ] && ! git rev-parse -q --verify refs/heads/task/alpha >/dev/null && git rev-parse -q --verify refs/tags/done/alpha >/dev/null' "finish-task should remove folder + branch and keep the tag"
 check '! git log --oneline HEAD | grep -q "harness: verdict"' "task work leaked into main"
 
-echo "Building on a finished task, and a parallel independent task"
+echo "One session in the main checkout: build on a finished task, plus a parallel task"
 ok  $H start-task beta --from done/alpha
 ok  $H start-task gamma                          # parallel, from main
 check '[ -f "$T/beta/tests/test_alpha.py" ] && [ ! -f "$T/gamma/tests/test_alpha.py" ]' "--from base not applied"
 check 'grep -q "^Status: Draft" "$T/beta/contract.md"' "beta didn't get a fresh contract"
 nok $H finish-task gamma                         # not Done
-nok "$PYBIN" "$PLUGIN/scripts/install.py" "$PLUGIN" "$T"   # the folder holding the worktrees isn't a project
+nok "$PYBIN" "$PLUGIN/scripts/install.py" "$PLUGIN" "$T"   # the folder holding the task folders isn't a project
 check '[ ! -e "$T/.git" ] && [ ! -e "$T/contract.md" ]' "install created a repo in the tasks folder"
-flow "$T/beta" beta                              # alpha's test passes at beta's red gate; AC-1 reused
-flow "$T/gamma" gamma
-cd "$M"; export HARNESS_ROOT="$M" CLAUDE_PROJECT_DIR="$M"
+flow "$T/beta" beta main                         # alpha's test passes at beta's red gate; AC-1 reused
+flow "$T/gamma" gamma main
+check 'grep -q "^Status: Draft" "$M/contract.md"' "main checkout contract changed by --task commands"
 ok  $H finish-task beta
-ok  $H finish-task gamma
-check '[ "$(git tag -l "done/*" | wc -l)" -eq 3 ] && [ "$(git worktree list | wc -l)" -eq 1 ]' "expected 3 done tags and no task worktrees"
+ok  $H finish-task --task gamma
+check '[ "$(git tag -l "done/*" | wc -l)" -eq 3 ] && [ "$(git worktree list | wc -l)" -eq 1 ]' "expected 3 done tags and no task folders"
 
 echo "Existing codebase: baseline recorded on entering Build"
 B="$W/brown"; mkdir -p "$B/src" "$B/tests"; cd "$B"; git init -q; git config user.name "Self Test"; git config user.email t@t
@@ -203,7 +210,7 @@ git add -A; git commit -qm "existing code"
 export HARNESS_ROOT="$B" CLAUDE_PROJECT_DIR="$B"
 "$PYBIN" "$PLUGIN/scripts/install.py" "$PLUGIN" "$B" >/dev/null
 ok  $H start-task delta
-flow "$W/brown-tasks/delta" delta
-check 'git -C "$W/brown-tasks/delta" log --format=%s | grep -q "harness: baseline (1 existing"' "baseline commit missing"
+M="$B" flow "$B/.tasks/delta" delta main
+check 'git -C "$B/.tasks/delta" log --format=%s | grep -q "harness: baseline (1 existing"' "baseline commit missing"
 
 echo; echo "Self-test: $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]

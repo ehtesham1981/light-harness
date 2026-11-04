@@ -54,19 +54,19 @@ def main():
     p = Path(fp)
     if not p.is_absolute():
         p = Path(data.get("cwd") or H.ROOT) / p
-    try:
-        rel = p.resolve().relative_to(H.ROOT).as_posix()
-    except ValueError:
-        sys.exit(0)  # outside the task repo: left to normal permissions
-
-    # Only act inside a harness task repo (matters when installed as a plugin: hooks fire everywhere)
-    if not H.CONTRACT.exists():
-        sys.exit(0)
+    # The checkout that owns the file decides the rules: a task folder (.tasks/<name>) has its own
+    # contract and stage, so one session can work on a task while others work on theirs.
+    root = H.task_root_for(p)
+    if root is None:
+        sys.exit(0)  # not in a harness checkout (hooks fire everywhere once the plugin is installed)
+    H.set_root(root)
+    rel = p.resolve().relative_to(H.ROOT).as_posix()
     current = H.CONTRACT.read_text(encoding=H.UTF8)
-    if "<!-- harness:plan -->" not in current:
-        sys.exit(0)
 
     status = H.get_status(current)
+    if rel == "contract.md" and status == "Draft" and (root / ".git").is_dir() and len(H.worktrees()) > 1:
+        block("this is the main checkout's blank contract template. Edit the task's own contract "
+              "(.tasks/<name>/contract.md) instead.")
     if rel == ".harness/config.json" and status in PRE_APPROVAL:
         sys.exit(0)  # stack configuration is part of planning, frozen by approval
     if H.matches(rel, MACHINERY):

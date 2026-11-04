@@ -2,13 +2,20 @@
 name: task-implement
 description: Stage 3. Run the test-author subagent, pass the red gate, implement the approved plan until green, then run verification (red-gate integrity, anti-gaming, anti-drift). Status becomes Build.
 disable-model-invocation: true
+argument-hint: [task name]
 ---
 
 You are running **/light-harness:task-implement** as the implementer.
 
+**Which task.** Each task has its own folder, `.tasks/<name>/` (a git worktree on branch `task/<name>`), and this session works on one task. Use the task named in `$ARGUMENTS`, else the task this session started or worked on earlier, else run `python3 scripts/harness.py tasks` and use the only task in progress, or ask the human which one. Below, `<name>` is that task:
+- Add `--task <name>` to every `python3 scripts/harness.py` command (they're shown that way below).
+- `contract.md`, scope paths and all code and test files are inside `.tasks/<name>/`. Run tests and git commits there, e.g. `cd .tasks/<name> && python3 -m pytest`.
+- Tell every subagent the task folder and name in its brief.
+- If this session was opened inside a task folder itself, paths are relative to it and `--task` is optional.
+
 ### 0. Preconditions
-Run `python3 scripts/harness.py status`.
-- Status **Plan** with a valid approval, or **Rework**: run `python3 scripts/harness.py set-status Build`.
+Run `python3 scripts/harness.py status --task <name>`.
+- Status **Plan** with a valid approval, or **Rework**: run `python3 scripts/harness.py set-status Build --task <name>`.
 - Status **Build**: you're resuming. Continue from the first incomplete step below.
 - Anything else, or approval missing or invalid: stop and tell the human what's needed. Never approve on their behalf.
 
@@ -22,7 +29,7 @@ Review what it wrote: every AC covered, examples used verbatim, real assertions.
 Create the minimal stubs from §8.2 (correct signatures, bodies raising `NotImplementedError`) in files within §8.1 scope, so tests import and fail on behaviour, not on collection errors. Write no logic yet.
 
 ### 3. Red gate
-Run `python3 scripts/harness.py redgate`. It checks that every AC is referenced by a test added or changed in this task, that the suite fails against the stubs, and that none of this task's new tests passes vacuously. Tests that already passed before the task started (from the task it builds on, or existing code) are expected to pass and must keep passing. It then locks the tests (a git commit).
+Run `python3 scripts/harness.py redgate --task <name>`. It checks that every AC is referenced by a test added or changed in this task, that the suite fails against the stubs, and that none of this task's new tests passes vacuously. Tests that already passed before the task started (from the task it builds on, or existing code) are expected to pass and must keep passing. It then locks the tests (a git commit).
 - If tests error on import, fix the **stubs**.
 - If a new test passes against the stubs, send it back to the test-author.
 - If the red gate warns that an existing test fails against the stubs, the stubs replaced working code. Keep that behaviour, because `verify` requires every existing test to pass again.
@@ -31,12 +38,12 @@ Run `python3 scripts/harness.py redgate`. It checks that every AC is referenced 
 ### 4. Implement the plan
 Work through §8.3 step by step:
 - Implement only what the step needs, within §8.1 scope. If you must touch another file, first add `- path — reason` to §10.3 Deviations.
-- Run the tests after each step. Commit each step: `git commit -am "step N: <summary>"` (add new files explicitly).
-- **Tests are locked.** If you believe a test is wrong, stop, explain in §10.3, and ask the human to run `harness.py unlock-tests --name ... --reason ...`. Never work around a test.
+- Run the tests after each step. Commit each step in the task folder: `cd .tasks/<name> && git add -A && git commit -m "step N: <summary>"`.
+- **Tests are locked.** If you believe a test is wrong, stop, explain in §10.3, and ask the human to run `python3 scripts/harness.py unlock-tests --task <name> --name ... --reason ...` in their own terminal. Never work around a test.
 - No special-casing of example values, no test-runtime detection, no skips, no swallowed exceptions to force green.
 
 ### 5. Verify
-Run `python3 scripts/harness.py verify`. This checks:
+Run `python3 scripts/harness.py verify --task <name>`. This checks:
 - **Red-gate integrity**: locked tests and protected files are byte-identical; every red-gate test now runs and passes.
 - **Green**: the full suite passes.
 - **Anti-gaming**: no runtime sniffing, skips, or focus markers since approval; warns on broad exception handlers, coverage exclusions, mocks in implementation code, and comparisons against test literals.

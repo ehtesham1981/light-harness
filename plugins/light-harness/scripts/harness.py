@@ -28,7 +28,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
 # on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
@@ -39,23 +39,50 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 def _find_root() -> Path:
-    """Task repo root: $HARNESS_ROOT, else $CLAUDE_PROJECT_DIR, else nearest dir with contract.md
-    or .git above the cwd. Works when the script is vendored in the repo or shipped in a plugin."""
+    """Default root: $HARNESS_ROOT, else the nearest dir with contract.md or .git above the cwd,
+    else $CLAUDE_PROJECT_DIR. Commands pick a task explicitly with --task <name> (see set_root),
+    and the guard hook picks the task that contains the edited file."""
     import os
-    for var in ("HARNESS_ROOT", "CLAUDE_PROJECT_DIR"):
-        if os.environ.get(var):
-            return Path(os.environ[var]).resolve()
+    if os.environ.get("HARNESS_ROOT"):
+        return Path(os.environ["HARNESS_ROOT"]).resolve()
     here = Path.cwd().resolve()
     for d in (here, *here.parents):
         if (d / "contract.md").exists() or (d / ".git").exists():
             return d
+    if os.environ.get("CLAUDE_PROJECT_DIR"):
+        return Path(os.environ["CLAUDE_PROJECT_DIR"]).resolve()
     return here
 
 
-ROOT = _find_root()
-CONTRACT = ROOT / "contract.md"
-CONFIG = ROOT / ".harness" / "config.json"
-JUNIT = ROOT / ".harness" / "junit.xml"
+def set_root(path: Path):
+    """Point every command at one checkout (the main checkout or a task worktree)."""
+    global ROOT, CONTRACT, CONFIG, JUNIT
+    ROOT = Path(path).resolve()
+    CONTRACT = ROOT / "contract.md"
+    CONFIG = ROOT / ".harness" / "config.json"
+    JUNIT = ROOT / ".harness" / "junit.xml"
+
+
+def task_root_for(path: Path):
+    """The harness checkout that owns `path`: the nearest dir above it with a harness contract and
+    a .git (directory for the main checkout, file for a task worktree). None outside any."""
+    p = Path(path).resolve()
+    for d in (p, *p.parents):
+        c = d / "contract.md"
+        if (d / ".git").exists() and c.is_file():
+            try:
+                if "<!-- harness:plan -->" in c.read_text(encoding=UTF8, errors="replace"):
+                    return d
+            except OSError:
+                return None
+            return None
+        if (d / ".git").exists():
+            return None
+    return None
+
+
+ROOT = CONTRACT = CONFIG = JUNIT = None  # set just below
+set_root(_find_root())
 REDGATE_FILE = ".harness/redgate.json"
 BASELINE_FILE = ".harness/baseline.json"   # tests that passed before the current task started
 TASK_PREFIX, DONE_PREFIX = "task/", "done/"
@@ -86,7 +113,7 @@ DEFAULT_CONFIG = {
     "protected_globs": ["conftest.py", "pytest.ini", "tox.ini", "setup.cfg",
                         "jest.config.*", "vitest.config.*", "samples/**"],
     "always_allowed": ["contract.md", ".harness/**", ".gitignore", "README.md"],
-    "worktree_dir": "../{repo}-tasks",
+    "worktree_dir": ".tasks",
 }
 
 # --- anti-gaming patterns ----------------------------------------------------
@@ -593,6 +620,19 @@ def ensure_baseline():
 
 
 # --- tasks: one worktree + branch per task, a tag when done -------------------
+def is_within(child: Path, parent: Path) -> bool:
+    import os
+    c, p = (os.path.normcase(str(Path(x).resolve())) for x in (child, parent))
+    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+
+
+def task_worktree(slug: str):
+    for w in worktrees():
+        if w.get("branch") == f"refs/heads/{TASK_PREFIX}{slug}":
+            return Path(w["worktree"]).resolve()
+    return None
+
+
 def same_path(a: Path, b: Path) -> bool:
     import os
     return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
@@ -646,6 +686,15 @@ def cmd_start_task(args):
     if ref_sha(f"refs/tags/{tag}"):
         die(f"task {slug!r} already finished (tag {tag}); pick another name")
 
+    wdir = Path(load_config().get("worktree_dir", ".tasks").format(repo=ROOT.name))
+    wroot = (wdir if wdir.is_absolute() else ROOT / wdir).resolve()
+    if is_within(wroot, ROOT):  # task folders inside the project: keep them out of its git status
+        rel = wroot.relative_to(ROOT).as_posix() + "/"
+        gi = ROOT / ".gitignore"
+        lines = gi.read_text(encoding=UTF8).splitlines() if gi.exists() else []
+        if rel not in lines and "/" + rel not in lines:
+            gi.write_text("\n".join(lines + [rel]) + "\n", encoding=UTF8)
+
     # Worktrees are made from commits, so the harness files must be committed here first
     present = [f for f in HARNESS_FILES if (ROOT / f).exists()]
     if git("status", "--porcelain", "--", *present).strip() or not ref_sha("HEAD"):
@@ -656,8 +705,7 @@ def cmd_start_task(args):
     sha = ref_sha(ref)
     if not sha:
         die(f"unknown ref {ref!r} (use a done/<task> tag, a branch or a commit)")
-    wdir = Path(load_config().get("worktree_dir", "../{repo}-tasks").format(repo=ROOT.name))
-    path = (wdir if wdir.is_absolute() else ROOT / wdir).resolve() / slug
+    path = wroot / slug
     if path.exists():
         die(f"{path} already exists")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,15 +713,17 @@ def cmd_start_task(args):
     # A fresh contract for this task (a done/ base carries the previous task's finished contract)
     (path / "contract.md").write_text(text.replace("<task name>", args.name, 1), encoding=UTF8)
     commit(f"harness: task-start {slug} [base:{sha[:12]}]", paths=["contract.md"], cwd=path)
-    print(f"✓ Task '{slug}' started\n  worktree: {path}\n  branch:   {branch} (from {ref} @ {sha[:8]})\n"
-          f"Next: open a new Claude Code session in exactly this folder (not its parent {path.parent.name}):\n"
-          f"  {path}\nand run /light-harness:task-init there")
+    print(f"✓ Task '{slug}' started\n  folder: {path}\n  branch: {branch} (from {ref} @ {sha[:8]})\n"
+          f"Run every harness command for it with --task {slug}, e.g. "
+          f"`python3 scripts/harness.py status --task {slug}`")
 
 
 def cmd_finish_task(args):
-    slug = slugify(args.name) if args.name else task_slug()
+    name = args.name or args.task
+    slug = slugify(name) if name else task_slug()
     if not slug:
         die("not in a task worktree; pass the task name: finish-task <name>")
+    main_wt = Path(worktrees()[0]["worktree"]).resolve()
     branch, tag = TASK_PREFIX + slug, DONE_PREFIX + slug
     tip = ref_sha(f"refs/heads/{branch}")
     tagged = ref_sha(f"refs/tags/{tag}")
@@ -692,16 +742,15 @@ def cmd_finish_task(args):
     if tagged and tagged != tip:
         die(f"tag {tag} already exists at another commit")
     if not tagged:
-        subprocess.run(["git", *ident(), "tag", "-a", tag, tip, "-m", f"light-harness: task {slug} done"],
-                       cwd=ROOT, check=True, capture_output=True)
-    if wt_path and same_path(wt_path, ROOT):
-        main_wt = worktrees()[0]["worktree"]
-        print(f"✓ Tagged {tag}. To remove this worktree and its branch, close this session, then run\n"
+        subprocess.run(["git", *ident(main_wt), "tag", "-a", tag, tip, "-m", f"light-harness: task {slug} done"],
+                       cwd=main_wt, check=True, capture_output=True)
+    if wt_path and is_within(Path.cwd(), wt_path):  # can't delete the folder we're running in
+        print(f"✓ Tagged {tag}. To remove the task folder and its branch, run\n"
               f"  python3 scripts/harness.py finish-task {slug}\nfrom the main checkout ({main_wt}).")
         return
     if wt_path:
-        git("worktree", "remove", str(wt_path))
-    git("branch", "-D", branch)
+        git("worktree", "remove", str(wt_path), cwd=main_wt)
+    git("branch", "-D", branch, cwd=main_wt)
     print(f"✓ Task '{slug}' finished: kept as tag {tag}; worktree and branch {branch} removed")
 
 
@@ -951,7 +1000,11 @@ def cmd_verdict(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    task_opt = argparse.ArgumentParser(add_help=False)
+    task_opt.add_argument("--task", metavar="NAME", help="act on this task's folder (run from the main checkout)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    _add = sub.add_parser
+    sub.add_parser = lambda *a, **k: _add(*a, parents=[task_opt], **k)
     s = sub.add_parser("init", help="initialise git + contract"); s.add_argument("--name"); s.set_defaults(f=cmd_init)
     s = sub.add_parser("status", help="show stage, gates and next step"); s.set_defaults(f=cmd_status)
     s = sub.add_parser("check", help="check the contract against a gate")
@@ -980,6 +1033,11 @@ def main():
     s = sub.add_parser("version", help="print the harness version")
     s.set_defaults(f=lambda a: print(__version__))
     args = ap.parse_args()
+    if args.task and args.cmd not in ("start-task", "finish-task", "tasks"):
+        wt = task_worktree(slugify(args.task))
+        if not wt:
+            die(f"no task {args.task!r} in progress (see `python3 scripts/harness.py tasks`)")
+        set_root(wt)
     args.f(args)
 
 

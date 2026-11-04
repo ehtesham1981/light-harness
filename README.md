@@ -2,7 +2,7 @@
 
 A lightweight, gated development harness for [Claude Code](https://code.claude.com), for tasks where you want agentic work to be planned, test-driven, reviewed, and auditable. A task can be a standalone one-off or one story in a set that builds a project.
 
-Each task runs in its own git worktree and branch, so several sessions can work in parallel on one repo. The task's `contract.md` is the source of truth, and four commands move the task through enforced gates:
+Each task runs in its own folder inside the project, `.tasks/<name>/` (a git worktree on its own branch), so several sessions can work in parallel on one repo. You always open the project's main folder; the session that starts a task works on it. The task's `contract.md` is the source of truth, and four commands move the task through enforced gates:
 
 ```
 task-init ─► Initialize ─► task-plan ─► Plan ─[human approves]─► task-implement ─► Build ─► task-review ─┬─► Done
@@ -12,7 +12,7 @@ task-init ─► Initialize ─► task-plan ─► Plan ─[human approves]─�
 
 | Command | Stage | What happens | Gate |
 |---|---|---|---|
-| `/light-harness:task-init` | Initialize | In the main checkout: installs the harness and starts the task in its own worktree. In the task's worktree: interviews you for the goal, business rules, examples and acceptance criteria | ≥1 example, ≥1 testable acceptance criterion (AC) |
+| `/light-harness:task-init` | Initialize | Installs the harness, starts the task in `.tasks/<name>/`, then interviews you for the goal, business rules, examples and acceptance criteria | ≥1 example, ≥1 testable acceptance criterion (AC) |
 | `/light-harness:task-plan` | Plan | **explorer** subagent writes findings, risks, impact analysis, files in scope, interfaces, steps and test strategy | Every AC mapped to steps and tests; **a human approves**, and their name, the time and the plan hash are recorded |
 | `/light-harness:task-implement` | Build | **test-author** subagent writes tests → stubs → **red gate** → implementation → **verify** | Red gate: the task's tests trace to every AC, fail on stubs, none pass vacuously, then get locked; tests from before the task must keep passing · Verify: locked tests unchanged and passing, anti-gaming scan, anti-drift vs approved scope |
 | `/light-harness:task-review` | Done / Rework | **reviewer** subagent checks every AC with evidence and logs issues with severity | PASS refused while any Critical/High/Medium issue is unresolved, any AC is unticked, or verify fails |
@@ -45,7 +45,7 @@ From a local clone: `/plugin marketplace add ./light-harness`. To try it without
 
 ## Use
 
-Start in the project's main checkout: a new empty folder, or an existing repo.
+Open the project's main folder (a new empty folder, or an existing repo) and start a task:
 
 ```bash
 mkdir my-project && cd my-project
@@ -54,45 +54,41 @@ claude
 ```
 /light-harness:task-init Invoice dedupe
 ```
-This installs the harness, commits it, and creates the task's worktree at `../my-project-tasks/invoice-dedupe` on branch `task/invoice-dedupe`. For a task that builds on a finished one, say so when asked, or run `python3 scripts/harness.py start-task "<name>" --from done/<earlier-task>` yourself.
-
-Open a **new Claude Code session in the worktree** and run the stages there:
-```bash
-cd ../my-project-tasks/invoice-dedupe
-claude
+This installs and commits the harness, creates the task folder `.tasks/invoice-dedupe/` on branch `task/invoice-dedupe`, and goes straight into the interview in the same session. If the task builds on a finished one, say so when asked. Then:
 ```
-```
-/light-harness:task-init
 /light-harness:task-plan
 ```
-Approve the plan **in your own terminal** (it's interactive, and the agent is blocked from running it):
+Approve the plan **in your own terminal**, in the project's main folder (it's interactive, and the agent is blocked from running it). On Windows use PowerShell or Windows Terminal:
 ```bash
-python3 scripts/harness.py approve --name "Your Full Name"
+python3 scripts/harness.py approve --task invoice-dedupe --name "Your Full Name"
 ```
 ```
 /light-harness:task-implement
 /light-harness:task-review
 ```
-Check progress at any time with `python3 scripts/harness.py status`.
+Check progress at any time with `python3 scripts/harness.py status --task invoice-dedupe`, or list all tasks with `python3 scripts/harness.py tasks`.
 
-After a PASS, `task-review` offers to finish the task. `finish-task` tags the work `done/<name>`. Run it again from the main checkout after closing the task's session, and it removes the worktree and the `task/<name>` branch. The tag keeps the code, the contract and the `harness:` audit trail.
+After a PASS, `task-review` offers to finish the task: `finish-task` tags the work `done/<name>` and removes the task folder and its branch. The tag keeps the code, the contract and the `harness:` audit trail.
+
+For another task, run `/light-harness:task-init <name>` in a new session in the same main folder. Several sessions can each work on their own task at once.
 
 The first `task-init` installs the harness into the main checkout. It copies `contract.md`, `scripts/harness.py` and `.harness/config.json`, appends the rules to `CLAUDE.md`, merges deny rules into `.claude/settings.json`, and runs `git init`. Plugins can't ship permission rules or a loaded `CLAUDE.md`, so the installer adds them to the repo. When the plugin is updated, the next `task-init` also updates `scripts/harness.py`, so the commands and the guard hook run the same gate logic.
 
 ### Tasks, worktrees and tags
 
 ```bash
-python3 scripts/harness.py start-task "<name>" [--from done/<earlier-task>]   # main checkout: new worktree + branch
+python3 scripts/harness.py start-task "<name>" [--from done/<earlier-task>]   # new task folder .tasks/<name> + branch
 python3 scripts/harness.py tasks                                            # tasks in progress and finished
-python3 scripts/harness.py finish-task [<name>]                             # Done task → tag done/<name>, remove worktree + branch
+python3 scripts/harness.py <command> --task <name>                          # any stage command, for one task
+python3 scripts/harness.py finish-task <name>                               # Done task → tag done/<name>, remove folder + branch
 ```
 
 - **Nothing is merged into the main branch.** The main checkout holds only the harness and a blank contract template, so it stays small however many tasks you run. Finished work lives in `done/*` tags.
-- **Parallel sessions are safe.** Each task has its own folder, branch and contract. The agent can't switch branches, merge, or add or remove worktrees (deny rules).
+- **Parallel sessions are safe.** Each task has its own folder, branch and contract, and each session sticks to its task with `--task`. The guard hook decides from each edited file's path which task's rules apply, and blocks code edits and contract edits in the main checkout. The agent can't switch branches, merge, or add or remove worktrees (deny rules).
 - **Building on earlier work:** `--from done/<earlier-task>` starts the new task from the finished one's code and tests. Independent tasks start from the main branch.
 - **Existing tests:** a passed verdict records which tests pass, in `.harness/baseline.json`. On an existing codebase, entering Build records them the first time. At the red gate, those tests may pass (and must keep passing at `verify`). Only the tests added in this task must fail on the stubs. For new, unrelated work there are no existing tests, so every test must fail first. AC numbers start at 1 in every task, because the red gate and `verify` only count the tests added or changed in the current task.
-- **Worktree location:** `worktree_dir` in `.harness/config.json` (default `../{repo}-tasks`).
-- Repos set up before 1.2.0, with a task in the main checkout, keep working in place.
+- **Task folder location:** `worktree_dir` in `.harness/config.json` (default `.tasks`, which `start-task` adds to `.gitignore`).
+- Repos set up before 1.2.0, with a task in the main checkout, keep working in place. Task folders made by 1.2.x outside the project still work, by `--task` or by opening a session inside them.
 
 ### Human-only commands
 ```bash
