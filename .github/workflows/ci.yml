@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: Self-test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --quiet pytest
+      - name: Run end-to-end gate self-test
+        run: PYTHON=python bash tests/selftest.sh
+
+  validate:
+    name: Validate plugin + marketplace manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude plugin validate --strict .
+      - run: claude plugin validate --strict ./plugins/light-harness
+
+  guard-windows:
+    name: Hook launcher on Windows (Git Bash)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Guard allows edits outside harness repos and blocks pre-approval edits inside them
+        run: |
+          G="$PWD/plugins/light-harness/scripts/guard.sh"
+          T="$(mktemp -d)"; mkdir -p "$T/plain" "$T/task"
+          python plugins/light-harness/scripts/install.py plugins/light-harness "$T/task"
+          payload() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s/x.py","content":"x"}}' "$1"; }
+          set +e
+          payload "$T/plain" | CLAUDE_PROJECT_DIR="$T/plain" sh "$G"; A=$?
+          payload "$T/task"  | CLAUDE_PROJECT_DIR="$T/task"  sh "$G"; B=$?
+          set -e
+          echo "outside harness: exit $A (want 0) | inside harness, Draft: exit $B (want 2)"
+          test "$A" -eq 0 && test "$B" -eq 2

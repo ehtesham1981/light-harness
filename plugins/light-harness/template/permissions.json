@@ -1,0 +1,40 @@
+{
+  "deny": [
+    "Bash(python3 scripts/harness.py approve:*)",
+    "Bash(python scripts/harness.py approve:*)",
+    "Bash(python3 scripts/harness.py unlock-tests:*)",
+    "Bash(python scripts/harness.py unlock-tests:*)",
+    "Bash(script:*)",
+    "Bash(git commit --amend:*)",
+    "Bash(git rebase:*)",
+    "Bash(git reset:*)",
+    "Bash(git push --force:*)",
+    "Bash(git filter-branch:*)",
+    "Bash(rm -rf:*)",
+    "Read(.env)",
+    "Read(.env.*)"
+  ],
+  "ask": [
+    "Bash(curl:*)",
+    "Bash(wget:*)",
+    "Bash(ssh:*)",
+    "Bash(scp:*)",
+    "Bash(psql:*)",
+    "Bash(mysql:*)",
+    "Bash(git push:*)"
+  ],
+  "allow": [
+    "Bash(python3 scripts/harness.py status)",
+    "Bash(python3 scripts/harness.py check:*)",
+    "Bash(python3 scripts/harness.py set-status:*)",
+    "Bash(python3 scripts/harness.py redgate:*)",
+    "Bash(python3 scripts/harness.py verify)",
+    "Bash(python3 scripts/harness.py verdict:*)",
+    "Bash(python3 -m pytest:*)",
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git add:*)",
+    "Bash(git commit -m:*)"
+  ]
+}

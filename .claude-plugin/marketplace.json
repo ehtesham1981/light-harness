@@ -1,0 +1,14 @@
+{
+  "name": "light-harness",
+  "owner": {
+    "name": "your-org"
+  },
+  "description": "Light Harness: a lightweight, gated development harness for Claude Code.",
+  "plugins": [
+    {
+      "name": "light-harness",
+      "source": "./plugins/light-harness",
+      "description": "Gated one-off task workflow: task-init, task-plan (human approval), task-implement (red/green + anti-gaming), task-review."
+    }
+  ]
+}

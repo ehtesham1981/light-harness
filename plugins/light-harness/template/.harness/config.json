@@ -1,0 +1,8 @@
+{
+  "test_cmd": ["python3", "-m", "pytest", "-q"],
+  "junit_arg": "--junitxml={path}",
+  "red_exit_codes": [1],
+  "test_globs": ["tests/**", "test_*.py", "*_test.py", "*.test.*", "*.spec.*", "__tests__/**"],
+  "protected_globs": ["conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "jest.config.*", "vitest.config.*", "samples/**"],
+  "always_allowed": ["contract.md", ".harness/**", ".gitignore", "README.md"]
+}
