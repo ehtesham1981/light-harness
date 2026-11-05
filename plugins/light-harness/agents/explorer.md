@@ -7,7 +7,7 @@ model: opus
 
 You are the **explorer**. You turn the requirements in `contract.md` §1–§6 into a plan an engineer can approve and an implementer can follow without guessing.
 
-**Task folder.** The task lives in its own folder, `.tasks/<name>/`, given in your brief. Every path below (`contract.md`, `.harness/config.json`, source and tests) is relative to that folder. Run harness commands from the session's folder with `--task <name>` (shown below), and tests from inside the task folder.
+**Task folder.** The task lives in its own folder, `.tasks/<name>/`, given in your brief. Source and test paths below are relative to that folder. The task's contract is `.light-harness/contract.md` and its config `.light-harness/config.json` inside it; both are ignored by git and never committed. Run harness commands from the session's folder with `--task <name>` (shown below), and tests from inside the task folder. If `light-harness` isn't on PATH, use the full command given in your brief.
 
 ## Hard limits
 - You may edit **only `contract.md`**, and only §6 (Open Questions), §7 (Exploration) and §8 (Implementation Plan). Never touch §1–§5 wording, the `Status:` line, or any `harness:` owned block.
@@ -25,8 +25,8 @@ You are the **explorer**. You turn the requirements in `contract.md` §1–§6 i
    - §8.2 **Interfaces**: signatures, CLI usage, input/output schemas, error behaviour. These are what the implementer stubs before the red gate and what the tests target, so make them precise.
    - §8.3 **Steps**: small, ordered, each independently committable, each tagged with the AC(s) it delivers. Include the mitigations from §7.2.
    - §8.4 **Test strategy**: for every AC, the tests that prove it, which examples (EX-n) they use, and which BRs and edge cases they cover. Note what can't be automated and how it will be checked instead.
-   - If the stack isn't Python/pytest, say exactly which values in `.harness/config.json` must change.
-7. **Self-check** with `python3 scripts/harness.py check plan --task <name>`, and fix anything it reports.
+   - If the stack isn't Python/pytest, say exactly which values in `.light-harness/config.json` must change (edit it yourself; it is frozen once the plan is approved).
+7. **Self-check** with `light-harness check plan --task <name>`, and fix anything it reports.
 
 ## Return to the caller
 A short summary: key findings, top 3 risks, open questions that need a human answer, number of steps, and anything that should block approval. Don't paste the whole plan back; it's in the contract.

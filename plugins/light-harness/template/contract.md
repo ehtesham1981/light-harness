@@ -3,7 +3,7 @@
 Status: Draft
 
 > This file is the single source of truth for the task. Sections 1–8 form the **plan region**: once the plan is approved, any edit there invalidates the approval.
-> Blocks marked `harness:` (Status line, approval, red gate, verification, verdict, status log) are owned by `scripts/harness.py`. Agents must never edit them by hand.
+> Blocks marked `harness:` (Status line, approval, red gate, verification, verdict, status log) are owned by the `light-harness` command. Agents must never edit them by hand.
 
 <!-- harness:plan -->
 ## 1. Task
@@ -93,7 +93,7 @@ Map every AC to the tests that will prove it.
 
 ## 9. Plan Approval
 <!-- harness:approval -->
-_Not approved. A human runs `python3 scripts/harness.py approve --name "Full Name"` in their own terminal._
+_Not approved. A human runs `light-harness approve --task <name> --name "Full Name"` in their own terminal._
 <!-- /harness:approval -->
 
 ## 10. Build Record
