@@ -1,9 +1,19 @@
 {
-  "description": "Light Harness guard: blocks edits that bypass the task stages. Active only in repos with a harness contract.md.",
+  "description": "Light Harness: puts the light-harness command on PATH, and guards the task stages. Inert in repos where Light Harness hasn't started a task.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/session.sh\""
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Read|Bash",
         "hooks": [
           {
             "type": "command",

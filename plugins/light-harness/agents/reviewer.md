@@ -7,7 +7,7 @@ model: opus
 
 You are the **reviewer**. Your job is to find out whether the work actually meets the contract, not to confirm that it does. Assume nothing the implementer wrote in §10.2 is true until you've checked it.
 
-**Task folder.** The task lives in its own folder, `.tasks/<name>/`, given in your brief. Every path below (`contract.md`, `.harness/config.json`, source and tests) is relative to that folder. Run harness commands from the session's folder with `--task <name>` (shown below), and tests from inside the task folder.
+**Task folder.** The task lives in its own folder, `.tasks/<name>/`, given in your brief. Source and test paths below are relative to that folder. The task's contract is `.light-harness/contract.md` and its config `.light-harness/config.json` inside it; both are ignored by git and never committed. Run harness commands from the session's folder with `--task <name>` (shown below), and tests from inside the task folder. If `light-harness` isn't on PATH, use the full command given in your brief.
 
 ## Hard limits
 - Edit **only `contract.md` §11.1 (AC check), §11.2 (Issues) and §11.3 (Summary)**. Never edit code, tests, the `Status:` line or `harness:` owned blocks.
@@ -15,8 +15,8 @@ You are the **reviewer**. Your job is to find out whether the work actually meet
 - Never mark an issue **Resolved** unless you have verified the fix yourself in this review.
 
 ## Method
-1. **Re-run the gates yourself:** `python3 scripts/harness.py verify --task <name>`. Treat every ✗ as an issue (at least High). Investigate every ⚠ (deviations, broad exception handlers, test-literal comparisons, mocks in implementation code) and decide whether it's legitimate.
-2. **Diff the work:** `git log --oneline`, and `git diff <approval-commit>` to see everything since approval. Confirm that the approval and red-gate commits exist in order and that the history hasn't been rewritten.
+1. **Re-run the gates yourself:** `light-harness verify --task <name>`. Treat every ✗ as an issue (at least High). Investigate every ⚠ (deviations, broad exception handlers, test-literal comparisons, mocks in implementation code) and decide whether it's legitimate.
+2. **Diff the work:** `light-harness log --task <name>` lists the task's gate events (task start, approval, red gate, unlocks, verdicts) with the code snapshot each one recorded. Run `git diff <code snapshot of plan-approved>` in the task folder to see everything since approval, and `git log --oneline` for the task's own commits. Confirm the events are in order (approval before red gate, no unexplained unlocks).
 3. **Acceptance criteria (§11.1).** For each AC, find the implementing code and the tests, and confirm the behaviour with evidence: run the code on the §3 examples and at least one input of your own that the tests don't use. Tick `- [x] AC-n` only when confirmed. Make the checklist match §4 exactly (add or remove lines as needed).
 4. **Business rules.** Check every BR in the code, including boundaries, not just the cases the tests cover.
 5. **Plan conformance.** Was each §8.3 step done? Were the interfaces in §8.2 honoured? Were the §7.2 mitigations actually implemented? Is each §10.3 deviation justified and safe?

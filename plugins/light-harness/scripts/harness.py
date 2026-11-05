@@ -3,17 +3,21 @@
 
 Stages: Draft -> Initialize -> Plan -> (human approval) -> Build -> Review -> Done | Rework
 
-State lives in two places, both reviewable:
-  * contract.md  - Status line and harness-owned blocks
-  * git history  - commits whose subject starts with "harness:" (approval, red gate,
-                   test unlocks, verdicts). Gates are recomputed from these, not from
-                   a side file, so they can't be satisfied by editing a JSON blob.
+The harness leaves nothing in the work repo. It runs from the plugin, and its state lives inside
+git, outside the working tree, so it never reaches a commit, a branch or a pull request:
+  * .tasks/<name>/              the task's git worktree on branch task/<name> (ignored through
+                                .git/info/exclude, removed when the task is finished)
+  * .tasks/<name>/.light-harness/   the task's live contract.md and config.json (ignored)
+  * refs/light-harness/tasks/<name>  the audit trail: one commit per gate event ("harness: ..."),
+                                each holding the contract and gate records, with a snapshot of
+                                the task's code as its second parent. Gates are recomputed from
+                                this history, not from a side file.
+  * refs/light-harness/done/<name>   the reviewed work of a finished task (for --from)
+  * .git/light-harness/         repo defaults (the last task's config.json) and scratch files
+The task branch holds only the work itself: the agent's own commits of tests and code. A finished
+task keeps its branch for you to merge or open a PR from. `uninstall` removes everything above.
 
-Tasks: each task runs in its own git worktree on branch task/<name> (`start-task`), so parallel
-sessions never share a checkout. A finished task is kept as tag done/<name> and its worktree and
-branch are removed (`finish-task`). Nothing is merged into the main branch.
-
-Run `python3 scripts/harness.py --help` for commands.
+Run `light-harness --help` (or `python3 <plugin>/scripts/harness.py --help`) for commands.
 """
 from __future__ import annotations
 
@@ -22,13 +26,15 @@ import datetime as dt
 import fnmatch
 import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
 # on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
@@ -37,58 +43,64 @@ for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding=UTF8, errors="replace")
 
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATE = PLUGIN_ROOT / "template"
+LIVE = ".light-harness"                      # per-task folder inside the task worktree (ignored)
+STATE = "light-harness"                      # folder inside the git common dir
+REF_TASKS, REF_DONE = "refs/light-harness/tasks/", "refs/light-harness/done/"
+TASK_PREFIX = "task/"
+EXCLUDE_BEGIN = "# >>> light-harness (local only, never committed)"
+EXCLUDE_END = "# <<< light-harness"
+
+
+def _toplevel(p: Path):
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=p, capture_output=True,
+                           encoding=UTF8, errors="replace")
+    except (OSError, NotADirectoryError):
+        return None
+    out = r.stdout.strip()
+    return Path(out).resolve() if r.returncode == 0 and out else None
+
 
 def _find_root() -> Path:
-    """Default root: $HARNESS_ROOT, else the nearest dir with contract.md or .git above the cwd,
-    else $CLAUDE_PROJECT_DIR. Commands pick a task explicitly with --task <name> (see set_root),
+    """Default root: $HARNESS_ROOT, else the git checkout around the cwd (the main checkout or a
+    task worktree), else $CLAUDE_PROJECT_DIR. Commands pick a task with --task <name> (set_root),
     and the guard hook picks the task that contains the edited file."""
-    import os
     if os.environ.get("HARNESS_ROOT"):
         return Path(os.environ["HARNESS_ROOT"]).resolve()
-    here = Path.cwd().resolve()
-    for d in (here, *here.parents):
-        if (d / "contract.md").exists() or (d / ".git").exists():
-            return d
+    top = _toplevel(Path.cwd())
+    if top:
+        return top
     if os.environ.get("CLAUDE_PROJECT_DIR"):
         return Path(os.environ["CLAUDE_PROJECT_DIR"]).resolve()
-    return here
+    return Path.cwd().resolve()
 
 
 def set_root(path: Path):
     """Point every command at one checkout (the main checkout or a task worktree)."""
     global ROOT, CONTRACT, CONFIG, JUNIT
     ROOT = Path(path).resolve()
-    CONTRACT = ROOT / "contract.md"
-    CONFIG = ROOT / ".harness" / "config.json"
-    JUNIT = ROOT / ".harness" / "junit.xml"
+    CONTRACT = ROOT / LIVE / "contract.md"
+    CONFIG = ROOT / LIVE / "config.json"
+    JUNIT = ROOT / LIVE / "junit.xml"
+
+
+def is_task_checkout(d: Path) -> bool:
+    return (d / ".git").is_file() and (d / LIVE / "contract.md").is_file()
 
 
 def task_root_for(path: Path):
-    """The harness checkout that owns `path`: the nearest dir above it with a harness contract and
-    a .git (directory for the main checkout, file for a task worktree). None outside any."""
+    """The task worktree that owns `path` (nearest checkout above it with a live contract), or None."""
     p = Path(path).resolve()
     for d in (p, *p.parents):
-        c = d / "contract.md"
-        if (d / ".git").exists() and c.is_file():
-            try:
-                if "<!-- harness:plan -->" in c.read_text(encoding=UTF8, errors="replace"):
-                    return d
-            except OSError:
-                return None
-            return None
         if (d / ".git").exists():
-            return None
+            return d if is_task_checkout(d) else None
     return None
 
 
 ROOT = CONTRACT = CONFIG = JUNIT = None  # set just below
 set_root(_find_root())
-REDGATE_FILE = ".harness/redgate.json"
-BASELINE_FILE = ".harness/baseline.json"   # tests that passed before the current task started
-TASK_PREFIX, DONE_PREFIX = "task/", "done/"
-# Files the harness installs; committed on the main checkout so every task worktree gets them
-HARNESS_FILES = ["contract.md", "CLAUDE.md", ".claude/settings.json", ".harness/config.json",
-                 "scripts/harness.py", ".gitignore", ".env.example"]
 LAST_RESULTS: dict = {}  # test outcomes from the most recent run_tests()
 
 TRANSITIONS = {
@@ -100,8 +112,9 @@ TRANSITIONS = {
     "Review": set(),          # leaves Review only through `verdict`
     "Done": {"Initialize"},   # reopen with new scope
 }
-MACHINERY = ["scripts/harness.py", "scripts/hook_guard.py", ".claude/settings.json",
-             ".claude/agents/**", ".claude/commands/**", ".harness/config.json"]
+# Files in the work repo an agent must not change during a task (its own permissions and agents)
+MACHINERY = [".claude/settings.json", ".claude/settings.local.json", ".claude/agents/**",
+             ".claude/commands/**", ".claude/skills/**"]
 OWNED_BLOCKS = ["approval", "redgate", "verify", "verdict", "status-log"]
 BLOCKING_SEVERITIES = {"critical", "high", "medium"}
 
@@ -112,7 +125,7 @@ DEFAULT_CONFIG = {
     "test_globs": ["tests/**", "test_*.py", "*_test.py", "*.test.*", "*.spec.*", "__tests__/**"],
     "protected_globs": ["conftest.py", "pytest.ini", "tox.ini", "setup.cfg",
                         "jest.config.*", "vitest.config.*", "samples/**"],
-    "always_allowed": ["contract.md", ".harness/**", ".gitignore", "README.md"],
+    "always_allowed": [".gitignore", "README.md"],
     "worktree_dir": ".tasks",
 }
 
@@ -167,38 +180,161 @@ def filled(s: str) -> bool:
 
 
 # --- git ----------------------------------------------------------------------
-def git(*args: str, check: bool = True, binary: bool = False, cwd: Path | None = None):
-    text_kw = {} if binary else {"encoding": UTF8, "errors": "replace"}
-    r = subprocess.run(["git", *args], cwd=cwd or ROOT, capture_output=True, **text_kw)
+def git(*args: str, check: bool = True, cwd: Path | None = None, input: str | None = None,
+        env: dict | None = None):
+    r = subprocess.run(["git", *args], cwd=cwd or ROOT, capture_output=True, encoding=UTF8,
+                       errors="replace", input=input, env=env)
     if check and r.returncode != 0:
         die(f"git {' '.join(args)} failed: {r.stderr}")
     return r.stdout
 
 
-def ensure_repo():
-    if not (ROOT / ".git").exists():
-        git("init", "-q")
-
-
 def ident(cwd: Path | None = None) -> list[str]:
-    if git("config", "user.name", check=False, cwd=cwd).strip():
+    if git("config", "user.name", check=False, cwd=cwd).strip() and \
+       git("config", "user.email", check=False, cwd=cwd).strip():
         return []
     return ["-c", "user.name=light-harness", "-c", "user.email=harness@localhost"]
 
 
-def commit(msg: str, paths: list[str] | None = None, cwd: Path | None = None):
-    """Commit everything (default), or only `paths` (leaves the rest of the index alone)."""
-    cwd = cwd or ROOT
-    git("add", "-A", *(["--", *paths] if paths else []), cwd=cwd)
-    subprocess.run(["git", *ident(cwd), "commit", "-q", "--allow-empty", "--no-verify", "-m", msg,
-                    *(["--", *paths] if paths else [])], cwd=cwd, check=True)
+def ref_sha(ref: str, cwd: Path | None = None) -> str:
+    return git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}", check=False, cwd=cwd).strip()
+
+
+def common_dir(cwd: Path | None = None) -> Path:
+    out = git("rev-parse", "--git-common-dir", cwd=cwd).strip()
+    p = Path(out)
+    return (p if p.is_absolute() else (cwd or ROOT) / p).resolve()
+
+
+def state_dir(create: bool = False) -> Path:
+    d = common_dir() / STATE
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def worktrees(cwd: Path | None = None) -> list[dict]:
+    """`git worktree list --porcelain` as dicts; the first entry is the main checkout."""
+    items, cur = [], {}
+    for line in git("worktree", "list", "--porcelain", cwd=cwd).splitlines() + [""]:
+        if not line:
+            if cur:
+                items.append(cur)
+            cur = {}
+            continue
+        k, _, v = line.partition(" ")
+        cur[k] = v
+    return items
+
+
+def main_checkout() -> Path:
+    return Path(worktrees()[0]["worktree"]).resolve()
+
+
+def same_path(a: Path, b: Path) -> bool:
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def is_within(child: Path, parent: Path) -> bool:
+    c, p = (os.path.normcase(str(Path(x).resolve())) for x in (child, parent))
+    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+
+
+def slugify(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60].strip("-")
+    if not s:
+        die(f"can't make a task name from {name!r}; use letters or digits")
+    return s
+
+
+def task_worktree(slug: str):
+    for w in worktrees():
+        if w.get("branch") == f"refs/heads/{TASK_PREFIX}{slug}":
+            return Path(w["worktree"]).resolve()
+    return None
+
+
+def tasks_in_progress() -> list[tuple[str, Path]]:
+    out = []
+    for w in worktrees():
+        b = w.get("branch", "")
+        if b.startswith(f"refs/heads/{TASK_PREFIX}") and is_task_checkout(Path(w["worktree"])):
+            out.append((b[len("refs/heads/" + TASK_PREFIX):], Path(w["worktree"]).resolve()))
+    return out
+
+
+def task_slug():
+    if not is_task_checkout(ROOT):
+        return None
+    b = git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    return b[len(TASK_PREFIX):] if b.startswith(TASK_PREFIX) else None
+
+
+# --- the audit trail: refs/light-harness/tasks/<name> --------------------------
+def state_ref(slug: str | None = None) -> str:
+    slug = slug or task_slug()
+    if not slug:
+        die("not in a task; pass --task <name> (see `light-harness tasks`)")
+    return REF_TASKS + slug
+
+
+def snapshot() -> str:
+    """A commit of the task worktree as it is now (tracked + untracked, honouring ignores), made
+    with a scratch index so the branch, the index and the working tree are left untouched."""
+    head = ref_sha("HEAD")
+    idx = state_dir(create=True) / f"index-{os.getpid()}"
+    env = {**os.environ, "GIT_INDEX_FILE": str(idx)}
+    try:
+        git("read-tree", head, env=env)
+        git("add", "-A", env=env)
+        tree = git("write-tree", env=env).strip()
+    finally:
+        idx.unlink(missing_ok=True)
+    if tree == git("rev-parse", f"{head}^{{tree}}").strip():
+        return head
+    return git(*ident(), "commit-tree", tree, "-p", head, "-m", "light-harness: snapshot").strip()
+
+
+def snap_of(state_sha: str) -> str:
+    """The code snapshot recorded with a harness event (its second parent)."""
+    return git("rev-parse", f"{state_sha}^2").strip()
+
+
+def record(msg: str, extra: dict | None = None, slug: str | None = None) -> str:
+    """Append a harness event to the task's audit trail. The commit's tree holds the contract,
+    the config and any gate records; its parents are the previous event and a code snapshot."""
+    ref = state_ref(slug)
+    prev = ref_sha(ref)
+    if not prev:
+        empty = git("mktree", input="").strip()
+        prev_new = git(*ident(), "commit-tree", empty, "-m", f"light-harness: audit trail for {ref}").strip()
+    entries = {}
+    if prev:
+        for e in git("ls-tree", "-z", prev).split("\0"):
+            if e:
+                meta, _, name = e.partition("\t")
+                entries[name] = meta.split()[2]
+    files = {"contract.md": CONTRACT.read_text(encoding=UTF8)}
+    if CONFIG.exists():
+        files["config.json"] = CONFIG.read_text(encoding=UTF8)
+    files.update(extra or {})
+    for name, content in files.items():
+        if content is None:
+            entries.pop(name, None)
+        else:
+            entries[name] = git("hash-object", "-w", "--stdin", input=content).strip()
+    tree = git("mktree", input="".join(f"100644 blob {b}\t{n}\n" for n, b in sorted(entries.items()))).strip()
+    sha = git(*ident(), "commit-tree", tree, "-p", prev or prev_new, "-p", snapshot(), "-m", msg).strip()
+    git("update-ref", "-m", msg, ref, sha, prev or "0" * 40)
+    return sha
 
 
 def harness_log() -> list[tuple[int, str, str]]:
-    """(index, sha, subject) for harness commits, newest first (index 0 = newest commit)."""
-    if not (ROOT / ".git").exists():
+    """(index, sha, subject) for this task's harness events, newest first (index 0 = newest)."""
+    slug = task_slug()
+    if not slug or not ref_sha(REF_TASKS + slug):
         return []
-    out = git("log", "--format=%H%x09%s", check=False)
+    out = git("log", "--first-parent", "--format=%H%x09%s", REF_TASKS + slug, check=False)
     rows = []
     for i, line in enumerate(out.splitlines()):
         sha, _, subj = line.partition("\t")
@@ -214,11 +350,14 @@ def latest(prefix: str):
     return None
 
 
+def state_file(sha: str, name: str) -> str:
+    return git("show", f"{sha}:{name}", check=False)
+
+
 def task_base_row():
-    """The harness commit the current task started from: the newest `task-start` (new worktree) or
-    `verdict pass` (previous task in this checkout). Once the task's plan is approved, that is the
-    newest one older than the approval, so the task's own PASS verdict doesn't count.
-    None for the first task in a repo."""
+    """The harness event the current task started from: `task-start`, or the task's own earlier
+    `verdict pass` when a Done task was reopened. Once the plan is approved, the newest one older
+    than the approval, so the task's own PASS verdict doesn't count."""
     pre_approval = get_status() in ("Draft", "Initialize", "Plan")
     appr = None if pre_approval else latest("harness: plan-approved")
     for row in harness_log():
@@ -230,7 +369,7 @@ def task_base_row():
 
 
 def _baseline_at(sha: str):
-    raw = git("show", f"{sha}:{BASELINE_FILE}", check=False)
+    raw = state_file(sha, "baseline.json")
     if not raw.strip():
         return None
     try:
@@ -257,7 +396,7 @@ def task_test_files(cfg, base=None) -> list[str]:
     tests = test_files(cfg)
     if not base:
         return tests
-    changed = set(changed_files(base[1]))
+    changed = set(changed_files(snap_of(base[1])))
     return [f for f in tests if f in changed]
 
 
@@ -284,14 +423,15 @@ def added_lines(base: str, path: str) -> list[str]:
 # --- contract parsing ---------------------------------------------------------
 def contract() -> str:
     if not CONTRACT.exists():
-        die("contract.md not found. Run `python3 scripts/harness.py init`.")
+        names = ", ".join(s for s, _ in tasks_in_progress()) or "none"
+        die(f"no task contract here ({ROOT}). Pass --task <name> (in progress: {names}), "
+            "or start one with `light-harness start-task <name>`.")
     return CONTRACT.read_text(encoding=UTF8)
 
 
 def block_span(text: str, name: str):
-    m = re.search(rf"<!-- harness:{re.escape(name)} -->\n?(.*?)<!-- /harness:{re.escape(name)} -->",
-                  text, re.S)
-    return m
+    return re.search(rf"<!-- harness:{re.escape(name)} -->\n?(.*?)<!-- /harness:{re.escape(name)} -->",
+                     text, re.S)
 
 
 def block(name: str, text: str | None = None) -> str:
@@ -309,6 +449,8 @@ def set_block(name: str, body: str):
 
 
 def get_status(text: str | None = None) -> str:
+    if text is None and not CONTRACT.exists():
+        return "Draft"
     m = re.search(r"^Status:\s*(\S+)", text if text is not None else contract(), re.M)
     return m.group(1) if m else "Draft"
 
@@ -403,8 +545,7 @@ def check_plan(text: str) -> list[str]:
 def approval_state(text: str | None = None):
     """Return (ok, message, log_index)."""
     row = latest("harness: plan-approved")
-    # An approval older than this task's start belongs to an earlier task. A task starts at
-    # `task-start` (new worktree) or, once reopened in place, at the previous task's PASS verdict.
+    # A Done task that was reopened starts again at its PASS verdict; an older approval is stale.
     markers = ("harness: task-start",) + (() if get_status(text) == "Done" else ("harness: verdict pass",))
     start = next((r for r in harness_log() if r[2].startswith(markers)), None)
     if not row or (start and start[0] < row[0]):
@@ -418,7 +559,7 @@ def approval_state(text: str | None = None):
 
 
 def redgate_state():
-    """Return (ok, message, sha)."""
+    """Return (ok, message, state sha of the red-gate event)."""
     ok, msg, appr_idx = approval_state()
     rg = latest("harness: red-gate")
     if not rg:
@@ -428,7 +569,7 @@ def redgate_state():
     unlock = latest("harness: tests-unlocked")
     if unlock and unlock[0] < rg[0]:
         return False, "tests were unlocked after the red gate; re-run the red gate", None
-    return True, f"red gate at {rg[1][:8]}", rg[1]
+    return True, f"red gate at {snap_of(rg[1])[:8]}", rg[1]
 
 
 def test_files(cfg) -> list[str]:
@@ -440,6 +581,7 @@ def run_tests(cfg):
     if cmd and cmd[0] in ("python", "python3", "py"):
         cmd[0] = sys.executable  # same interpreter as the harness (portable across OSes/venvs)
     junit_path = ROOT / cfg["junit_path"] if cfg.get("junit_path") else JUNIT
+    junit_path.parent.mkdir(parents=True, exist_ok=True)
     junit_path.unlink(missing_ok=True)
     if cfg.get("junit_arg"):
         cmd.append(cfg["junit_arg"].format(path=str(junit_path)))
@@ -471,6 +613,13 @@ def string_literals(lines: list[str]) -> set[str]:
     return lits
 
 
+def _json_or_raw(s: str):
+    try:
+        return json.loads(s) if s.strip() else None
+    except json.JSONDecodeError:
+        return s
+
+
 def verify(write: bool = True) -> bool:
     cfg = load_config()
     text = contract()
@@ -478,10 +627,18 @@ def verify(write: bool = True) -> bool:
 
     ok, msg, _ = approval_state(text)
     (info if ok else fails).append(f"Plan approval: {msg}")
-    rg_ok, rg_msg, rg_sha = redgate_state()
+    rg_ok, rg_msg, rg_state = redgate_state()
     (info if rg_ok else fails).append(f"Red gate: {rg_msg}")
 
+    appr = latest("harness: plan-approved")
+    if ok and appr:
+        approved_cfg = _json_or_raw(state_file(appr[1], "config.json"))
+        live_cfg = _json_or_raw(CONFIG.read_text(encoding=UTF8)) if CONFIG.exists() else None
+        if approved_cfg != live_cfg:
+            fails.append(f"Anti-gaming: {LIVE}/config.json changed after the plan was approved")
+
     if rg_ok:
+        rg_sha = snap_of(rg_state)
         # 1. test integrity: red-gate tests and protected files byte-identical
         rg_blobs = {}  # path -> blob id at the red gate (-z: paths are never quoted)
         for entry in git("ls-tree", "-r", "-z", rg_sha).split("\0"):
@@ -515,7 +672,7 @@ def verify(write: bool = True) -> bool:
             fails.append(f"Green gate: test suite failed (exit {rc})\n```\n{tail(out)}\n```")
         else:
             info.append(f"Green gate: test suite passed ({len(results) or '?'} tests)")
-        rg_meta = json.loads(git("show", f"{rg_sha}:{REDGATE_FILE}", check=False) or "{}")
+        rg_meta = json.loads(state_file(rg_state, "redgate.json") or "{}")
         if results:
             for name in rg_meta.get("tests", []):
                 outcome = results.get(name)
@@ -526,7 +683,7 @@ def verify(write: bool = True) -> bool:
 
         # 3. anti-gaming scan of everything changed since the plan was approved
         #    (covers stubs written before the red gate as well as the implementation)
-        base = latest("harness: plan-approved")[1]
+        base = snap_of(appr[1])
         changed = [f for f in changed_files(base)
                    if matches(f, MACHINERY) or not matches(f, cfg["always_allowed"])]
         test_lits = set()
@@ -563,7 +720,7 @@ def verify(write: bool = True) -> bool:
         devs = deviation_paths(text)
         for f in changed:
             if matches(f, MACHINERY):
-                fails.append(f"Anti-gaming: harness machinery modified after approval: {f}")
+                fails.append(f"Anti-gaming: agent permissions or agents modified after approval: {f}")
                 continue
             if matches(f, cfg["test_globs"] + cfg["protected_globs"]):
                 continue
@@ -594,18 +751,15 @@ def verify(write: bool = True) -> bool:
     return passed
 
 
-def write_baseline(source: str):
+def baseline_json(source: str):
     passing = sorted(n for n, o in LAST_RESULTS.items() if o == "passed")
-    (ROOT / ".harness").mkdir(exist_ok=True)
-    (ROOT / BASELINE_FILE).write_text(json.dumps({"source": source, "when": now(), "passing": passing},
-                                                 indent=2) + "\n", encoding=UTF8)
-    return passing
+    return json.dumps({"source": source, "when": now(), "passing": passing}, indent=2) + "\n", passing
 
 
 def ensure_baseline():
     """Record which tests already pass before this task changes any code (an existing codebase).
     Runs once per task, on entering Build; skipped when a baseline came with the task's base
-    (a previous task's passed verdict) or when there are no tests yet (new development)."""
+    (the finished task it builds on) or when there are no tests yet (new development)."""
     cfg = load_config()
     if baseline_tests() is not None or not test_files(cfg):
         return
@@ -614,174 +768,467 @@ def ensure_baseline():
         print(f"⚠ Couldn't read per-test results from the existing suite (exit {rc}); no baseline "
               f"recorded. Existing tests that pass at the red gate will need --allow-passing.\n{tail(out, 10)}")
         return
-    passing = write_baseline("existing tests before this task")
-    commit(f"harness: baseline ({len(passing)} existing tests passing)")
+    body, passing = baseline_json("existing tests before this task")
+    record(f"harness: baseline ({len(passing)} existing tests passing)", {"baseline.json": body})
     print(f"✓ Baseline: {len(passing)} existing tests pass before this task (they must keep passing)")
 
 
-# --- tasks: one worktree + branch per task, a tag when done -------------------
-def is_within(child: Path, parent: Path) -> bool:
-    import os
-    c, p = (os.path.normcase(str(Path(x).resolve())) for x in (child, parent))
-    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+# --- local ignore rules (.git/info/exclude, never committed) -------------------
+def exclude_file() -> Path:
+    return common_dir() / "info" / "exclude"
 
 
-def task_worktree(slug: str):
-    for w in worktrees():
-        if w.get("branch") == f"refs/heads/{TASK_PREFIX}{slug}":
-            return Path(w["worktree"]).resolve()
-    return None
+def ensure_excludes(extra: list[str]):
+    ex = exclude_file()
+    text = ex.read_text(encoding=UTF8) if ex.exists() else ""
+    # The harness's own folder, plus the caches its Python test runs create, so they never land in
+    # a snapshot or a commit. Local to this clone; `uninstall` removes the block.
+    want = [f"/{LIVE}/", "__pycache__/", "*.py[cod]", ".pytest_cache/"] + extra
+    m = re.search(rf"{re.escape(EXCLUDE_BEGIN)}\n(.*?){re.escape(EXCLUDE_END)}\n?", text, re.S)
+    have = m.group(1).splitlines() if m else []
+    lines = have + [w for w in want if w not in have]
+    if m and lines == have:
+        return
+    blk = f"{EXCLUDE_BEGIN}\n" + "".join(l + "\n" for l in lines) + f"{EXCLUDE_END}\n"
+    text = (text[:m.start()] + blk + text[m.end():]) if m else (text.rstrip("\n") + ("\n" if text.strip() else "") + blk)
+    ex.parent.mkdir(parents=True, exist_ok=True)
+    ex.write_text(text, encoding=UTF8)
 
 
-def same_path(a: Path, b: Path) -> bool:
-    import os
-    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+def strip_excludes() -> bool:
+    ex = exclude_file()
+    if not ex.exists():
+        return False
+    text = ex.read_text(encoding=UTF8)
+    new = re.sub(rf"{re.escape(EXCLUDE_BEGIN)}\n.*?{re.escape(EXCLUDE_END)}\n?", "", text, flags=re.S)
+    if new != text:
+        ex.write_text(new, encoding=UTF8)
+    return new != text
 
 
-def slugify(name: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60].strip("-")
-    if not s:
-        die(f"can't make a task name from {name!r}; use letters or digits")
-    return s
+# --- tasks: one worktree + branch per task -------------------------------------
+def resolve_base(ref: str):
+    """(sha, finished-task slug or None) for --from: a finished task (`done/<name>` or `<name>`),
+    or any branch, tag or commit."""
+    for slug in ([ref[5:]] if ref.startswith("done/") else []) + [ref]:
+        sha = ref_sha(REF_DONE + slug)
+        if sha:
+            return sha, slug
+    return ref_sha(ref), None
 
 
-def worktrees() -> list[dict]:
-    """`git worktree list --porcelain` as dicts; the first entry is the main checkout."""
-    items, cur = [], {}
-    for line in git("worktree", "list", "--porcelain").splitlines() + [""]:
-        if not line:
-            if cur:
-                items.append(cur)
-            cur = {}
-            continue
-        k, _, v = line.partition(" ")
-        cur[k] = v
-    return items
-
-
-def ref_sha(ref: str) -> str:
-    return git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}", check=False).strip()
-
-
-def task_slug():
-    b = git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
-    return b[len(TASK_PREFIX):] if b.startswith(TASK_PREFIX) else None
+def legacy_files(root: Path) -> list[str]:
+    """Light Harness 1.x files committed into the work repo (it vendored itself before 1.4)."""
+    found = []
+    c = root / "contract.md"
+    if c.is_file() and "<!-- harness:plan -->" in c.read_text(encoding=UTF8, errors="replace"):
+        found.append("contract.md")
+    for f in ("scripts/harness.py", ".harness"):
+        if (root / f).exists():
+            found.append(f)
+    cm = root / "CLAUDE.md"
+    if cm.is_file() and LEGACY_MARKER in cm.read_text(encoding=UTF8, errors="replace"):
+        found.append("CLAUDE.md (harness rules)")
+    return found
 
 
 def cmd_start_task(args):
-    main_wt = Path(worktrees()[0]["worktree"]).resolve()
+    main_wt = main_checkout()
     if not same_path(ROOT, main_wt):
         die(f"run start-task from the main checkout ({main_wt}), not from a task worktree")
-    text = contract()
-    if "<!-- harness:plan -->" not in text:
-        die("the harness isn't installed here; run /light-harness:task-init first")
-    if get_status(text) != "Draft":
-        die(f"this checkout's contract.md is at {get_status(text)}, so it holds a task of its own. "
-            "With worktrees, the main checkout keeps the blank contract template; finish that task "
-            "here first, or restore contract.md from the plugin template.")
+    if legacy_files(ROOT):
+        die("this repo still has files from Light Harness 1.x, which copied itself into the repo: "
+            f"{', '.join(legacy_files(ROOT))}. Light Harness no longer keeps anything in the work "
+            "repo. A human should run `light-harness uninstall` here first; it removes those files "
+            "and leaves the changes for review.")
+    if not ref_sha("HEAD"):
+        die("this repository has no commits yet, and a task folder is made from a commit. "
+            "Make a first commit (for example `git commit --allow-empty -m \"Initial commit\"`), then retry.")
     slug = slugify(args.name)
-    branch, tag = TASK_PREFIX + slug, DONE_PREFIX + slug
+    branch = TASK_PREFIX + slug
     if ref_sha(f"refs/heads/{branch}"):
-        die(f"task {slug!r} already exists (branch {branch})")
-    if ref_sha(f"refs/tags/{tag}"):
-        die(f"task {slug!r} already finished (tag {tag}); pick another name")
-
-    wdir = Path(load_config().get("worktree_dir", ".tasks").format(repo=ROOT.name))
-    wroot = (wdir if wdir.is_absolute() else ROOT / wdir).resolve()
-    if is_within(wroot, ROOT):  # task folders inside the project: keep them out of its git status
-        rel = wroot.relative_to(ROOT).as_posix() + "/"
-        gi = ROOT / ".gitignore"
-        lines = gi.read_text(encoding=UTF8).splitlines() if gi.exists() else []
-        if rel not in lines and "/" + rel not in lines:
-            gi.write_text("\n".join(lines + [rel]) + "\n", encoding=UTF8)
-
-    # Worktrees are made from commits, so the harness files must be committed here first
-    present = [f for f in HARNESS_FILES if (ROOT / f).exists()]
-    if git("status", "--porcelain", "--", *present).strip() or not ref_sha("HEAD"):
-        commit(f"harness: install light-harness {__version__}", paths=present)
-        print(f"✓ Committed the harness files on {git('rev-parse', '--abbrev-ref', 'HEAD').strip()}")
+        die(f"branch {branch} already exists; pick another task name")
+    if ref_sha(REF_TASKS + slug) or ref_sha(REF_DONE + slug):
+        die(f"task {slug!r} already exists or is finished (see `light-harness tasks`); pick another name")
 
     ref = args.from_ref or "HEAD"
-    sha = ref_sha(ref)
+    sha, from_slug = resolve_base(ref)
     if not sha:
-        die(f"unknown ref {ref!r} (use a done/<task> tag, a branch or a commit)")
+        die(f"unknown ref {ref!r} (use a finished task's name, done/<task>, a branch or a commit)")
+
+    # Starting config: the task it builds on, else the repo's last task, else the plugin template
+    cfg_text = state_file(REF_TASKS + from_slug, "config.json") if from_slug else ""
+    repo_cfg = state_dir() / "config.json"
+    if not cfg_text.strip() and repo_cfg.exists():
+        cfg_text = repo_cfg.read_text(encoding=UTF8)
+    if not cfg_text.strip():
+        cfg_text = (TEMPLATE / "config.json").read_text(encoding=UTF8)
+    baseline = state_file(REF_TASKS + from_slug, "baseline.json") if from_slug else ""
+
+    wdir = Path(json.loads(cfg_text).get("worktree_dir", DEFAULT_CONFIG["worktree_dir"]).format(repo=ROOT.name))
+    wroot = (wdir if wdir.is_absolute() else ROOT / wdir).resolve()
+    state_dir(create=True)
+    ensure_excludes([f"/{wroot.relative_to(ROOT).as_posix()}/"] if is_within(wroot, ROOT) and not same_path(wroot, ROOT) else [])
+
     path = wroot / slug
     if path.exists():
         die(f"{path} already exists")
     path.parent.mkdir(parents=True, exist_ok=True)
     git("worktree", "add", "-q", "-b", branch, str(path), sha)
-    # A fresh contract for this task (a done/ base carries the previous task's finished contract)
-    (path / "contract.md").write_text(text.replace("<task name>", args.name, 1), encoding=UTF8)
-    commit(f"harness: task-start {slug} [base:{sha[:12]}]", paths=["contract.md"], cwd=path)
-    print(f"✓ Task '{slug}' started\n  folder: {path}\n  branch: {branch} (from {ref} @ {sha[:8]})\n"
-          f"Run every harness command for it with --task {slug}, e.g. "
-          f"`python3 scripts/harness.py status --task {slug}`")
+    (path / LIVE).mkdir(parents=True, exist_ok=True)
+    tpl = (TEMPLATE / "contract.md").read_text(encoding=UTF8)
+    (path / LIVE / "contract.md").write_text(tpl.replace("<task name>", args.name, 1), encoding=UTF8)
+    (path / LIVE / "config.json").write_text(cfg_text, encoding=UTF8)
+    set_root(path)
+    record(f"harness: task-start {slug} [base:{sha[:12]}]",
+           {"baseline.json": baseline} if baseline.strip() else None, slug=slug)
+    print(f"✓ Task '{slug}' started\n  folder:   {path}\n  branch:   {branch} (from {ref} @ {sha[:8]})\n"
+          f"  contract: {path / LIVE / 'contract.md'}\n"
+          f"Run every harness command for it with --task {slug}, e.g. `light-harness status --task {slug}`")
 
 
 def cmd_finish_task(args):
     name = args.name or args.task
-    slug = slugify(name) if name else task_slug()
+    if name:
+        slug = slugify(name)
+    else:
+        slug = task_slug()
     if not slug:
         die("not in a task worktree; pass the task name: finish-task <name>")
-    main_wt = Path(worktrees()[0]["worktree"]).resolve()
-    branch, tag = TASK_PREFIX + slug, DONE_PREFIX + slug
-    tip = ref_sha(f"refs/heads/{branch}")
-    tagged = ref_sha(f"refs/tags/{tag}")
-    if not tip:
-        if tagged:
-            print(f"✓ Task '{slug}' is already finished (tag {tag})")
-            return
-        die(f"no task {slug!r} (no branch {branch})")
-    wt = next((w for w in worktrees() if w.get("branch") == f"refs/heads/{branch}"), None)
-    wt_path = Path(wt["worktree"]).resolve() if wt else None
-    status = get_status(git("show", f"{tip}:contract.md", check=False))
+    main_wt = main_checkout()
+    branch = TASK_PREFIX + slug
+    st = ref_sha(REF_TASKS + slug)
+    done = ref_sha(REF_DONE + slug)
+    wt = task_worktree(slug)
+    if not st:
+        die(f"no task {slug!r} (see `light-harness tasks`)")
+    if done and not wt:
+        print(f"✓ Task '{slug}' is already finished")
+        return
+    if wt:
+        set_root(wt)
+    status = get_status(CONTRACT.read_text(encoding=UTF8) if wt else state_file(st, "contract.md"))
     if status != "Done":
         die(f"task {slug!r} is at {status}; only a task with a PASS verdict (Done) can be finished")
-    if wt_path and git("status", "--porcelain", cwd=wt_path).strip():
-        die(f"{wt_path} has uncommitted changes; commit or discard them first")
-    if tagged and tagged != tip:
-        die(f"tag {tag} already exists at another commit")
-    if not tagged:
-        subprocess.run(["git", *ident(main_wt), "tag", "-a", tag, tip, "-m", f"light-harness: task {slug} done"],
-                       cwd=main_wt, check=True, capture_output=True)
-    if wt_path and is_within(Path.cwd(), wt_path):  # can't delete the folder we're running in
-        print(f"✓ Tagged {tag}. To remove the task folder and its branch, run\n"
-              f"  python3 scripts/harness.py finish-task {slug}\nfrom the main checkout ({main_wt}).")
+    if wt and git("status", "--porcelain").strip():
+        die(f"{wt} has uncommitted changes. Commit the task's work on {branch} first "
+            f"(`git add -A && git commit -m \"<summary>\"` in the task folder).")
+    tip = ref_sha(f"refs/heads/{branch}", cwd=main_wt)
+    if not tip:
+        die(f"branch {branch} is gone, so there is nothing to finish")
+    vrow = next((r for r in (harness_log() if wt else []) if r[2].startswith("harness: verdict pass")), None)
+    if wt and not vrow:
+        die("no PASS verdict recorded for this task")
+    if vrow:
+        reviewed = git("rev-parse", f"{snap_of(vrow[1])}^{{tree}}").strip()
+        if git("rev-parse", f"{tip}^{{tree}}").strip() != reviewed:
+            die(f"{branch} doesn't match the work the reviewer passed (snapshot {snap_of(vrow[1])[:8]}). "
+                "Commit exactly the reviewed work, or reopen the task and review it again.")
+    git("update-ref", "-m", f"light-harness: task {slug} done", REF_DONE + slug, tip, cwd=main_wt)
+    if wt and CONFIG.exists():  # the next task in this repo starts with this task's stack config
+        (common_dir(main_wt) / STATE).mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(CONFIG, common_dir(main_wt) / STATE / "config.json")
+    if wt and is_within(Path.cwd(), wt):  # can't delete the folder we're running in
+        print(f"✓ Task '{slug}' finished. To remove its folder, run\n"
+              f"  light-harness finish-task {slug}\nfrom the main checkout ({main_wt}).")
         return
-    if wt_path:
-        git("worktree", "remove", str(wt_path), cwd=main_wt)
-    git("branch", "-D", branch, cwd=main_wt)
-    print(f"✓ Task '{slug}' finished: kept as tag {tag}; worktree and branch {branch} removed")
+    if wt:
+        git("worktree", "remove", str(wt), cwd=main_wt)
+    final = branch
+    if args.branch and args.branch != branch:
+        git("branch", "-m", branch, args.branch, cwd=main_wt)
+        final = args.branch
+    base_line = git("log", "--first-parent", "--format=%s", REF_TASKS + slug, cwd=main_wt).splitlines()
+    base = next((re.search(r"\[base:([0-9a-f]+)\]", s).group(1) for s in reversed(base_line)
+                 if s.startswith("harness: task-start") and "[base:" in s), None)
+    ahead = git("rev-list", "--count", f"{base}..{tip}", cwd=main_wt, check=False).strip() if base else "?"
+    print(f"✓ Task '{slug}' finished: its folder is removed, and the reviewed work is on branch {final} "
+          f"({ahead} commit(s) on top of {base[:8] if base else 'its base'}).\n"
+          f"  Merge it or open a pull request from it as you would any branch; it carries no harness files.\n"
+          f"  Contract and audit trail: `light-harness show {slug}` and `light-harness log {slug}` "
+          f"(kept locally in refs/light-harness, never pushed by a normal push).")
 
 
 def cmd_tasks(args):
-    open_ = [w for w in worktrees() if w.get("branch", "").startswith(f"refs/heads/{TASK_PREFIX}")]
+    open_ = tasks_in_progress()
     print(f"In progress ({len(open_)}):")
-    for w in open_:
-        p = Path(w["worktree"])
-        st = get_status((p / "contract.md").read_text(encoding=UTF8)) if (p / "contract.md").exists() else "?"
-        print(f"  {w['branch'][len('refs/heads/' + TASK_PREFIX):]:<30} {st:<10} {p}")
-    done = git("for-each-ref", "--sort=-creatordate", "--format=%(refname:short)  %(creatordate:short)",
-               f"refs/tags/{DONE_PREFIX}").splitlines()
+    for slug, p in open_:
+        st = get_status((p / LIVE / "contract.md").read_text(encoding=UTF8))
+        print(f"  {slug:<30} {st:<10} {p}")
+    legacy = [w for w in worktrees() if w.get("branch", "").startswith(f"refs/heads/{TASK_PREFIX}")
+              and not is_task_checkout(Path(w["worktree"]))]
+    if legacy:
+        print(f"Other task/ worktrees, not run by this harness version ({len(legacy)}):")
+        for w in legacy:
+            print(f"  {w['branch'][len('refs/heads/'):]:<30} {w['worktree']}")
+    done = git("for-each-ref", "--sort=-committerdate", "--format=%(refname)\t%(committerdate:short)",
+               REF_DONE).splitlines()
     print(f"Done ({len(done)}){', newest first' if done else ''}:")
     for line in done[: args.limit]:
-        print(f"  {line}")
+        ref, _, when = line.partition("\t")
+        slug = ref[len(REF_DONE):]
+        on = TASK_PREFIX + slug if ref_sha(f"refs/heads/{TASK_PREFIX}{slug}") else "branch renamed or removed"
+        print(f"  {slug:<30} {when}  ({on})")
     if len(done) > args.limit:
-        print(f"  … {len(done) - args.limit} more (git tag -l '{DONE_PREFIX}*')")
+        print(f"  … {len(done) - args.limit} more")
+
+
+def _slug_arg(args) -> str:
+    slug = slugify(args.name) if args.name else (slugify(args.task) if args.task else task_slug())
+    if not slug:
+        die("pass the task name")
+    return slug
+
+
+def cmd_show(args):
+    slug = _slug_arg(args)
+    wt = task_worktree(slug)
+    if wt and (wt / LIVE / "contract.md").exists():
+        sys.stdout.write((wt / LIVE / "contract.md").read_text(encoding=UTF8))
+        return
+    if not ref_sha(REF_TASKS + slug):
+        die(f"no task {slug!r}")
+    sys.stdout.write(state_file(REF_TASKS + slug, "contract.md"))
+
+
+def cmd_log(args):
+    slug = _slug_arg(args)
+    if not ref_sha(REF_TASKS + slug):
+        die(f"no task {slug!r}")
+    out = git("log", "--first-parent", "--format=%ad%x09%p%x09%s", "--date=format:%Y-%m-%d %H:%M",
+              REF_TASKS + slug)
+    print("When              Code      Event")
+    for line in out.splitlines():
+        when, parents, subj = line.split("	", 2)
+        if subj.startswith("harness:"):
+            snap = parents.split()[1] if len(parents.split()) > 1 else "?"
+            print(f"{when}  {snap[:8]:<8}  {subj.removeprefix('harness: ')}")
+
+
+def require_human(action: str):
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        die(f"`{action}` must be run by a human in an interactive terminal, not by an agent.", 3)
+
+
+def confirm(word: str, prompt: str):
+    if input(f"{prompt} Type {word} to continue: ").strip() != word:
+        die("cancelled")
+
+
+def cmd_forget(args):
+    require_human("forget")
+    slug = _slug_arg(args)
+    if task_worktree(slug):
+        die(f"task {slug!r} is in progress; finish it first")
+    refs = [r for r in (REF_TASKS + slug, REF_DONE + slug) if ref_sha(r)]
+    if not refs:
+        die(f"no task {slug!r}")
+    confirm("FORGET", f"This deletes the contract and audit trail of task {slug!r} (its branch is kept).")
+    for r in refs:
+        git("update-ref", "-d", r)
+    print(f"✓ Forgot task '{slug}'")
+
+
+# --- uninstall -----------------------------------------------------------------
+LEGACY_MARKER = "<!-- light-harness rules -->"
+LEGACY_ENV_EXAMPLE = "# Copy to .env and fill in. Never commit .env.\n# EXAMPLE_API_KEY=\n"
+LEGACY_GITIGNORE_OWN = {".harness/junit.xml", ".tasks/", "/.tasks/"}
+LEGACY_PERMISSIONS = {
+    "deny": ["Bash(script:*)", "Bash(git commit --amend:*)", "Bash(git rebase:*)", "Bash(git reset:*)",
+             "Bash(git push --force:*)", "Bash(git filter-branch:*)", "Bash(git checkout:*)",
+             "Bash(git switch:*)", "Bash(git merge:*)", "Bash(git worktree:*)", "Bash(git branch -d:*)",
+             "Bash(git branch -D:*)", "Bash(git branch --delete:*)", "Bash(git tag -d:*)",
+             "Bash(git tag --delete:*)", "Bash(git update-ref:*)", "Bash(rm -rf:*)", "Read(.env)",
+             "Read(.env.*)"],
+    "ask": ["Bash(curl:*)", "Bash(wget:*)", "Bash(ssh:*)", "Bash(scp:*)", "Bash(psql:*)",
+            "Bash(mysql:*)", "Bash(git push:*)"],
+    "allow": ["Bash(python3 -m pytest:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
+              "Bash(git add:*)", "Bash(git commit -m:*)"],
+}
+
+
+def legacy_cleanup(root: Path, dry: bool) -> list[str]:
+    """Undo what Light Harness 1.x's installer put into the work repo. Only the harness's own
+    content is removed; anything else in a shared file (CLAUDE.md, settings.json, .gitignore) stays.
+    Changes are left uncommitted for review."""
+    done = []
+
+    def rm(p: Path, why: str):
+        done.append(f"delete   {p.relative_to(root).as_posix()}{why}")
+        if not dry:
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
+
+    c = root / "contract.md"
+    if c.is_file() and "<!-- harness:plan -->" in (t := c.read_text(encoding=UTF8, errors="replace")):
+        if get_status(t) in ("Draft",):
+            rm(c, "")
+        else:
+            done.append(f"keep     contract.md (status {get_status(t)}: an unfinished in-place task; "
+                        "delete it yourself when you no longer need it)")
+    h = root / "scripts" / "harness.py"
+    if h.is_file() and "Light harness: stage gates" in h.read_text(encoding=UTF8, errors="replace"):
+        rm(h, "")
+        if not dry and not any((root / "scripts").iterdir()):
+            (root / "scripts").rmdir()
+    hd = root / ".harness"
+    if hd.is_dir():
+        own = {"config.json", "redgate.json", "baseline.json", "junit.xml"}
+        names = {p.name for p in hd.iterdir()}
+        if names <= own:
+            rm(hd, "/")
+        else:
+            for n in sorted(names & own):
+                rm(hd / n, "")
+            done.append(f"keep     .harness/ (also holds: {', '.join(sorted(names - own))})")
+    env = root / ".env.example"
+    env_removed = False
+    if env.is_file() and env.read_text(encoding=UTF8, errors="replace").replace("\r\n", "\n") == LEGACY_ENV_EXAMPLE:
+        rm(env, "")
+        env_removed = True
+
+    cm = root / "CLAUDE.md"
+    if cm.is_file():
+        t = cm.read_text(encoding=UTF8, errors="surrogateescape")
+        i = t.find(LEGACY_MARKER)
+        if i >= 0:
+            rest = t[:i].rstrip()
+            done.append("edit     CLAUDE.md (removed the Light Harness rules block from "
+                        f"'{LEGACY_MARKER}' to the end of the file; check the diff)")
+            if not dry:
+                if rest:
+                    cm.write_text(rest + "\n", encoding=UTF8, errors="surrogateescape")
+                else:
+                    cm.unlink()
+
+    sp = root / ".claude" / "settings.json"
+    if sp.is_file():
+        try:
+            s = json.loads(sp.read_text(encoding=UTF8))
+        except json.JSONDecodeError:
+            s = None
+        perms = s.get("permissions") if isinstance(s, dict) else None
+        if isinstance(perms, dict):
+            removed = 0
+            for key in ("deny", "ask", "allow"):
+                cur = perms.get(key)
+                if not isinstance(cur, list):
+                    continue
+                keep = [r for r in cur if r not in LEGACY_PERMISSIONS.get(key, []) and "scripts/harness.py" not in r]
+                removed += len(cur) - len(keep)
+                if keep:
+                    perms[key] = keep
+                else:
+                    perms.pop(key)
+            if removed:
+                if not perms:
+                    s.pop("permissions")
+                done.append(f"delete   .claude/settings.json (it held only {removed} Light Harness permission rules)" if not s
+                            else f"edit     .claude/settings.json (removed {removed} Light Harness permission rules)")
+                if not dry:
+                    if s:
+                        sp.write_text(json.dumps(s, indent=2) + "\n", encoding=UTF8)
+                    else:
+                        sp.unlink()
+                        if not any(sp.parent.iterdir()):
+                            sp.parent.rmdir()
+
+    gi = root / ".gitignore"
+    if gi.is_file():
+        lines = gi.read_text(encoding=UTF8).splitlines()
+        own = set(LEGACY_GITIGNORE_OWN) | ({"!.env.example"} if env_removed else set())
+        if any(w.get("branch", "").startswith(f"refs/heads/{TASK_PREFIX}") for w in worktrees(cwd=root)[1:]):
+            own -= {".tasks/", "/.tasks/"}  # a 1.x task folder is still there; keep it out of git status
+        keep = [l for l in lines if l.strip() not in own]
+        if keep != lines:
+            done.append(f"edit     .gitignore (removed {', '.join(sorted(own & {l.strip() for l in lines}))})")
+            if not dry:
+                if any(l.strip() for l in keep):
+                    gi.write_text("\n".join(keep) + "\n", encoding=UTF8)
+                else:
+                    gi.unlink()
+    tags = git("tag", "-l", "done/*", cwd=root).split()
+    if tags:
+        done.append(f"keep     {len(tags)} tag(s) from 1.x ({', '.join(tags[:5])}{', …' if len(tags) > 5 else ''}): "
+                    "delete them with `git tag -d <tag>` once you no longer need them")
+    return done
+
+
+def cmd_uninstall(args):
+    if not args.dry_run:
+        require_human("uninstall")
+    main_wt = main_checkout()
+    if not same_path(ROOT, main_wt):
+        die(f"run uninstall from the main checkout ({main_wt})")
+    busy = tasks_in_progress()
+    if busy and not args.force:
+        die("tasks still in progress: " + ", ".join(f"{s} ({p})" for s, p in busy) +
+            ". Finish them (`finish-task`) first, or re-run with --force to drop their folders "
+            "(their branches and committed work are kept).")
+    dirty = [s for s, p in busy if git("status", "--porcelain", cwd=p).strip()]
+    if dirty:
+        die(f"these unfinished tasks have uncommitted changes, which --force would lose: {', '.join(dirty)}. "
+            "Commit or discard them first.")
+    refs = git("for-each-ref", "--format=%(refname)", "refs/light-harness/").split()
+    orphans = []
+    for r in refs:
+        if r.startswith(REF_DONE):
+            sha = ref_sha(r)
+            if not git("for-each-ref", "--contains", sha, "--count=1", "refs/heads/", "refs/tags/").strip():
+                orphans.append(r[len(REF_DONE):])
+    if orphans and not args.force:
+        die("these finished tasks' work isn't on any branch or tag any more, so uninstalling would lose "
+            f"it: {', '.join(orphans)}. Recover it (`git branch <name> refs/light-harness/done/<task>`) "
+            "or re-run with --force.")
+    plan = [f"remove   unfinished task folder {p} (branch {TASK_PREFIX}{s} is kept)" for s, p in busy]
+    if refs:
+        plan.append(f"delete   {len(refs)} ref(s) under refs/light-harness/ (task contracts and audit trails)")
+    sd = common_dir() / STATE
+    if sd.exists():
+        plan.append(f"delete   {sd}")
+    ex = exclude_file()
+    if ex.exists() and EXCLUDE_BEGIN in ex.read_text(encoding=UTF8):
+        plan.append("edit     .git/info/exclude (remove the light-harness block)")
+    td = ROOT / DEFAULT_CONFIG["worktree_dir"]
+    if td.is_dir() and all(any(same_path(c, p) for _, p in busy) for c in td.iterdir()):
+        plan.append(f"delete   {DEFAULT_CONFIG['worktree_dir']}/")
+    legacy = legacy_cleanup(ROOT, dry=True)
+    legacy += [f"keep     {w['worktree']} (a Light Harness 1.x task on {w['branch'][len('refs/heads/'):]}; "
+               "it carries its own copy of the 1.x harness. Finish it with that copy, then merge or delete it)"
+               for w in worktrees()[1:] if w.get("branch", "").startswith(f"refs/heads/{TASK_PREFIX}")
+               and not is_task_checkout(Path(w["worktree"]))]
+    if not plan and not legacy:
+        print("✓ Nothing to remove: Light Harness has left nothing in this repo.")
+        return
+    print("Light Harness uninstall" + (" (dry run, nothing changed)" if args.dry_run else "") + ":")
+    for line in plan + legacy:
+        print(f"  {line}")
+    if args.dry_run:
+        return
+    confirm("UNINSTALL", "\nContracts and audit trails are deleted for good (`light-harness show <task>` "
+                         "prints one if you want to keep it).")
+    for _, p in busy:
+        git("worktree", "remove", "--force", str(p))
+    for r in refs:
+        git("update-ref", "-d", r)
+    if sd.exists():
+        shutil.rmtree(sd)
+    strip_excludes()
+    if td.is_dir() and not any(td.iterdir()):
+        td.rmdir()
+    legacy_cleanup(ROOT, dry=False)
+    print("✓ Light Harness removed." + (" Review and commit the file changes above (`git status`)."
+                                         if any(not l.startswith("keep") for l in legacy) else ""))
 
 
 # --- commands -----------------------------------------------------------------
-def cmd_init(args):
-    ensure_repo()
-    if not CONTRACT.exists():
-        die("contract.md template missing; copy it from the harness template")
-    t = contract()
-    if args.name and "<task name>" in t:
-        CONTRACT.write_text(t.replace("<task name>", args.name, 1), encoding=UTF8)
-    print(f"✓ Harness ready. Status: {get_status()}. Next: /task-init")
-
-
 def cmd_status(args):
+    if not CONTRACT.exists():
+        open_ = tasks_in_progress()
+        print(f"Checkout:  {ROOT} (main checkout, no task here)")
+        print("Tasks:     " + (", ".join(f"{s} ({get_status((p / LIVE / 'contract.md').read_text(encoding=UTF8))})"
+                                         for s, p in open_) or "none in progress"))
+        print("Next:      " + ("pass --task <name>" if open_ else "/light-harness:task-init <name>"))
+        return
     text = contract()
     st = get_status(text)
     ok, msg, _ = approval_state(text)
@@ -790,15 +1237,15 @@ def cmd_status(args):
            "Plan": "human approval, then /task-implement" if not ok else "/task-implement",
            "Build": "finish build and `verify`, then /task-review",
            "Review": "reviewer records verdict", "Rework": "/task-implement (fix review issues)",
-           "Done": "finish-task (keeps the work as a done/ tag), or promote it"}[st]
+           "Done": "commit the reviewed work, then finish-task (keeps it on its branch)"}[st]
     slug = task_slug()
     base = task_base_row()
-    print(f"Task:      {slug + ' (worktree, branch task/' + slug + ')' if slug else 'main checkout'}")
+    print(f"Task:      {slug} (folder {ROOT}, branch {TASK_PREFIX}{slug})")
     if base:
-        print(f"Base:      {base[1][:8]} {base[2].removeprefix('harness: ')}")
+        print(f"Base:      {snap_of(base[1])[:8]} {base[2].removeprefix('harness: ')}")
     print(f"Status:    {st}\nPlan hash: {plan_hash(text)}\nApproval:  {'✓ ' if ok else '✗ '}{msg}\n"
           f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nACs:       {', '.join(acs(text)) or 'none'}\n"
-          f"Next:      {nxt}")
+          f"Contract:  {CONTRACT}\nNext:      {nxt}")
 
 
 def cmd_check(args):
@@ -837,11 +1284,6 @@ def cmd_set_status(args):
     print(f"✓ Status: {cur} → {target}")
 
 
-def require_human(action: str):
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        die(f"`{action}` must be run by a human in an interactive terminal, not by an agent.", 3)
-
-
 def cmd_approve(args):
     require_human("approve")
     text = contract()
@@ -859,7 +1301,7 @@ def cmd_approve(args):
     set_block("approval", f"**Approved by:** {args.name}  \n**When:** {now()}  \n**Plan hash:** `{h}`\n\n"
                           f"_Editing §1–§8 after this point invalidates the approval._")
     write_status("Plan", f"approved by {args.name}")
-    commit(f"harness: plan-approved by {args.name} [plan:{h}]")
+    record(f"harness: plan-approved by {args.name} [plan:{h}]")
     print(f"✓ Plan approved by {args.name}. Next: /task-implement")
 
 
@@ -870,7 +1312,7 @@ def cmd_unlock_tests(args):
         die(f"nothing to unlock: {msg}")
     note = block("redgate").rstrip()
     set_block("redgate", note + f"\n\n**Tests unlocked** by {args.name} at {now()}: {args.reason}")
-    commit(f"harness: tests-unlocked by {args.name}: {args.reason}")
+    record(f"harness: tests-unlocked by {args.name}: {args.reason}")
     print("✓ Tests unlocked. The test-author may revise tests; the red gate must be passed again.")
 
 
@@ -886,7 +1328,7 @@ def cmd_redgate(args):
         die("red gate already passed for this plan. A human must run `unlock-tests` to redo it.")
     tests = test_files(cfg)
     if not tests:
-        die("no test files found (see test_globs in .harness/config.json)")
+        die(f"no test files found (see test_globs in {LIVE}/config.json)")
     base = task_base_row()
     mine = task_test_files(cfg, base)
     if not mine:
@@ -916,10 +1358,8 @@ def cmd_redgate(args):
         die("these new tests already pass against the stubs (they may be vacuous):\n  " + "\n  ".join(passing) +
             "\nFix them, or re-run with --allow-passing \"<reason>\" (recorded in the contract).")
     meta = {"tests": sorted(results), "existing": sorted(existing), "passing_at_red": passing,
-            "allow_passing": args.allow_passing, "base": base[1] if base else None,
+            "allow_passing": args.allow_passing, "base": snap_of(base[1]) if base else None,
             "plan_hash": plan_hash(text), "when": now()}
-    (ROOT / ".harness").mkdir(exist_ok=True)
-    (ROOT / REDGATE_FILE).write_text(json.dumps(meta, indent=2), encoding=UTF8)
     new_count = len(results) - len(existing)
     lines = [f"**Passed** {now()} — {new_count if results else '?'} new tests, all failing against stubs.",
              f"- Test files locked: {', '.join(tests)}",
@@ -933,7 +1373,7 @@ def cmd_redgate(args):
     if passing:
         lines.append(f"- ⚠ Allowed passing at red gate ({args.allow_passing}): {', '.join(passing)}")
     set_block("redgate", "\n".join(lines))
-    commit(f"harness: red-gate [plan:{plan_hash(text)}]")
+    record(f"harness: red-gate [plan:{plan_hash(text)}]", {"redgate.json": json.dumps(meta, indent=2) + "\n"})
     print("✓ Red gate passed; tests are locked. Implement until green, then run `verify`.")
 
 
@@ -968,6 +1408,7 @@ def cmd_verdict(args):
     if illegal:
         die("issues table invalid:\n  - " + "\n  - ".join(illegal))
 
+    extra = None
     if args.result == "pass":
         problems = []
         if blocking:
@@ -981,7 +1422,7 @@ def cmd_verdict(args):
         if not verify():
             die("PASS refused: verification fails on the current tree")
         # Everything passing now is the baseline for the next task built on this one
-        write_baseline(f"verdict pass ({task_slug() or ROOT.name})")
+        extra = {"baseline.json": baseline_json(f"verdict pass ({task_slug()})")[0]}
     elif not unresolved:
         die("FAIL needs at least one unresolved issue in §11.2 so the implementer knows what to fix")
 
@@ -993,19 +1434,20 @@ def cmd_verdict(args):
             + (f"; open Low: {', '.join(open_low)}" if open_low and args.result == "pass" else ""))
     set_block("verdict", body)
     write_status(new, f"verdict {args.result} by {args.by}")
-    commit(f"harness: verdict {args.result} by {args.by}")
+    record(f"harness: verdict {args.result} by {args.by}", extra)
     print(f"✓ Verdict {args.result.upper()} → Status {new}"
-          + ("" if new == "Done" else ". Next: /task-implement to fix the issues, then /task-review."))
+          + (". Next: commit the reviewed work on the task branch, then `finish-task`." if new == "Done"
+             else ". Next: /task-implement to fix the issues, then /task-review."))
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="light-harness", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     task_opt = argparse.ArgumentParser(add_help=False)
     task_opt.add_argument("--task", metavar="NAME", help="act on this task's folder (run from the main checkout)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     _add = sub.add_parser
     sub.add_parser = lambda *a, **k: _add(*a, parents=[task_opt], **k)
-    s = sub.add_parser("init", help="initialise git + contract"); s.add_argument("--name"); s.set_defaults(f=cmd_init)
     s = sub.add_parser("status", help="show stage, gates and next step"); s.set_defaults(f=cmd_status)
     s = sub.add_parser("check", help="check the contract against a gate")
     s.add_argument("stage", choices=["init", "plan"]); s.set_defaults(f=cmd_check)
@@ -1024,19 +1466,36 @@ def main():
     s.set_defaults(f=cmd_verdict)
     s = sub.add_parser("start-task", help="start a task in its own worktree and branch (run in the main checkout)")
     s.add_argument("name"); s.add_argument("--from", dest="from_ref", metavar="REF",
-                                           help="build on this ref, e.g. done/<earlier-task> (default: HEAD)")
+                                           help="build on a finished task (its name or done/<name>), a branch or a commit")
     s.set_defaults(f=cmd_start_task)
-    s = sub.add_parser("finish-task", help="tag a Done task as done/<name>, then remove its worktree and branch")
-    s.add_argument("name", nargs="?"); s.set_defaults(f=cmd_finish_task)
+    s = sub.add_parser("finish-task", help="finish a Done task: remove its folder, keep its work on its branch")
+    s.add_argument("name", nargs="?")
+    s.add_argument("--branch", metavar="NAME", help="rename the task branch, e.g. feature/invoice-dedupe")
+    s.set_defaults(f=cmd_finish_task)
     s = sub.add_parser("tasks", help="list tasks in progress and finished")
     s.add_argument("--limit", type=int, default=20); s.set_defaults(f=cmd_tasks)
+    s = sub.add_parser("show", help="print a task's contract (in progress or finished)")
+    s.add_argument("name", nargs="?"); s.set_defaults(f=cmd_show)
+    s = sub.add_parser("log", help="print a task's audit trail")
+    s.add_argument("name", nargs="?"); s.set_defaults(f=cmd_log)
+    s = sub.add_parser("forget", help="HUMAN ONLY: delete a finished task's contract and audit trail")
+    s.add_argument("name"); s.set_defaults(f=cmd_forget)
+    s = sub.add_parser("uninstall", help="HUMAN ONLY: remove every trace of Light Harness from this repo "
+                                         "(including files 1.x copied into it)")
+    s.add_argument("--dry-run", action="store_true", help="only list what would be removed")
+    s.add_argument("--force", action="store_true", help="also drop unfinished task folders (their branches are "
+                                                       "kept), and finished tasks whose work is on no branch")
+    s.set_defaults(f=cmd_uninstall)
     s = sub.add_parser("version", help="print the harness version")
     s.set_defaults(f=lambda a: print(__version__))
     args = ap.parse_args()
-    if args.task and args.cmd not in ("start-task", "finish-task", "tasks"):
+    if args.cmd != "version" and not _toplevel(ROOT):
+        die(f"{ROOT} isn't inside a git repository. Light Harness runs tasks in git worktrees; "
+            "run `git init` and make a first commit, then retry.")
+    if args.task and args.cmd not in ("start-task", "finish-task", "tasks", "show", "log", "forget", "uninstall"):
         wt = task_worktree(slugify(args.task))
         if not wt:
-            die(f"no task {args.task!r} in progress (see `python3 scripts/harness.py tasks`)")
+            die(f"no task {args.task!r} in progress (see `light-harness tasks`)")
         set_root(wt)
     args.f(args)
 

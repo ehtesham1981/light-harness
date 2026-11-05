@@ -1,0 +1,2 @@
+*.sh text eol=lf
+plugins/light-harness/bin/* text eol=lf
