@@ -34,7 +34,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
 # on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
@@ -182,11 +182,15 @@ def filled(s: str) -> bool:
 # --- git ----------------------------------------------------------------------
 def git(*args: str, check: bool = True, cwd: Path | None = None, input: str | None = None,
         env: dict | None = None):
-    r = subprocess.run(["git", *args], cwd=cwd or ROOT, capture_output=True, encoding=UTF8,
-                       errors="replace", input=input, env=env)
+    # Bytes in and out: in text mode on Windows, Python turns "\n" written to stdin into "\r\n",
+    # and `git mktree` keeps that "\r" in file names. Output is decoded as before (UTF-8, CRLF -> LF).
+    r = subprocess.run(["git", *args], cwd=cwd or ROOT, capture_output=True,
+                       input=None if input is None else input.encode(UTF8), env=env)
+    out = r.stdout.decode(UTF8, "replace").replace("\r\n", "\n")
+    err = r.stderr.decode(UTF8, "replace").replace("\r\n", "\n")
     if check and r.returncode != 0:
-        die(f"git {' '.join(args)} failed: {r.stderr}")
-    return r.stdout
+        die(f"git {' '.join(args)} failed: {err}")
+    return out
 
 
 def ident(cwd: Path | None = None) -> list[str]:
@@ -313,6 +317,7 @@ def record(msg: str, extra: dict | None = None, slug: str | None = None) -> str:
         for e in git("ls-tree", "-z", prev).split("\0"):
             if e:
                 meta, _, name = e.partition("\t")
+                name = name.rstrip("\r\n")  # entries written by 1.4.0 on Windows end in "\r"
                 entries[name] = meta.split()[2]
     files = {"contract.md": CONTRACT.read_text(encoding=UTF8)}
     if CONFIG.exists():
