@@ -55,6 +55,12 @@ check '[ -f "$T/alpha/.light-harness/contract.md" ] && [ "$(git -C "$T/alpha" re
 check '[ "$(git rev-parse task/alpha)" = "$HEAD0" ] && [ -z "$(git -C "$T/alpha" status --porcelain)" ]' "start-task committed to the task branch or left it dirty"
 check 'git rev-parse -q --verify refs/light-harness/tasks/alpha >/dev/null && grep -q "light-harness" .git/info/exclude' "audit trail or local excludes missing"
 check 'CLAUDE_PROJECT_DIR="$M" sh "$PLUGIN/scripts/session.sh" | grep -q "Working Rules"' "session hook didn't add the rules in a harness repo"
+# A trail written by 1.4.0 on Windows: the task-start record's file names end in "\r". Later
+# records must still work and write clean names; the old entry stays in history.
+R=refs/light-harness/tasks/alpha; S0="$(git rev-parse $R)"
+CRT="$(git ls-tree "$S0" | sed 's/$/\r/' | git mktree)"
+git update-ref $R "$(git log -1 --format=%B "$S0" | git commit-tree "$CRT" $(git log -1 --format=%P "$S0" | sed 's/[^ ]*/-p &/g'))" "$S0"
+check '[ "$(git ls-tree --name-only -z $R | tr -cd "\r" | wc -c)" -ge 2 ]' "could not simulate a 1.4.0 Windows audit trail"
 nok $H start-task "alpha"                        # duplicate name
 nok $H status --task nosuch                      # unknown task
 check '! (cd "$T/alpha" && $H start-task beta >/dev/null 2>&1)' "start-task ran inside a task folder"
@@ -101,6 +107,7 @@ ok  $H set-status Plan $X
 nok $H approve --name Agent $X </dev/null
 nok $H set-status Build $X
 check 'human "$H approve --name \"Human Approver\" $X" APPROVE' "approve"
+check '[ -z "$(git ls-tree --name-only -z $R | tr -cd "\r")" ] && git ls-tree --name-only $R | grep -qx contract.md' "approve left \r file names in the audit trail"
 ok  $H set-status Build $X
 check '[ "$(hook "$M" "$(file_json Write "$M" "$A/src/x.py")")" = 0 ]' "guard blocked code in Build"
 check '[ "$(hook "$M" "$(file_json Write "$M" "$A/.light-harness/config.json")")" = 2 ]' "guard allowed config edit after approval"
