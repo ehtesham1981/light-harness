@@ -1,5 +1,5 @@
 {
-  "description": "Light Harness: puts the light-harness command on PATH, and guards the task stages. Inert in repos where Light Harness hasn't started a task.",
+  "description": "Light Harness: puts the light-harness command on PATH, guards the task stages, and records local telemetry events for task/agent KPIs. Inert in repos where Light Harness hasn't started a task.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,40 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/session.sh\""
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
           }
         ]
       }
