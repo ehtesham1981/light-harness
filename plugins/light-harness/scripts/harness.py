@@ -13,7 +13,8 @@ git, outside the working tree, so it never reaches a commit, a branch or a pull 
                                 the task's code as its second parent. Gates are recomputed from
                                 this history, not from a side file.
   * refs/light-harness/done/<name>   the reviewed work of a finished task (for --from)
-  * .git/light-harness/         repo defaults (the last task's config.json) and scratch files
+  * .git/light-harness/         repo defaults (the last task's config.json), scratch files and the
+                                telemetry event log (telemetry/events.jsonl; see telemetry.py)
 The task branch holds only the work itself: the agent's own commits of tests and code. A finished
 task keeps its branch for you to merge or open a PR from. `uninstall` removes everything above.
 
@@ -22,6 +23,7 @@ Run `light-harness --help` (or `python3 <plugin>/scripts/harness.py --help`) for
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as dt
 import fnmatch
 import hashlib
@@ -31,10 +33,15 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__version__ = "1.4.1"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import telemetry  # noqa: E402
+
+__version__ = "1.5.0"
+telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
 # on Windows that is cp1252, which can't encode ✓/✗/→ and misreads UTF-8 files.
@@ -100,6 +107,7 @@ def task_root_for(path: Path):
 
 
 ROOT = CONTRACT = CONFIG = JUNIT = None  # set just below
+TEL: dict = {}  # attributes of the running command's telemetry event (see main())
 set_root(_find_root())
 LAST_RESULTS: dict = {}  # test outcomes from the most recent run_tests()
 
@@ -153,6 +161,8 @@ def now() -> str:
 
 
 def die(msg: str, code: int = 1):
+    if str(msg).strip():
+        TEL.setdefault("reason", str(msg).strip().splitlines()[0][:200])
     print(f"✗ {msg}", file=sys.stderr)
     sys.exit(code)
 
@@ -272,6 +282,32 @@ def task_slug():
         return None
     b = git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
     return b[len(TASK_PREFIX):] if b.startswith(TASK_PREFIX) else None
+
+
+# --- telemetry (telemetry.py: local event log, opt-in engineer nickname, optional OTLP export) --
+def quiet_common():
+    """The git common dir, or None. Never dies: telemetry must not change a command's outcome."""
+    try:
+        out = git("rev-parse", "--git-common-dir", check=False).strip()
+    except (OSError, ValueError):
+        return None
+    if not out:
+        return None
+    p = Path(out)
+    return (p if p.is_absolute() else ROOT / p).resolve()
+
+
+def quiet_slug():
+    try:
+        return task_slug()
+    except (OSError, ValueError, SystemExit):
+        return None
+
+
+def emit(event: str, common=None, task=None, **attrs):
+    common = common or quiet_common()
+    if common:
+        telemetry.emit(common, event, cwd=common, task=task or quiet_slug(), **attrs)
 
 
 # --- the audit trail: refs/light-harness/tasks/<name> --------------------------
@@ -468,6 +504,8 @@ def write_status(new: str, note: str = ""):
     log = block("status-log").rstrip()
     entry = f"- {now()}: {old} → {new}" + (f" ({note})" if note else "")
     set_block("status-log", (log + "\n" if log else "") + entry)
+    if old != new:
+        emit("stage", **{"from": old, "to": new})
 
 
 def plan_hash(text: str | None = None) -> str:
@@ -746,6 +784,8 @@ def verify(write: bool = True) -> bool:
         info.append(f"Traceability: all {len(acs(text))} ACs referenced by this task's tests")
 
     passed = not fails
+    TEL.update(failures=len(fails), warnings=len(warns),
+               fail_kinds=dict(collections.Counter(f.split(":", 1)[0] for f in fails)))
     report = [f"**Result: {'PASS' if passed else 'FAIL'}** — {now()} (plan {plan_hash(text)})", ""]
     report += [f"- ✓ {i}" for i in info]
     report += [f"- ✗ {f}" for f in fails]
@@ -855,11 +895,13 @@ def cmd_start_task(args):
         die(f"branch {branch} already exists; pick another task name")
     if ref_sha(REF_TASKS + slug) or ref_sha(REF_DONE + slug):
         die(f"task {slug!r} already exists or is finished (see `light-harness tasks`); pick another name")
+    TEL.update(task=slug)  # only now: a refused name belongs to no task
 
     ref = args.from_ref or "HEAD"
     sha, from_slug = resolve_base(ref)
     if not sha:
         die(f"unknown ref {ref!r} (use a finished task's name, done/<task>, a branch or a commit)")
+    TEL.update(built_on=from_slug or None)
 
     # Starting config: the task it builds on, else the repo's last task, else the plugin template
     cfg_text = state_file(REF_TASKS + from_slug, "config.json") if from_slug else ""
@@ -900,6 +942,7 @@ def cmd_finish_task(args):
         slug = task_slug()
     if not slug:
         die("not in a task worktree; pass the task name: finish-task <name>")
+    TEL.update(task=slug)
     main_wt = main_checkout()
     branch = TASK_PREFIX + slug
     st = ref_sha(REF_TASKS + slug)
@@ -1031,7 +1074,8 @@ def cmd_forget(args):
     confirm("FORGET", f"This deletes the contract and audit trail of task {slug!r} (its branch is kept).")
     for r in refs:
         git("update-ref", "-d", r)
-    print(f"✓ Forgot task '{slug}'")
+    n = telemetry.drop_task(common_dir(), slug)
+    print(f"✓ Forgot task '{slug}'" + (f" (and its {n} telemetry events)" if n else ""))
 
 
 # --- uninstall -----------------------------------------------------------------
@@ -1256,7 +1300,9 @@ def cmd_status(args):
 def cmd_check(args):
     text = contract()
     probs = check_plan(text) if args.stage == "plan" else check_init(text)
+    TEL.update(problems=len(probs))
     if probs:
+        TEL["reason"] = probs[0][:200]
         print("\n".join(f"✗ {p}" for p in probs))
         sys.exit(1)
     print(f"✓ contract satisfies the {args.stage} gate")
@@ -1283,7 +1329,9 @@ def cmd_set_status(args):
         probs = [] if verify() else ["verification failed (see report above)"]
     else:
         probs = []
+    TEL.update(**{"from": cur}, problems=len(probs))
     if probs:
+        TEL["reason"] = probs[0][:200]
         die("gate not satisfied:\n  - " + "\n  - ".join(probs))
     write_status(target, args.note or "")
     print(f"✓ Status: {cur} → {target}")
@@ -1318,6 +1366,7 @@ def cmd_unlock_tests(args):
     note = block("redgate").rstrip()
     set_block("redgate", note + f"\n\n**Tests unlocked** by {args.name} at {now()}: {args.reason}")
     record(f"harness: tests-unlocked by {args.name}: {args.reason}")
+    TEL.update(unlock_reason=args.reason[:200])  # the reason only, never the --name
     print("✓ Tests unlocked. The test-author may revise tests; the red gate must be passed again.")
 
 
@@ -1357,6 +1406,8 @@ def cmd_redgate(args):
     broken = sorted(n for n in existing if results[n] != "passed")
     skipped = sorted(n for n, o in results.items() if o == "skipped")
     errors = sorted(n for n, o in results.items() if o == "error")
+    TEL.update(new_tests=len(set(results) - existing), passing_new=len(passing), skipped=len(skipped),
+               errored=len(errors), existing_broken=len(broken))
     if skipped:
         die("skipped tests at red gate: " + ", ".join(skipped))
     if passing and not args.allow_passing:
@@ -1410,6 +1461,8 @@ def cmd_verdict(args):
                 blocking.append(f"{iid} ({r[1]}, {r[2]})")
         elif st.startswith("won") and sev in BLOCKING_SEVERITIES:
             blocking.append(f"{iid} ({r[1]}, {r[2]})")
+    TEL.update(issues=dict(collections.Counter(r[1].strip().lower() or "?" for r in rows)),
+               unresolved=len(unresolved), blocking=len(blocking))
     if illegal:
         die("issues table invalid:\n  - " + "\n  - ".join(illegal))
 
@@ -1443,6 +1496,94 @@ def cmd_verdict(args):
     print(f"✓ Verdict {args.result.upper()} → Status {new}"
           + (". Next: commit the reviewed work on the task branch, then `finish-task`." if new == "Done"
              else ". Next: /task-implement to fix the issues, then /task-review."))
+
+
+def cmd_metrics(args):
+    common = common_dir()
+    trails = {}
+    for ref in git("for-each-ref", "--format=%(refname)", REF_TASKS).split():
+        slug = ref[len(REF_TASKS):]
+        rows = git("log", "--first-parent", "--reverse", "--format=%ct%x09%s", ref, check=False).splitlines()
+        trails[slug] = [(int(t), s) for t, _, s in (r.partition("\t") for r in rows)
+                        if t.isdigit() and s.startswith("harness:")]
+    finished = {r[len(REF_DONE):] for r in git("for-each-ref", "--format=%(refname)", REF_DONE).split()}
+    name = args.name or args.task
+    slug = slugify(name) if name else None
+    if slug and slug not in trails:
+        die(f"no task {slug!r} (see `light-harness tasks`)")
+    data = telemetry.kpis(trails, finished, telemetry.read_events(common))
+    if args.json:
+        print(json.dumps(data["tasks"][slug] if slug else data, indent=2, default=str))
+    else:
+        print(telemetry.render(data, slug))
+
+
+def cmd_telemetry(args):
+    cwd = main_checkout()
+    if args.action == "status":
+        common = common_dir()
+        on = telemetry.enabled(cwd)
+        log = telemetry.log_path(common)
+        nick, scope = telemetry.engineer(cwd), telemetry.engineer_scope(cwd)
+        url = telemetry.otlp_endpoint(cwd)
+        n = len(log.read_text(encoding=UTF8).splitlines()) if log.is_file() else 0
+        print(f"Telemetry: {'on' if on else 'off (LIGHT_HARNESS_TELEMETRY or git config lightharness.telemetry)'}\n"
+              f"Event log: {log} ({n} events; local, inside .git, never committed or pushed)\n"
+              f"Export:    {url or 'none (set LIGHT_HARNESS_OTLP_ENDPOINT to send events to an OTLP collector)'}\n"
+              f"Engineer:  " + (f"opted in as {nick!r} ({scope})" if nick else
+                                "not opted in: events carry no engineer identity"))
+        return
+    require_human(f"telemetry {args.action}")
+    if args.action == "opt-in":
+        if not args.nickname:
+            die("pick the name your events carry: telemetry opt-in --as <nickname>")
+        err = telemetry.set_engineer(cwd, args.nickname.strip(), args.repo)
+        if err:
+            die(err)
+        real = git("config", "user.name", check=False, cwd=cwd).strip()
+        print(f"✓ Opted in as {args.nickname.strip()!r} for {'this repo' if args.repo else 'all your repos'}. "
+              "Your harness events now carry this nickname and nothing else about you.")
+        if real and real.casefold() == args.nickname.strip().casefold():
+            print("  Note: this is your git user name. Pick a nickname instead if you'd rather stay pseudonymous.")
+        print("  Opt out at any time with `telemetry opt-out`" + (" --repo" if args.repo else "") + ".")
+    else:
+        err = telemetry.set_engineer(cwd, None, args.repo)
+        if err:
+            die(err)
+        print(f"✓ Opted out ({'this repo' if args.repo else 'all your repos'}). New events carry no engineer identity.")
+        if telemetry.engineer(cwd):
+            print(f"  Still opted in as {telemetry.engineer(cwd)!r} through {telemetry.engineer_scope(cwd)}; "
+                  "run opt-out " + ("without --repo" if args.repo else "with --repo") + " too.")
+
+
+# Commands whose outcome is a telemetry event: gates, stage moves and task lifecycle
+TRACKED = {"check", "set-status", "approve", "unlock-tests", "redgate", "verify", "verdict",
+           "start-task", "finish-task", "telemetry"}
+HUMAN_ONLY = {"approve", "unlock-tests", "telemetry"}
+
+
+def run_tracked(args):
+    """Run a command and record its outcome (ok or refused, why, how long) as a `command` event."""
+    common, slug, t0, code = quiet_common(), quiet_slug(), time.monotonic(), 0
+    try:
+        args.f(args)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        raise
+    except BaseException:
+        code = 1
+        raise
+    finally:
+        if args.cmd != "telemetry" or args.action != "status":
+            target = {"set-status": "status", "check": "stage", "verdict": "result",
+                      "telemetry": "action"}.get(args.cmd)
+            attrs = {k: v for k, v in TEL.items() if k != "task"}
+            attrs.update(ok=code == 0, exit=code, ms=int((time.monotonic() - t0) * 1000))
+            if code == 0:
+                attrs.pop("reason", None)
+            emit("command", common, TEL.get("task") or slug, command=args.cmd,
+                 target=getattr(args, target) if target else None,
+                 actor="human" if args.cmd in HUMAN_ONLY else None, **attrs)
 
 
 def main():
@@ -1491,18 +1632,32 @@ def main():
     s.add_argument("--force", action="store_true", help="also drop unfinished task folders (their branches are "
                                                        "kept), and finished tasks whose work is on no branch")
     s.set_defaults(f=cmd_uninstall)
+    s = sub.add_parser("metrics", help="KPIs for tasks, agents and opted-in engineers")
+    s.add_argument("name", nargs="?", help="one task (default: the repo summary and every task)")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.set_defaults(f=cmd_metrics)
+    s = sub.add_parser("telemetry", help="telemetry status; engineer opt-in/opt-out (HUMAN ONLY)")
+    s.add_argument("action", choices=["status", "opt-in", "opt-out"])
+    s.add_argument("--as", dest="nickname", metavar="NICKNAME",
+                   help="opt-in: the pseudonym your events carry (any nickname you like)")
+    s.add_argument("--repo", action="store_true", help="this repo only (default: all your repos)")
+    s.set_defaults(f=cmd_telemetry)
     s = sub.add_parser("version", help="print the harness version")
     s.set_defaults(f=lambda a: print(__version__))
     args = ap.parse_args()
     if args.cmd != "version" and not _toplevel(ROOT):
         die(f"{ROOT} isn't inside a git repository. Light Harness runs tasks in git worktrees; "
             "run `git init` and make a first commit, then retry.")
-    if args.task and args.cmd not in ("start-task", "finish-task", "tasks", "show", "log", "forget", "uninstall"):
+    if args.task and args.cmd not in ("start-task", "finish-task", "tasks", "show", "log", "forget", "uninstall",
+                                      "metrics", "telemetry"):
         wt = task_worktree(slugify(args.task))
         if not wt:
             die(f"no task {args.task!r} in progress (see `light-harness tasks`)")
         set_root(wt)
-    args.f(args)
+    if args.cmd in TRACKED:
+        run_tracked(args)
+    else:
+        args.f(args)
 
 
 if __name__ == "__main__":

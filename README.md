@@ -83,6 +83,7 @@ For another task, run `/light-harness:task-init <name>` in a new session in the 
 | Audit trail | `refs/light-harness/tasks/<name>`: one commit per gate event (task start, approval, baseline, red gate, unlocks, verdicts), each holding the contract and gate records plus a snapshot of the code at that moment | no (a hidden ref, not pushed by `git push`) |
 | Finished work | the task's branch (`task/<name>`, or the name you pass to `finish-task --branch`), plus `refs/light-harness/done/<name>` so later tasks can build on it | the branch is the deliverable |
 | Repo defaults | `.git/light-harness/config.json`, the last finished task's stack config, used to start the next task | no |
+| Telemetry events | `.git/light-harness/telemetry/events.jsonl`, one JSON line per event (see [Telemetry and KPIs](#telemetry-and-kpis)) | no (inside `.git`) |
 | Rules for the agent | the plugin's `rules.md`, added to the session's context by a SessionStart hook | no |
 | Permission rules | enforced by the plugin's PreToolUse hook | no |
 
@@ -95,6 +96,8 @@ light-harness <command> --task <name>                       # any stage command,
 light-harness finish-task <name> [--branch feature/x]       # Done task → remove folder, keep the reviewed work on its branch
 light-harness show <name>                                   # print a task's contract
 light-harness log <name>                                    # print a task's audit trail
+light-harness metrics [<name>] [--json]                     # KPIs for tasks, agents and opted-in engineers
+light-harness telemetry status                              # where events go, and whether you're opted in
 ```
 
 - **Your main branch is never touched.** The harness commits nothing to it, and nothing is merged automatically. You merge or open a PR from a finished task's branch when you're ready.
@@ -111,6 +114,8 @@ approve --task <name> --name "Full Name"                        # approve the pl
 unlock-tests --task <name> --name "Full Name" --reason "..."    # let tests be revised after the red gate
 forget <name>                                                   # delete a finished task's contract and audit trail
 uninstall [--dry-run] [--force]                                 # remove every trace of Light Harness from this repo
+telemetry opt-in --as "<nickname>" [--repo]                     # attribute your harness events to a nickname you choose
+telemetry opt-out [--repo]                                      # stop attributing them
 ```
 
 ### Uninstall, and repos set up by 1.x
@@ -126,13 +131,48 @@ Light Harness 1.3 and earlier copied itself into the work repo: `contract.md`, `
 | Stage gates (`set-status`) | Skipping stages, building without approval, entering review with failing verification |
 | Plan hash | Changing requirements or the plan after approval. Any edit to contract §1–§8 voids the approval and red gate |
 | Git-anchored audit trail | Task start, approval, baseline, red gate, test unlocks and verdicts are commits on `refs/light-harness/tasks/<name>`, each with a code snapshot. Gates are recomputed from that history, not from a side file. The red gate's snapshot is what locked tests are compared against |
-| Guard hook (PreToolUse) | Code edits before Build or during Review, edits to locked tests, hand edits of the Status line and harness-owned contract blocks, edits to the harness's files and to agent permissions. Bash: human-only commands, faked terminals, branch switching, merges, rebases, resets, amends, branch/tag deletion, worktree changes, `rm -rf`, and tampering with the audit trail. Network commands and pushes ask first, and `.env` files are unreadable. It fails closed in a harness repo if Python is missing, and it's inert in other repos |
+| Guard hook (PreToolUse) | Code edits before Build or during Review, edits to locked tests, hand edits of the Status line and harness-owned contract blocks, edits to the harness's files and to agent permissions. Bash: human-only commands, faked terminals, branch switching, merges, rebases, resets, amends, branch/tag deletion, worktree changes, `rm -rf`, and tampering with the audit trail or the telemetry settings. Network commands and pushes ask first, and `.env` files are unreadable. It fails closed in a harness repo if Python is missing, and it's inert in other repos |
 | Red gate | New tests that pass before implementation, ACs not traced to this task's tests, skipped tests |
 | `verify` | Modified, deleted or added protected files; test-runtime sniffing; skip/xfail/only markers; changes outside approved scope; stack config changed after approval; changes to agent permissions. Warns on swallowed exceptions, coverage exclusions, mocks in implementation code, and comparisons against test literals |
 | `finish-task` | A branch that differs from the code the reviewer passed |
 | Reviewer + verdict gate | Subtle gaming (special-casing example values), unmet ACs and rules, missing risk mitigations, unjustified deviations |
 
 **Limits:** the agent has a shell, so the harness makes bypass costly and visible rather than impossible. For example, the agent could write git objects through a command the guard doesn't recognise. The defences are the guard, gates recomputed from git, and a reviewer that re-runs `verify` and reads the audit trail. For high-stakes tasks, run the review in a fresh session and glance at `light-harness log <name>`.
+
+## Telemetry and KPIs
+
+The harness records what happens to each task as local events. `light-harness metrics` turns them, together with the audit trail, into KPIs for the task, the agents that worked on it and, if they opt in, the engineers who drove it.
+
+**What's recorded, and where.** Each event is one JSON line in `.git/light-harness/telemetry/events.jsonl`. That file is inside `.git`, so it's never committed or pushed. `uninstall` deletes it, and `forget <task>` drops that task's events. These are the events:
+
+| Event | When | Main attributes |
+|---|---|---|
+| `command` | every gate and lifecycle command (`set-status`, `check`, `redgate`, `verify`, `verdict`, `approve`, `unlock-tests`, `start-task`, `finish-task`) | `ok`, `reason` (first line of a refusal), `ms`; plus test counts for the red gate, failure kinds for `verify`, issues by severity for a verdict, and the unlock reason |
+| `stage` | each status change | `from`, `to` |
+| `guard` | each guard hook block or ask | `decision`, `rule` (such as `locked-test`, `stage`, `git-surgery`, `network`), `tool`, `agent_type` |
+| `agent` | subagent start and stop (SubagentStart/SubagentStop hooks) | `phase`, `agent_type`, `agent_id` |
+| `session` | session start and end in a harness repo | `phase`, `source` / `reason` |
+
+Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (the Claude Code session id) and `actor` (`agent` or `human`). It never holds code, contract text, test output or file contents. Events without a task are attributed through their session.
+
+**KPIs** (`light-harness metrics`, or `metrics <task> --json`):
+- **Task:** lead time, time in each stage, review rounds, first-pass review yield, plan approvals, test unlocks. These come from the audit trail, so they cover tasks from before 1.5 too.
+- **Agent:** red-gate refusals, `verify` failures by kind, all gate refusals per gate, guard blocks by rule, and subagent runs and time per agent type.
+- **Engineer:** approval wait (from the plan being ready to it being approved), test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
+
+**Engineer identity is opt-in, under a nickname.** By default events carry no engineer at all. An engineer opts in by running `telemetry opt-in --as "<nickname>"` themselves, in their own terminal. Agents can't run it. From then on, their events carry that nickname and nothing else about them. The nickname can be anything they like, and it's stored in their own git config (`lightharness.engineer`), for all their repos, or for one repo with `--repo`. `telemetry opt-out` stops it. Telemetry never uses the git user name or email, or the name given to `approve`. The audit trail still records that name, because it's part of the approval itself.
+
+**Tokens and cost.** Turn on Claude Code's own telemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`) and send it to the same OpenTelemetry collector. Its events carry `session.id`, and so do the harness's, so token use and cost can be broken down by task and stage.
+
+**Settings** (the guard blocks agents from changing them):
+
+| Setting | Effect |
+|---|---|
+| `LIGHT_HARNESS_OTLP_ENDPOINT` or `git config lightharness.otlpEndpoint` | Also send each event as an OTLP/HTTP log record to this collector (e.g. `http://localhost:4318`). Best effort, with a 2 s timeout |
+| `LIGHT_HARNESS_OTLP_HEADERS` or `git config lightharness.otlpHeaders` | Extra headers for the collector, `key=value,key2=value2` |
+| `LIGHT_HARNESS_TELEMETRY=0` or `git config lightharness.telemetry false` | Record nothing |
+
+Telemetry never changes a gate's outcome. If an event can't be written or sent, the command carries on as if telemetry were off.
 
 ## Customise per task
 
@@ -146,13 +186,16 @@ plugins/light-harness/
   .claude-plugin/plugin.json
   skills/task-{init,plan,implement,review}/SKILL.md    stage commands
   agents/{explorer,test-author,reviewer}.md            subagents
-  hooks/hooks.json         SessionStart → scripts/session.sh, PreToolUse → scripts/guard.sh
+  hooks/hooks.json         SessionStart → scripts/session.sh, PreToolUse → scripts/guard.sh,
+                           Session/Subagent start and stop → scripts/telemetry.sh
   bin/light-harness        the command line (a Python launcher for scripts/harness.py)
   rules.md                 working rules added to sessions in repos with tasks
   scripts/harness.py       gate engine
   scripts/hook_guard.py    guard rules (file edits, reads, Bash)
   scripts/guard.sh         cross-platform Python launcher for the guard
-  scripts/session.sh       puts bin/ on PATH and adds rules.md to the session
+  scripts/session.sh       puts bin/ on PATH, passes on the session id, adds rules.md to the session
+  scripts/telemetry.py     event log, opt-in engineer nickname, OTLP export, KPIs
+  scripts/telemetry_hook.py, telemetry.sh   session and subagent events (fail open)
   template/                contract and default stack config for new tasks
 tests/selftest.sh          end-to-end gate test (also run in CI)
 ```

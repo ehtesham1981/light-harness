@@ -65,3 +65,5 @@ jobs:
           test "$A" -eq 0 && test "$B" -eq 2
           test -z "$(git -C "$T/proj" status --porcelain)"
           test "$(git -C "$T/proj" rev-parse task/ci)" = "$(git -C "$T/proj" rev-parse HEAD)"
+          grep -q '"command":"start-task","ok":true' "$T/proj/.git/light-harness/telemetry/events.jsonl"
+          grep -q '"rule":"stage"' "$T/proj/.git/light-harness/telemetry/events.jsonl"
