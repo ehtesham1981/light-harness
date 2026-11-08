@@ -1,6 +1,6 @@
 {
   "name": "light-harness",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Lightweight gated harness for one-off development tasks: contract-driven init, explorer-led planning with human approval, red/green build with anti-gaming and anti-drift checks, and an independent review gate. Leaves nothing in the work repo.",
   "author": {
     "name": "Algomade Consulting"
