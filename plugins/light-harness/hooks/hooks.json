@@ -1,5 +1,5 @@
 {
-  "description": "Light Harness: puts the light-harness command on PATH, guards the task stages, and records local telemetry events for task/agent KPIs. Inert in repos where Light Harness hasn't started a task.",
+  "description": "Light Harness: puts the light-harness command on PATH, guards the task stages, and records local telemetry events for task/agent KPIs (including agent, human and idle time per task). Inert in repos where Light Harness hasn't started a task.",
   "hooks": {
     "SessionStart": [
       {
@@ -10,7 +10,8 @@
           },
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
           }
         ]
       }
@@ -30,7 +31,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
           }
         ]
       }
@@ -40,7 +42,74 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\" tool",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.sh\" tool",
+            "async": true
           }
         ]
       }

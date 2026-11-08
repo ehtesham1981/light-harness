@@ -35,6 +35,7 @@ import os
 import re
 import statistics
 import subprocess
+import sys
 import time
 import urllib.request
 from collections import Counter, defaultdict
@@ -95,6 +96,20 @@ def set_engineer(cwd, nick, repo_only: bool):
     return ""
 
 
+GAP_CAP_DEFAULT = 7200  # 2 h
+
+
+def gap_cap(cwd) -> float:
+    """How much of a gap between turns counts as human response time (the rest is idle), in
+    seconds: LIGHT_HARNESS_HUMAN_GAP_CAP or `git config lightharness.humanGapCap`, e.g. 2h, 90m,
+    600s or 600. Default 2 h."""
+    raw = (os.environ.get("LIGHT_HARNESS_HUMAN_GAP_CAP") or git_config("lightharness.humanGapCap", str(cwd))).strip()
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([smh]?)", raw.lower())
+    if not m:
+        return GAP_CAP_DEFAULT
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
 def otlp_endpoint(cwd) -> str:
     url = (os.environ.get("LIGHT_HARNESS_OTLP_ENDPOINT") or git_config("lightharness.otlpEndpoint", str(cwd))).strip()
     if not re.match(r"https?://", url):
@@ -108,8 +123,15 @@ def log_path(common: Path) -> Path:
 
 
 # --- emitting -----------------------------------------------------------------------------------
-def emit(common, event: str, *, cwd, task=None, session=None, actor=None, **attrs):
-    """Append one event (and export it if an OTLP endpoint is set). Never raises, never exits."""
+def iso(epoch: float) -> str:
+    """UTC ISO-8601 with milliseconds, the format of every event's `ts`."""
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def emit(common, event: str, *, cwd, task=None, session=None, actor=None, background=False, **attrs):
+    """Append one event (and export it if an OTLP endpoint is set). Never raises, never exits.
+    background=True (hooks) hands the export to a detached process, so a slow collector never
+    delays a turn."""
     try:
         common = Path(common)
         if not (common / STATE).is_dir() or not enabled(cwd):
@@ -128,7 +150,7 @@ def emit(common, event: str, *, cwd, task=None, session=None, actor=None, **attr
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "ab") as f:  # one write per line: appends from parallel sessions don't interleave
             f.write((json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n").encode(UTF8))
-        _export(rec, cwd)
+        _export(rec, cwd, background)
     except (Exception, SystemExit):
         pass
 
@@ -157,7 +179,7 @@ def otlp_body(rec: dict) -> dict:
                         "body": {"stringValue": rec["event"]}, "attributes": attrs}]}]}]}
 
 
-def _export(rec: dict, cwd):
+def _export(rec: dict, cwd, background: bool = False):
     url = otlp_endpoint(cwd)
     if not url:
         return
@@ -167,7 +189,26 @@ def _export(rec: dict, cwd):
         k, _, v = pair.partition("=")
         if k.strip():
             headers[k.strip()] = v.strip()
-    req = urllib.request.Request(url, data=json.dumps(otlp_body(rec)).encode(UTF8), headers=headers, method="POST")
+    job = {"url": url, "headers": headers, "body": otlp_body(rec)}
+    if background:
+        try:  # headers may hold a token: they go through stdin, never the command line
+            kw = {"stdin": subprocess.PIPE, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            if os.name == "nt":
+                kw["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            else:
+                kw["start_new_session"] = True
+            p = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--post"], **kw)
+            p.stdin.write(json.dumps(job).encode(UTF8))
+            p.stdin.close()
+            return
+        except Exception:
+            pass  # fall back to sending it here
+    _post(job)
+
+
+def _post(job: dict):
+    req = urllib.request.Request(job["url"], data=json.dumps(job["body"]).encode(UTF8),
+                                 headers=job["headers"], method="POST")
     try:
         urllib.request.urlopen(req, timeout=2).close()
     except Exception:
@@ -228,20 +269,123 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs else None
 
 
+def _merge(iv) -> list:
+    """Sorted, non-overlapping [start, end] intervals covering the same time as `iv`."""
+    out = []
+    for a, b in sorted((float(a), float(b)) for a, b in iv if b > a):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def _minus(a, b) -> list:
+    """Merged intervals `a` with the time in merged intervals `b` taken out."""
+    out = []
+    for s, e in a:
+        cur = s
+        for bs, be in b:
+            if be <= cur or bs >= e:
+                continue
+            if bs > cur:
+                out.append([cur, bs])
+            cur = max(cur, be)
+            if cur >= e:
+                break
+        if cur < e:
+            out.append([cur, e])
+    return out
+
+
+def _clip(iv, lo, hi) -> list:
+    return [[max(a, lo), min(b, hi)] for a, b in iv if min(b, hi) > max(a, lo)]
+
+
+def _span(iv) -> float:
+    return sum(b - a for a, b in iv)
+
+
+def _interval(e, start_key, len_key):
+    t0 = _epoch(e.get(start_key)) if e.get(start_key) else None
+    try:
+        n = float(e.get(len_key))
+    except (TypeError, ValueError):
+        return None
+    return (t0, t0 + max(0.0, n)) if t0 is not None else None
+
+
+def time_split(ev: list[dict], start: float, end: float, stage_spans: list) -> dict | None:
+    """Split the task's wall-clock time [start, end] into agent, human and idle time, from its
+    `turn` and `wait` events (1.6.0 on). None if it has no turn events.
+      agent  main-agent turns, minus the time inside them spent waiting on a human
+      human  in-turn waits (permission dialogs, AskUserQuestion) and the gaps between a turn
+             ending and the next prompt in the same session, up to the human-gap cap
+      idle   the rest: no session working on the task, or the part of a gap over the cap
+    Sessions running at once are merged, agent time taking precedence over human time, so the
+    three always add up to the total."""
+    turns = [e for e in ev if e["event"] == "turn"]
+    if not turns or start is None or end <= start:
+        return None
+    by_session, waits_by_session, gaps = defaultdict(list), defaultdict(list), []
+    for e in turns:
+        if e.get("phase") == "stop":
+            iv = _interval(e, "turn_start", "turn_s")
+            if iv:
+                by_session[e.get("session")].append(iv)
+        elif e.get("phase") == "start":
+            iv = _interval(e, "gap_start", "response_s")
+            if iv:
+                gaps.append(iv)
+    for e in ev:
+        if e["event"] == "wait":
+            iv = _interval(e, "wait_start", "wait_s")
+            if iv:
+                waits_by_session[e.get("session")].append(iv)
+    agent = _merge([iv for s in by_session for iv in _minus(_merge(by_session[s]), _merge(waits_by_session[s]))])
+    waits = _minus(_merge([iv for s in waits_by_session for iv in waits_by_session[s]]), agent)
+    responses = _minus(_minus(_merge(gaps), agent), waits)
+    agent, waits, responses = (_clip(x, start, end) for x in (agent, waits, responses))
+
+    def split(lo, hi):
+        a, w, r = (_span(_clip(x, lo, hi)) for x in (agent, waits, responses))
+        return {"agent_s": a, "human_s": w + r, "idle_s": max(0.0, (hi - lo) - a - w - r)}
+
+    total = end - start
+    out = split(start, end)
+    out.update(total_s=total, response_s=_span(responses), in_turn_wait_s=_span(waits),
+               agent_pct=out["agent_s"] / total if total else None,
+               turns=sum(e.get("phase") == "start" for e in turns),
+               interrupted=sum(e.get("phase") == "stop" and bool(e.get("interrupted")) for e in turns))
+    by_stage = defaultdict(lambda: {"agent_s": 0.0, "human_s": 0.0, "idle_s": 0.0})
+    for name, lo, hi in stage_spans:
+        lo, hi = max(lo, start), min(hi, end)
+        if hi > lo:
+            for k, v in split(lo, hi).items():
+                by_stage[name][k] += v
+    out["by_stage"] = dict(by_stage)
+    return out
+
+
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None) -> dict:
     """KPIs from the audit trails ({task: [(epoch, subject), ...]} oldest first, available for every
     task ever run here) and the event log (richer, from 1.5.0 on)."""
     now = now or time.time()
-    s2t = defaultdict(set)  # session -> tasks its harness commands acted on
+    s2t = defaultdict(list)  # session -> [(time, task)] of its events that name a task
     for e in events:
         if e.get("task") and e.get("session"):
-            s2t[e["session"]].add(e["task"])
+            s2t[e["session"]].append((e["_t"], e["task"]))
 
     def owner(e):
+        """The task an event belongs to: its own, else its session's (the task the session last
+        named before it, or the first it names if none came before)."""
         if e.get("task"):
             return e["task"]
-        ts = s2t.get(e.get("session"), ())
-        return next(iter(ts)) if len(ts) == 1 else None
+        tl = s2t.get(e.get("session"))
+        if not tl:
+            return None
+        before = [task for t, task in tl if t <= e["_t"]]
+        return before[-1] if before else tl[0][1]
 
     by_task = defaultdict(list)
     for e in events:
@@ -266,12 +410,16 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
                 fail_kinds.update(e.get("fail_kinds") or {})
         stages = [e for e in ev if e["event"] == "stage" and e.get("to")]
         in_stage = defaultdict(float)
+        spans = []  # (stage, from, to)
         if stages and start is not None:
-            in_stage["Draft"] += max(0.0, stages[0]["_t"] - start)
+            spans.append(("Draft", start, stages[0]["_t"]))
         for a, b in zip(stages, stages[1:]):
-            in_stage[a["to"]] += b["_t"] - a["_t"]
+            spans.append((a["to"], a["_t"], b["_t"]))
         if stages and stages[-1]["to"] != "Done":
-            in_stage[stages[-1]["to"]] += max(0.0, now - stages[-1]["_t"])
+            spans.append((stages[-1]["to"], stages[-1]["_t"], now))
+        for name, lo, hi in spans:
+            in_stage[name] += max(0.0, hi - lo)
+        split = time_split(ev, start, done_t or now, spans)
         waits, plan_t = [], None
         for e in cmds:
             if e.get("command") == "set-status" and e.get("target") == "Plan" and e.get("ok"):
@@ -287,7 +435,9 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             if e["event"] == "agent" and e.get("phase") == "stop":
                 a = agents[e.get("agent_type") or "main"]
                 a["runs"] += 1
-                if e.get("agent_id") in starts:
+                if isinstance(e.get("run_s"), (int, float)):
+                    a["seconds"] += e["run_s"]
+                elif e.get("agent_id") in starts:
                     a["seconds"] += e["_t"] - starts[e["agent_id"]]
         tasks[slug] = {
             "status": "finished" if slug in finished else ("done" if done_t else "in progress"),
@@ -304,6 +454,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             "gate_fails": sum(v["fail"] for v in gates.values()),
             "approval_wait_s": waits,
             "time_in_stage_s": dict(in_stage),
+            "time_split": split,
             "guard_blocks": dict(Counter(e.get("rule", "?") for e in guard if e.get("decision") == "block")),
             "guard_asks": sum(e.get("decision") == "ask" for e in guard),
             "subagents": {k: dict(v) for k, v in agents.items()},
@@ -314,12 +465,18 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         }
 
     engineers = defaultdict(lambda: {"tasks": set(), "sessions": set(), "approvals": 0, "unlocks": 0,
-                                     "prompts": 0, "approval_wait_s": []})
+                                     "prompts": 0, "approval_wait_s": [], "response_s": []})
+    responses = []  # every human response between turns (capped), for the summary
     for e in events:
+        resp = e.get("response_s") if e["event"] == "turn" and e.get("phase") == "start" else None
+        if isinstance(resp, (int, float)):
+            responses.append(resp)
         nick = e.get("engineer")
         if not nick:
             continue
         d = engineers[nick]
+        if isinstance(resp, (int, float)):
+            d["response_s"].append(resp)
         if owner(e):
             d["tasks"].add(owner(e))
         if e.get("session"):
@@ -335,9 +492,15 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             engineers[nick]["approval_wait_s"].append(w)
     eng_out = {n: {"tasks": len(d["tasks"]), "sessions": len(d["sessions"]), "approvals": d["approvals"],
                    "median_approval_wait_s": _median(d["approval_wait_s"]), "unlocks": d["unlocks"],
-                   "prompts": d["prompts"]} for n, d in sorted(engineers.items())}
+                   "prompts": d["prompts"], "median_response_s": _median(d["response_s"])}
+               for n, d in sorted(engineers.items())}
 
     vals = list(tasks.values())
+    splits = [t["time_split"] for t in vals if t["time_split"]]
+    split_tot = {k: sum(s[k] for s in splits) for k in ("total_s", "agent_s", "human_s", "idle_s")} if splits else None
+    if split_tot:
+        split_tot["agent_pct"] = split_tot["agent_s"] / split_tot["total_s"] if split_tot["total_s"] else None
+        split_tot["tasks"] = len(splits)
     reviewed = [t for t in vals if t["first_pass"] is not None]
     stage_tot, agent_tot, blocks_tot = defaultdict(float), defaultdict(lambda: {"runs": 0, "seconds": 0.0}), Counter()
     for t in vals:
@@ -354,6 +517,8 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         "first_pass_yield": _mean([1.0 if t["first_pass"] else 0.0 for t in reviewed]),
         "mean_review_rounds": _mean([t["review_rounds"] for t in reviewed]),
         "median_approval_wait_s": _median([w for w, _ in all_waits]),
+        "time_split": split_tot,
+        "median_response_s": _median(responses),
         "red_gate_fails_per_task": _mean([t["red_gate_fails"] for t in vals]),
         "verify_fails_per_task": _mean([t["verify_fails"] for t in vals]),
         "guard_blocks_per_task": _mean([sum(t["guard_blocks"].values()) for t in vals]),
@@ -393,6 +558,21 @@ def _num(x):
     return "-" if x is None else (f"{x:.1f}".rstrip("0").rstrip(".") if isinstance(x, float) else str(x))
 
 
+def _split_rows(x) -> list:
+    """The time-split rows of a task's detail view."""
+    if not x:
+        return [("Time split", "- (no turn data: recorded from 1.6.0 on)")]
+    rows = [("Time split", f"total {dur(x['total_s'])} = agent {dur(x['agent_s'])} ({_pct(x['agent_pct'])}) + "
+                           f"human {dur(x['human_s'])} + idle {dur(x['idle_s'])}"),
+            ("  Human time", f"responses between turns {dur(x['response_s'])} · waits inside turns "
+                             f"{dur(x['in_turn_wait_s'])}"),
+            ("  Turns", f"{x['turns']}" + (f" ({x['interrupted']} interrupted)" if x["interrupted"] else ""))]
+    if x["by_stage"]:
+        rows.append(("  By stage", " · ".join(f"{k} {dur(v['agent_s'])}/{dur(v['human_s'])}/{dur(v['idle_s'])}"
+                                               for k, v in x["by_stage"].items()) + "  (agent/human/idle)"))
+    return rows
+
+
 def render(data: dict, only: str | None = None) -> str:
     s, out = data["summary"], []
     if only:
@@ -408,6 +588,7 @@ def render(data: dict, only: str | None = None) -> str:
                 ("Guard blocks", ", ".join(f"{k} {v}" for k, v in t["guard_blocks"].items()) or "0"),
                 ("Failure kinds", ", ".join(f"{k} {v}" for k, v in t["fail_kinds"].items()) or "-"),
                 ("Time in stage", " · ".join(f"{k} {dur(v)}" for k, v in t["time_in_stage_s"].items()) or "-"),
+                *_split_rows(t["time_split"]),
                 ("Subagents", " · ".join(f"{k} {v['runs']}× {dur(v['seconds'])}" for k, v in t["subagents"].items()) or "-"),
                 ("Gates (ok/refused)", " · ".join(f"{k} {v['ok']}/{v['fail']}" for k, v in t["gates"].items()) or "-"),
                 ("Sessions / events", f"{t['sessions']} / {t['events']}")]
@@ -423,6 +604,11 @@ def render(data: dict, only: str | None = None) -> str:
                f"test unlocks {_num(s['unlocks_per_task'])}")
     if s["time_in_stage_s"]:
         out.append("  time in stage: " + " · ".join(f"{k} {dur(v)}" for k, v in s["time_in_stage_s"].items()))
+    if s["time_split"]:
+        x = s["time_split"]
+        out.append(f"  time split ({x['tasks']} tasks with turn data): agent {dur(x['agent_s'])} ({_pct(x['agent_pct'])}) · "
+                   f"human {dur(x['human_s'])} · idle {dur(x['idle_s'])} · median human response "
+                   f"{dur(s['median_response_s'])}")
     if s["subagents"]:
         out.append("  subagents: " + " · ".join(f"{k} {v['runs']}× avg {dur(v['seconds'] / v['runs'] if v['runs'] else 0)}"
                                                 for k, v in s["subagents"].items()))
@@ -438,13 +624,29 @@ def render(data: dict, only: str | None = None) -> str:
             out.append(f"{slug[:24]:<24} {t['status']:<12} {lead:>10} {t['review_rounds']:>8} {fp:>8} "
                        f"{dur(_median(t['approval_wait_s'])):>10} {t['red_gate_fails']:>9} {t['verify_fails']:>8} "
                        f"{sum(t['guard_blocks'].values()):>7} {t['unlocks']:>8}")
+        split = {k: t["time_split"] for k, t in data["tasks"].items() if t["time_split"]}
+        if split:
+            out.append("")
+            out.append(f"{'Time split':<24} {'Total':>10} {'Agent':>10} {'Human':>10} {'Idle':>10} {'Agent %':>8} "
+                       f"{'Responses':>10} {'Waits':>10}")
+            for slug, x in split.items():
+                out.append(f"{slug[:24]:<24} {dur(x['total_s']):>10} {dur(x['agent_s']):>10} {dur(x['human_s']):>10} "
+                           f"{dur(x['idle_s']):>10} {_pct(x['agent_pct']):>8} {dur(x['response_s']):>10} "
+                           f"{dur(x['in_turn_wait_s']):>10}")
     out.append("")
     if data["engineers"]:
         out.append("Engineers (opted in, by nickname):")
         for n, d in data["engineers"].items():
             out.append(f"  {n:<22} tasks {d['tasks']} · sessions {d['sessions']} · approvals {d['approvals']} · "
                        f"median approval wait {dur(d['median_approval_wait_s'])} · unlocks {d['unlocks']} · "
-                       f"prompts {d['prompts']}")
+                       f"prompts {d['prompts']} · median response {dur(d['median_response_s'])}")
     else:
         out.append("Engineers: none opted in (engineer KPIs are opt-in: `telemetry opt-in --as <nickname>`).")
     return "\n".join(out)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--post"]:  # the detached exporter (_export)
+    try:
+        _post(json.loads(sys.stdin.buffer.read().decode(UTF8)))
+    except Exception:
+        pass

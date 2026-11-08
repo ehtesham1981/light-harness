@@ -10,6 +10,6 @@ Install:
 
 Commands: `/light-harness:task-init`, `/light-harness:task-plan`, `/light-harness:task-implement`, `/light-harness:task-review`.
 Subagents: `light-harness:explorer`, `light-harness:test-author`, `light-harness:reviewer`.
-CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics` (engineer KPIs are opt-in, under a nickname).
+CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics`, including each task's time split into agent, human and idle time (engineer KPIs are opt-in, under a nickname).
 
 Full documentation: see the repository README.

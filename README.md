@@ -150,15 +150,25 @@ The harness records what happens to each task as local events. `light-harness me
 | `command` | every gate and lifecycle command (`set-status`, `check`, `redgate`, `verify`, `verdict`, `approve`, `unlock-tests`, `start-task`, `finish-task`) | `ok`, `reason` (first line of a refusal), `ms`; plus test counts for the red gate, failure kinds for `verify`, issues by severity for a verdict, and the unlock reason |
 | `stage` | each status change | `from`, `to` |
 | `guard` | each guard hook block or ask | `decision`, `rule` (such as `locked-test`, `stage`, `git-surgery`, `network`), `tool`, `agent_type` |
-| `agent` | subagent start and stop (SubagentStart/SubagentStop hooks) | `phase`, `agent_type`, `agent_id` |
+| `agent` | subagent start and stop (SubagentStart/SubagentStop hooks) | `phase`, `agent_type`, `agent_id`; the stop carries `run_s` |
 | `session` | session start and end in a harness repo | `phase`, `source` / `reason` |
+| `turn` | a main-agent turn starts (UserPromptSubmit) or ends (Stop/StopFailure, or the next prompt or session end after an interrupt) | `phase`, `stage`. Start: `gap_s` (time since the session's previous turn ended), `response_s` (that gap up to the human-gap cap), `capped`, `gap_start`. Stop: `turn_start`, `turn_s`, `wait_s` (time in the turn spent waiting on a human), `agent_s` (`turn_s` − `wait_s`), `interrupted` |
+| `wait` | the agent waited on a human inside a turn: a permission dialog (PermissionRequest until the tool starts) or an `AskUserQuestion` until it's answered | `kind` (`permission` or `question`), `tool`, `wait_start`, `wait_s` |
+
+Some gate events also carry durations already worked out, so an OTel dashboard can sum or average them directly: a successful `approve` has `wait_s` (from the plan being put up for approval), and a `verdict` has `review_round`, with `lead_time_s` and `first_pass` on the final pass.
 
 Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (the Claude Code session id) and `actor` (`agent` or `human`). It never holds code, contract text, test output or file contents. Events without a task are attributed through their session.
 
 **KPIs** (`light-harness metrics`, or `metrics <task> --json`):
 - **Task:** lead time, time in each stage, review rounds, first-pass review yield, plan approvals, test unlocks. These come from the audit trail, so they cover tasks from before 1.5 too.
+- **Time split** (from 1.6): each task's total time (its lead time, or its age while open) split three ways, overall and by stage:
+  - **Agent:** time the main agent spent working in turns, not counting waits on a human inside them. Subagents run inside turns, so they're already included.
+  - **Human:** time spent waiting on a human. That's the gaps between a turn ending and the next prompt in the same session (up to the human-gap cap, 2 hours by default), plus permission dialogs and `AskUserQuestion` answers inside turns.
+  - **Idle:** everything else, such as when no session was working on the task, or the part of a gap beyond the cap.
+
+  When several sessions work on one task at once, their time is merged, with agent time counted ahead of human time, so the three always add up to the total. `metrics` shows a time-split table, `metrics <task>` shows the breakdown by stage, and `--json` holds all of it. Tasks run before 1.6 have no turn data, so they show `-`.
 - **Agent:** red-gate refusals, `verify` failures by kind, all gate refusals per gate, guard blocks by rule, and subagent runs and time per agent type.
-- **Engineer:** approval wait (from the plan being ready to it being approved), test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
+- **Engineer:** approval wait (from the plan being ready to it being approved), median response time between turns, test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
 
 **Engineer identity is opt-in, under a nickname.** By default events carry no engineer at all. An engineer opts in by running `telemetry opt-in --as "<nickname>"` themselves, in their own terminal. Agents can't run it. From then on, their events carry that nickname and nothing else about them. The nickname can be anything they like, and it's stored in their own git config (`lightharness.engineer`), for all their repos, or for one repo with `--repo`. `telemetry opt-out` stops it. Telemetry never uses the git user name or email, or the name given to `approve`. The audit trail still records that name, because it's part of the approval itself.
 
@@ -168,8 +178,9 @@ Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (t
 
 | Setting | Effect |
 |---|---|
-| `LIGHT_HARNESS_OTLP_ENDPOINT` or `git config lightharness.otlpEndpoint` | Also send each event as an OTLP/HTTP log record to this collector (e.g. `http://localhost:4318`). Best effort, with a 2 s timeout |
+| `LIGHT_HARNESS_OTLP_ENDPOINT` or `git config lightharness.otlpEndpoint` | Also send each event as an OTLP/HTTP log record to this collector (e.g. `http://localhost:4318`). Best effort, with a 2 s timeout. Hook events are sent from a detached process, so a slow collector never delays a turn |
 | `LIGHT_HARNESS_OTLP_HEADERS` or `git config lightharness.otlpHeaders` | Extra headers for the collector, `key=value,key2=value2` |
+| `LIGHT_HARNESS_HUMAN_GAP_CAP` or `git config lightharness.humanGapCap` | How much of a gap between turns counts as human time (the rest is idle), e.g. `2h`, `90m`, `600s` or `600`. Default `2h` |
 | `LIGHT_HARNESS_TELEMETRY=0` or `git config lightharness.telemetry false` | Record nothing |
 
 Telemetry never changes a gate's outcome. If an event can't be written or sent, the command carries on as if telemetry were off.
@@ -187,7 +198,9 @@ plugins/light-harness/
   skills/task-{init,plan,implement,review}/SKILL.md    stage commands
   agents/{explorer,test-author,reviewer}.md            subagents
   hooks/hooks.json         SessionStart → scripts/session.sh, PreToolUse → scripts/guard.sh,
-                           Session/Subagent start and stop → scripts/telemetry.sh
+                           Session/Subagent start and stop, UserPromptSubmit, Stop,
+                           PermissionRequest, PostToolUse → scripts/telemetry.sh (async,
+                           except SessionEnd)
   bin/light-harness        the command line (a Python launcher for scripts/harness.py)
   rules.md                 working rules added to sessions in repos with tasks
   scripts/harness.py       gate engine
@@ -195,7 +208,7 @@ plugins/light-harness/
   scripts/guard.sh         cross-platform Python launcher for the guard
   scripts/session.sh       puts bin/ on PATH, passes on the session id, adds rules.md to the session
   scripts/telemetry.py     event log, opt-in engineer nickname, OTLP export, KPIs
-  scripts/telemetry_hook.py, telemetry.sh   session and subagent events (fail open)
+  scripts/telemetry_hook.py, telemetry.sh   session, subagent, turn and wait events (fail open)
   template/                contract and default stack config for new tasks
 tests/selftest.sh          end-to-end gate test (also run in CI)
 ```

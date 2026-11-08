@@ -40,7 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
@@ -1355,6 +1355,7 @@ def cmd_approve(args):
                           f"_Editing §1–§8 after this point invalidates the approval._")
     write_status("Plan", f"approved by {args.name}")
     record(f"harness: plan-approved by {args.name} [plan:{h}]")
+    TEL.update(wait_s=plan_wait())
     print(f"✓ Plan approved by {args.name}. Next: /task-implement")
 
 
@@ -1492,20 +1493,42 @@ def cmd_verdict(args):
             + (f"; open Low: {', '.join(open_low)}" if open_low and args.result == "pass" else ""))
     set_block("verdict", body)
     write_status(new, f"verdict {args.result} by {args.by}")
+    earlier = trail()
     record(f"harness: verdict {args.result} by {args.by}", extra)
+    rounds = sum(s.startswith("harness: verdict") for _, s in earlier)
+    TEL.update(review_round=rounds + 1)
+    if args.result == "pass":  # the task is done: its lead time and first-pass result, for OTel dashboards
+        start = next((t for t, s in earlier if s.startswith("harness: task-start")), earlier[0][0] if earlier else None)
+        TEL.update(lead_time_s=round(time.time() - start, 3) if start else None, first_pass=rounds == 0)
     print(f"✓ Verdict {args.result.upper()} → Status {new}"
           + (". Next: commit the reviewed work on the task branch, then `finish-task`." if new == "Done"
              else ". Next: /task-implement to fix the issues, then /task-review."))
+
+
+def trail(slug: str | None = None) -> list:
+    """A task's audit trail as [(epoch, subject)], oldest first (harness events only)."""
+    rows = git("log", "--first-parent", "--reverse", "--format=%ct%x09%s", state_ref(slug), check=False).splitlines()
+    return [(int(t), s) for t, _, s in (r.partition("\t") for r in rows) if t.isdigit() and s.startswith("harness:")]
+
+
+def plan_wait():
+    """Seconds since this task's plan was put up for approval (its last successful
+    `set-status Plan`), or None if the event log doesn't say."""
+    try:
+        slug = task_slug()
+        asked = [e["_t"] for e in telemetry.read_events(common_dir()) if e["event"] == "command"
+                 and e.get("command") == "set-status" and e.get("target") == "Plan" and e.get("ok")
+                 and e.get("task") == slug]
+    except (OSError, ValueError, SystemExit):
+        return None
+    return round(time.time() - asked[-1], 3) if asked else None
 
 
 def cmd_metrics(args):
     common = common_dir()
     trails = {}
     for ref in git("for-each-ref", "--format=%(refname)", REF_TASKS).split():
-        slug = ref[len(REF_TASKS):]
-        rows = git("log", "--first-parent", "--reverse", "--format=%ct%x09%s", ref, check=False).splitlines()
-        trails[slug] = [(int(t), s) for t, _, s in (r.partition("\t") for r in rows)
-                        if t.isdigit() and s.startswith("harness:")]
+        trails[ref[len(REF_TASKS):]] = trail(ref[len(REF_TASKS):])
     finished = {r[len(REF_DONE):] for r in git("for-each-ref", "--format=%(refname)", REF_DONE).split()}
     name = args.name or args.task
     slug = slugify(name) if name else None

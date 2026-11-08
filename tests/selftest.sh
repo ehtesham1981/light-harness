@@ -35,7 +35,9 @@ EOF
 evq() { "$PYBIN" -c 'import json,sys; E=[json.loads(l) for l in open(sys.argv[1],encoding="utf-8")]; sys.exit(0 if eval(sys.argv[2]) else 1)' "$EV" "$1"; }
 # hook_json <event> <cwd> <session>: a session/subagent hook payload; telhook runs the telemetry hook
 hook_json() { "$PYBIN" -c 'import json,sys; print(json.dumps({"hook_event_name":sys.argv[1],"cwd":sys.argv[2],"session_id":sys.argv[3],"agent_id":"a1","agent_type":"light-harness:reviewer","source":"startup"}))' "$@"; }
-telhook() { echo "$2" | CLAUDE_PROJECT_DIR="$1" sh "$PLUGIN/scripts/telemetry.sh"; }
+telhook() { echo "$2" | CLAUDE_PROJECT_DIR="$1" sh "$PLUGIN/scripts/telemetry.sh" ${3:-}; }
+# turn_json <event> <cwd> <session> [tool] [duration_ms]: a turn/permission/tool hook payload
+turn_json() { "$PYBIN" -c 'import json,sys; a=sys.argv; print(json.dumps({"hook_event_name":a[1],"cwd":a[2],"session_id":a[3],"prompt":"hi","tool_name":a[4] if len(a)>4 else None,"duration_ms":int(a[5]) if len(a)>5 else None,"tool_input":{"command":"x \"session_id\": \"spoof\""}}))' "$@"; }
 newrepo() { mkdir -p "$1"; git -C "$1" init -q; git -C "$1" config user.name "Self Test"; git -C "$1" config user.email t@t; }
 # the work repo's own state: tracked and untracked files (ignored ones too), branches' content
 fingerprint() { (cd "$1" && git status --porcelain --ignored --untracked-files=all | grep -v '^!! .tasks/'; git ls-files; cat .gitignore CLAUDE.md .claude/settings.json 2>/dev/null) | md5sum; }
@@ -88,7 +90,8 @@ for c in "light-harness approve --task alpha --name X" "python3 /p/scripts/harne
          "sed -i s/Draft/Build/ .tasks/alpha/.light-harness/contract.md" "echo x > .tasks/alpha/.light-harness/config.json" \
          "script -qc 'light-harness approve' /dev/null" "light-harness telemetry opt-in --as Bob" \
          "git config --global lightHarness.engineer Bob" "LIGHT_HARNESS_TELEMETRY=0 light-harness verify" \
-         "env -u LIGHT_HARNESS_SESSION_ID light-harness verify" "cat .git/light-harness/telemetry/events.jsonl"; do
+         "env -u LIGHT_HARNESS_SESSION_ID light-harness verify" "cat .git/light-harness/telemetry/events.jsonl" \
+         "LIGHT_HARNESS_HUMAN_GAP_CAP=1s light-harness verify" "git config lightharness.humanGapCap 1s"; do
   check '[ "$(hook "$M" "$(bash_json "$M" "$c")")" = 2 ]' "guard allowed: $c"
 done
 for c in "git diff src/checkout.py" "cat .tasks/alpha/.light-harness/contract.md" "git log --oneline"; do
@@ -191,6 +194,63 @@ check 'evq "all(e.get(\"session\")==\"sess-alpha\" for e in E if e[\"event\"] in
 check '! grep -qE "Human Approver|Self Test|t@t" "$EV"' "telemetry holds a real name or email"
 check '$H metrics alpha --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); assert (k[\"review_rounds\"],k[\"first_pass\"],k[\"approvals\"],len(k[\"approval_wait_s\"]))==(2,False,1,1),k; assert k[\"red_gate_fails\"]>=1 and k[\"verify_fails\"]>=4 and k[\"guard_blocks\"][\"locked-test\"]>=1,k; assert k[\"subagents\"][\"light-harness:reviewer\"][\"runs\"]==1,k; assert k[\"lead_time_s\"] is not None and k[\"time_in_stage_s\"][\"Build\"]>0,k"' "metrics for alpha are wrong"
 check '$H metrics | grep -q "Night Owl" && $H metrics | grep -qE "^alpha +done"' "metrics summary missing alpha or the opted-in engineer"
+check 'evq "any(e.get(\"command\")==\"verdict\" and e.get(\"target\")==\"pass\" and e.get(\"lead_time_s\",0)>0 and e.get(\"first_pass\") is False and e.get(\"review_round\")==2 for e in E)"' "final verdict lacks lead_time_s / first_pass / review_round"
+check 'evq "any(e.get(\"command\")==\"approve\" and e.get(\"ok\") and e.get(\"wait_s\",-1)>=0 for e in E)"' "approve lacks wait_s"
+check 'evq "any(e[\"event\"]==\"agent\" and e.get(\"phase\")==\"stop\" and e.get(\"run_s\",-1)>=0 for e in E)"' "subagent stop lacks run_s"
+
+echo "Telemetry: turns, human waits and the agent/human/idle split"
+SD="$M/.git/light-harness/telemetry/sessions"
+ok  test -z "$(telhook "$M" "$(turn_json PostToolUse "$M" sess-none Bash 5)" tool)"
+check '[ ! -e "$SD/sess-none.json" ] && ! grep -q sess-none "$EV"' "PostToolUse acted on a session with no open turn"
+check '[ -z "$(telhook "$M" "$(turn_json UserPromptSubmit "$M" sess-t)")" ] && [ -f "$SD/sess-t.json" ]' "UserPromptSubmit printed something or kept no state"
+telhook "$M" "$(turn_json PermissionRequest "$M" sess-t Bash)"; sleep 0.4
+telhook "$M" "$(turn_json PostToolUse "$M" sess-t Bash 100)" tool
+telhook "$M" "$(turn_json PostToolUse "$M" sess-t AskUserQuestion 250)" tool
+telhook "$M" "$(turn_json PostToolUse "$M" sess-t Read 5)" tool
+sleep 0.3; telhook "$M" "$(turn_json Stop "$M" sess-t)"
+check 'evq "[(e[\"kind\"],e[\"tool\"]) for e in E if e[\"event\"]==\"wait\" and e.get(\"session\")==\"sess-t\"]==[(\"permission\",\"Bash\"),(\"question\",\"AskUserQuestion\")]"' "waits not recorded as one permission and one question"
+check 'evq "[round(e[\"wait_s\"],2) for e in E if e[\"event\"]==\"wait\" and e.get(\"tool\")==\"AskUserQuestion\"]==[0.25] and all(0.2<e[\"wait_s\"]<5 for e in E if e[\"event\"]==\"wait\" and e.get(\"tool\")==\"Bash\")"' "wait durations wrong"
+check 'evq "[(e[\"interrupted\"], abs(e[\"turn_s\"]-e[\"wait_s\"]-e[\"agent_s\"])<0.01, e[\"wait_s\"]>0.4) for e in E if e[\"event\"]==\"turn\" and e[\"phase\"]==\"stop\" and e.get(\"session\")==\"sess-t\"]==[(False,True,True)]"' "turn stop wrong"
+sleep 0.3
+telhook "$M" "$(turn_json UserPromptSubmit "$M" sess-t)"
+telhook "$M" "$(turn_json PostToolUse "$M" sess-t Bash 5)" tool
+LIGHT_HARNESS_HUMAN_GAP_CAP=0 telhook "$M" "$(turn_json UserPromptSubmit "$M" sess-t)"   # Esc: no Stop came
+check 'evq "[(e.get(\"capped\"), e.get(\"response_s\")) for e in E if e[\"event\"]==\"turn\" and e[\"phase\"]==\"start\" and e.get(\"session\")==\"sess-t\"][::2]==[(None,None),(True,0)]" && evq "[e[\"gap_s\"]>0.25 and e[\"response_s\"]==e[\"gap_s\"] for e in E if e[\"event\"]==\"turn\" and e[\"phase\"]==\"start\" and e.get(\"session\")==\"sess-t\" and e.get(\"capped\") is False]==[True]"' "turn starts lack the human response gap, or the cap is ignored"
+check 'evq "[e[\"interrupted\"] for e in E if e[\"event\"]==\"turn\" and e[\"phase\"]==\"stop\" and e.get(\"session\")==\"sess-t\"]==[False,True]"' "interrupted turn not closed"
+# hooks run async, so they overlap: the session's state must survive it
+for i in 1 2 3 4 5 6 7 8; do telhook "$M" "$(turn_json PostToolUse "$M" sess-t Read 5)" tool & done; wait
+check '"$PYBIN" -c "import json,sys; json.load(open(sys.argv[1]))" "$SD/sess-t.json" && [ -z "$(ls "$SD" | grep -v "\.json$")" ]' "overlapping hooks broke the session state or left a lock"
+# a hook in the task worktree knows the task and its stage without git
+telhook "$M" "$(turn_json UserPromptSubmit "$T/alpha" sess-wt)"; telhook "$M" "$(turn_json SessionEnd "$T/alpha" sess-wt)"
+check 'evq "[(e.get(\"task\"),e.get(\"stage\")) for e in E if e[\"event\"]==\"turn\" and e.get(\"session\")==\"sess-wt\"][:1]==[(\"alpha\",\"Done\")]"' "turn in the task worktree lacks its task or stage"
+telhook "$M" "$(turn_json SessionEnd "$M" sess-t)"
+check '[ ! -e "$SD/sess-t.json" ] && evq "sum(e[\"event\"]==\"turn\" and e[\"phase\"]==\"stop\" and e.get(\"session\")==\"sess-t\" for e in E)==3"' "SessionEnd didn't close the open turn or remove the session state"
+check '! evq "any(\"spoof\" in json.dumps(e) for e in E)"' "a tool's input leaked into the events"
+# the split itself, on fixed timestamps: two sessions on one task, a wait, a capped gap, an interrupt
+check '"$PYBIN" - "$PLUGIN/scripts" <<EOF
+import sys; sys.path.insert(0, sys.argv[1]); import telemetry as T
+T0 = 1_800_000_000.0
+def ev(t, event, **a):
+    a.update(event=event, ts=T.iso(T0 + t), _t=T0 + t); return a
+I = lambda t: T.iso(T0 + t)
+E = [ev(10, "stage", task="a", session="s1", to="Initialize"), ev(0, "command", task="a", session="s1", command="x", ok=True),
+     ev(300, "wait", session="s1", kind="permission", wait_start=I(200), wait_s=60),
+     ev(400, "turn", session="s1", phase="stop", turn_start=I(100), turn_s=300),
+     ev(1000, "turn", session="s1", phase="start", gap_start=I(400), gap_s=600, response_s=600, engineer="Owl"),
+     ev(1100, "stage", task="a", session="s1", to="Plan"),
+     ev(1200, "turn", session="s1", phase="stop", turn_start=I(1000), turn_s=200),
+     ev(1500, "turn", session="s2", task="a", phase="stop", turn_start=I(1100), turn_s=400, interrupted=True),
+     ev(11200, "turn", session="s1", phase="start", gap_start=I(1200), gap_s=10000, response_s=7200, capped=True),
+     ev(11300, "turn", session="s1", phase="stop", turn_start=I(11200), turn_s=100)]
+E.sort(key=lambda e: e["_t"])
+k = T.kpis({"a": [(int(T0), "harness: task-start a"), (int(T0) + 12000, "harness: verdict pass by r")]}, set(), E, now=T0 + 20000)
+x = k["tasks"]["a"]["time_split"]
+assert (x["total_s"], x["agent_s"], x["in_turn_wait_s"], x["response_s"]) == (12000, 840, 60, 7500), x
+assert abs(x["agent_s"] + x["human_s"] + x["idle_s"] - x["total_s"]) < 1e-6 and x["interrupted"] == 1, x
+assert x["by_stage"]["Initialize"] == {"agent_s": 340, "human_s": 660, "idle_s": 90}, x["by_stage"]
+assert k["engineers"]["Owl"]["median_response_s"] == 600 and k["summary"]["time_split"]["agent_s"] == 840, k
+assert "Time split" in T.render(k) and "agent/human/idle" in T.render(k, "a")
+EOF' "agent/human/idle split is wrong"
 N="$(wc -l < "$EV")"
 LIGHT_HARNESS_TELEMETRY=0 $H check plan $X >/dev/null 2>&1
 check '[ "$(wc -l < "$EV")" = "$N" ]' "LIGHT_HARNESS_TELEMETRY=0 didn't turn telemetry off"
@@ -212,8 +272,14 @@ EOF
 OTLP_PID=$!
 for _ in $(seq 50); do [ -s "$W/otlp" ] && break; sleep 0.1; done
 LIGHT_HARNESS_OTLP_ENDPOINT="http://127.0.0.1:$(cat "$W/otlp")" LIGHT_HARNESS_OTLP_HEADERS="X-Team=qa" $H check plan $X >/dev/null 2>&1
+# hooks export from a detached process: the hook returns first, the record arrives a moment later
+LIGHT_HARNESS_OTLP_ENDPOINT="http://127.0.0.1:$(cat "$W/otlp")" LIGHT_HARNESS_OTLP_HEADERS="X-Team=qa" \
+  telhook "$M" "$(turn_json UserPromptSubmit "$M" sess-otlp)"
+for _ in $(seq 50); do grep -q "light_harness.turn" "$W/otlp.body" 2>/dev/null && break; sleep 0.1; done
 kill "$OTLP_PID" 2>/dev/null; wait "$OTLP_PID" 2>/dev/null
 check 'grep -q "^/v1/logs qa .*resourceLogs.*\"session.id\".*sess-alpha" "$W/otlp.body"' "events not exported over OTLP"
+check 'grep -q "^/v1/logs qa .*light_harness.turn.*sess-otlp" "$W/otlp.body"' "hook events not exported over OTLP in the background"
+telhook "$M" "$(turn_json SessionEnd "$M" sess-otlp)"
 check 'human "$H telemetry opt-out" "" && [ -z "$(git config --global lightharness.engineer)" ]' "opt-out"
 unset LIGHT_HARNESS_SESSION_ID
 
