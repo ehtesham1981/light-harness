@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use Light Harness, or adapt its design or code, please cite it as below."
+title: "Light Harness"
+abstract: >-
+  A lightweight, gated development harness for Claude Code: contract-driven task
+  initialisation, explorer-led planning with human approval, red/green build with
+  anti-gaming and anti-drift checks, and an independent review gate.
+type: software
+authors:
+  - given-names: Ehtesham
+    family-names: Ahmed
+    affiliation: Algomade Consulting
+version: 1.6.1
+date-released: 2026-11-09
+license: Apache-2.0
+repository-code: "https://github.com/ehtesham1981/light-harness"
+url: "https://github.com/ehtesham1981/light-harness"
+keywords:
+  - claude-code
+  - agentic-development
+  - harness
+  - tdd
+  - code-review
+  - quality-gates

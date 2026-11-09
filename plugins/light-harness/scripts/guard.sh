@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 # Light Harness hook launcher: finds a Python 3.9+ interpreter (python3, python or py -3, so it
 # works on macOS, Linux and Windows/Git Bash) and runs hook_guard.py with the hook's stdin.
 #

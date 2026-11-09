@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 """Light Harness telemetry: a local event log from which task, agent and engineer KPIs are derived.
 
 Where events go

@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 # SessionStart hook: puts `light-harness` on the Bash tool's PATH for this session (through
 # $CLAUDE_ENV_FILE, so nothing is written to the project), along with the session id
 # (LIGHT_HARNESS_SESSION_ID) so harness telemetry events can be joined with the session, and, in a

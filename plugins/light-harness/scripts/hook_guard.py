@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 """PreToolUse hook: keeps agents inside the harness stages, without any settings in the work repo.
 
 Active only in a repo where Light Harness has started a task (it has .git/light-harness/); inert

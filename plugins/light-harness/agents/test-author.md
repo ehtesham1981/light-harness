@@ -32,3 +32,5 @@ You are the **test-author**. Your tests define "done". The implementer may not c
 
 ## Return to the caller
 Test files written, number of tests per AC (a table AC → tests), any interface gaps or contract ambiguities you found, and the current run result.
+
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

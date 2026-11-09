@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 # Light Harness telemetry hook launcher (session, subagent, turn and permission events; see
 # telemetry_hook.py): finds Python 3.9+ and runs telemetry_hook.py with the hook's stdin. Unlike
 # the guard it fails OPEN: no Python, or a repo where Light Harness hasn't started a task, means

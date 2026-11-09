@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 """Light harness: stage gates for contract-driven agentic development.
 
 Stages: Draft -> Initialize -> Plan -> (human approval) -> Build -> Review -> Done | Rework
@@ -40,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
