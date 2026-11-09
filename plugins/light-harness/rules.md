@@ -42,3 +42,5 @@ Check where you are at any time with `light-harness status --task <name>`. If `l
 - `light-harness:explorer` — read-only investigation; writes §6–§8 of the contract.
 - `light-harness:test-author` — writes failing tests from §2–§4 and §8.4; never writes implementation.
 - `light-harness:reviewer` — independent review against ACs and the approved plan; logs issues in §11.
+
+<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

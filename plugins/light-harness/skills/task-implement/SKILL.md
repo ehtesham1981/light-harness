@@ -56,3 +56,5 @@ Fix every ✗ and re-run until it passes. For each ⚠, either fix it or explain
 Fill §10.2 Implementation Notes: what each step delivered, how to run the result, known limitations, and the explanation for any ⚠. Commit any remaining work on the task branch (the contract isn't part of the branch). Then report to the human: steps completed, test count, verification result, deviations, and "Next: `/light-harness:task-review`".
 
 Status stays **Build**. `/light-harness:task-review` moves it to Review.
+
+<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

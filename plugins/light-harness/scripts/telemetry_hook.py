@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 """Telemetry hook: records session, subagent, turn and human-wait events in the telemetry log (see
 telemetry.py), from which `metrics` splits each task's time into agent, human and idle time.
 

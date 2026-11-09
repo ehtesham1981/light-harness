@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE).
+# SPDX-License-Identifier: Apache-2.0
 # End-to-end self-test of the Light Harness plugin: runs toy tasks through every stage in temp
 # repos, including gaming attempts that must be caught, and checks that the harness leaves
 # nothing behind in the work repo (no files, settings, rules or commits on any branch).

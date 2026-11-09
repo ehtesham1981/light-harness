@@ -1,11 +1,11 @@
 {
   "name": "light-harness",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Lightweight gated harness for one-off development tasks: contract-driven init, explorer-led planning with human approval, red/green build with anti-gaming and anti-drift checks, and an independent review gate. Leaves nothing in the work repo.",
   "author": {
     "name": "Algomade Consulting"
   },
   "repository": "https://github.com/ehtesham1981/light-harness",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["harness", "tdd", "red-green", "code-review", "agentic", "workflow", "quality-gates"]
 }

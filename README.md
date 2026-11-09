@@ -222,5 +222,14 @@ tests/selftest.sh          end-to-end gate test (also run in CI)
 
 CI runs the self-test on Python 3.9 and 3.12, validates the manifests, and checks the hook launcher and a task start on Windows.
 
+## Citing Light Harness
+
+Light Harness was designed and created by Ehtesham, Algomade Consulting. If you use it, or adapt its design or code in your own harness, workflow or writing, please cite it. GitHub's **Cite this repository** button gives the citation in APA and BibTeX, from [CITATION.cff](CITATION.cff).
+
 ## License
-MIT
+
+Copyright 2026 Algomade Consulting. Licensed under the [Apache License, Version 2.0](LICENSE).
+
+If you redistribute Light Harness or a work derived from it, under any name, keep the [NOTICE](NOTICE) file with it and mark the files you changed (sections 4(b) and 4(d) of the License). Versions up to 1.6.0 were released under the MIT License, and 1.6.1 onward are under Apache 2.0.
+
+"Light Harness™" and "Algomade™" are trademarks of Algomade Consulting. The License grants no right to use them for your own product or fork (section 6), other than to say where the work comes from.
