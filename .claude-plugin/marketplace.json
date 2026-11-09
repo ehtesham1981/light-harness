@@ -1,7 +1,7 @@
 {
   "name": "light-harness",
   "owner": {
-    "name": "Algomade Consulting"
+    "name": "Ehtesham Ahmed"
   },
   "description": "Light Harness: a lightweight, gated development harness for Claude Code.",
   "plugins": [

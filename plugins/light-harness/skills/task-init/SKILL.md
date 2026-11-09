@@ -42,4 +42,4 @@ Light Harness runs from the plugin and keeps nothing in the work repo: no files,
 
 Don't explore the codebase, write a plan, or write any code in this stage.
 
-<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

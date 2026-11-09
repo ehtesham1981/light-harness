@@ -33,4 +33,4 @@ You are running **/light-harness:task-plan**.
 
 7. **Stop here.** Don't run the approve command, don't simulate approval, and don't start implementing. When the human says they've approved, confirm with `light-harness status --task <name>` and point them to `/light-harness:task-implement`.
 
-<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

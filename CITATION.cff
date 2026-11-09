@@ -8,8 +8,8 @@ abstract: >-
 type: software
 authors:
   - given-names: Ehtesham
+    family-names: Ahmed
     affiliation: Algomade Consulting
-  - name: Algomade Consulting
 version: 1.6.1
 date-released: 2026-11-09
 license: Apache-2.0

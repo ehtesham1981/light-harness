@@ -40,4 +40,4 @@ Write §11.3 (a few sentences: overall assessment, evidence, residual risk). The
 
 The harness will refuse a PASS that breaks these rules. Don't try to work around it.
 
-<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

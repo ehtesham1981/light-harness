@@ -57,4 +57,4 @@ Fill §10.2 Implementation Notes: what each step delivered, how to run the resul
 
 Status stays **Build**. `/light-harness:task-review` moves it to Review.
 
-<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

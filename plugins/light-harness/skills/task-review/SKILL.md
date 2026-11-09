@@ -32,4 +32,4 @@ You are running **/light-harness:task-review**.
      - Merging or pushing the branch is the human's call; don't do it unless they ask.
    - **FAIL** → status **Rework**. List the blocking issues (ID, severity, one line each). Next: `/light-harness:task-implement` to fix them, then `/light-harness:task-review` again.
 
-<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->

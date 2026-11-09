@@ -31,4 +31,4 @@ You are the **explorer**. You turn the requirements in `contract.md` §1–§6 i
 ## Return to the caller
 A short summary: key findings, top 3 risks, open questions that need a human answer, number of steps, and anything that should block approval. Don't paste the whole plan back; it's in the contract.
 
-<!-- Copyright 2026 Algomade Consulting. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Ehtesham Ahmed. Part of Light Harness (see NOTICE). SPDX-License-Identifier: Apache-2.0 -->
