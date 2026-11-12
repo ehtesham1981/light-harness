@@ -42,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
@@ -203,6 +203,19 @@ def git(*args: str, check: bool = True, cwd: Path | None = None, input: str | No
     if check and r.returncode != 0:
         die(f"git {' '.join(args)} failed: {err}")
     return out
+
+
+def hash_paths(paths: list[str], *flags: str) -> dict[str, str]:
+    """Blob id of each working-tree file, as `git hash-object [flags]` computes it.
+    Paths go on stdin: one argument each overflows Windows's 32,767-character command line in a
+    repo with a few hundred test files. --stdin-paths C-unquotes a line that starts with '"' and
+    splits on newlines, so those rare names (impossible on Windows) go one at a time."""
+    odd = {f for f in paths if f.startswith('"') or "\n" in f or "\r" in f}
+    plain = [f for f in paths if f not in odd]
+    ids = dict(zip(plain, git("hash-object", *flags, "--stdin-paths",
+                              input="".join(f + "\n" for f in plain)).split())) if plain else {}
+    ids.update((f, git("hash-object", *flags, "--", f).strip()) for f in odd)
+    return ids
 
 
 def ident(cwd: Path | None = None) -> list[str]:
@@ -477,8 +490,16 @@ def block_span(text: str, name: str):
                      text, re.S)
 
 
+PLAN_BLOCKS = {"goal", "rules", "examples", "acs", "risks", "impact", "scope", "steps", "test-strategy"}
+
+
 def block(name: str, text: str | None = None) -> str:
-    m = block_span(text if text is not None else contract(), name)
+    text = text if text is not None else contract()
+    if name in PLAN_BLOCKS:
+        # Read §1–§8 only from the plan block, the part the plan hash covers. Otherwise a copy of a
+        # marker placed elsewhere (say, above the plan) would be parsed instead of what was approved.
+        text = block("plan", text)
+    m = block_span(text, name)
     return m.group(1) if m else ""
 
 
@@ -549,7 +570,29 @@ def acs(text: str | None = None) -> dict[str, str]:
 
 
 def scope_globs(text: str | None = None) -> list[str]:
-    return [i.strip("` ").split(" ")[0] for i in list_items("scope", text)]
+    return [g for g in ((i.strip("` ").split() or [""])[0].strip("`") for i in list_items("scope", text)) if g]
+
+
+# A path in each kind of MACHINERY, to tell which kinds a §8.1 entry such as `.claude/*` covers
+# (fnmatch's * crosses "/", so that one covers them all).
+MACHINERY_KINDS = {".claude/settings.json": "settings.json", ".claude/settings.local.json": "settings.local.json",
+                   ".claude/agents/x/y.md": "every agent", ".claude/commands/x/y.md": "every command",
+                   ".claude/skills/x/y.md": "every skill"}
+
+
+def machinery_kinds(glob: str) -> list[str]:
+    return [kind for path, kind in MACHINERY_KINDS.items() if fnmatch.fnmatch(path, glob)]
+
+
+def approved_machinery(text: str | None = None) -> list[str]:
+    """§8.1 entries that name agent machinery under .claude/ explicitly. Only these let a task change
+    MACHINERY files: a broad entry such as `**` never does, so the approver sees exactly what's allowed."""
+    return [g for g in scope_globs(text)
+            if g.startswith(".claude/") and (matches(g, MACHINERY) or machinery_kinds(g))]
+
+
+def machinery_allowed(path: str, text: str | None = None) -> bool:
+    return matches(path, MACHINERY) and matches(path, approved_machinery(text))
 
 
 def deviation_paths(text: str | None = None) -> list[str]:
@@ -559,6 +602,8 @@ def deviation_paths(text: str | None = None) -> list[str]:
 
 # --- gate checks --------------------------------------------------------------
 def check_init(text: str) -> list[str]:
+    if not block_span(text, "plan"):
+        return ["contract.md is missing the harness:plan block that holds §1–§8"]
     p = []
     if not filled(re.sub(r"\*\*[^*]+\*\*", "", block("goal", text))):
         p.append("§1 Task is empty")
@@ -699,16 +744,15 @@ def verify(write: bool = True) -> bool:
         # Compare blob ids, not raw bytes: hash-object applies the same EOL/clean filters as
         # `git add`, so an unchanged file checked out with CRLF (core.autocrlf=true, the Git for
         # Windows default) still matches, while any real content change does not.
-        # Paths go on stdin: one argument each overflows Windows's 32,767-character command line
-        # in a repo with a few hundred test files. --stdin-paths C-unquotes a line that starts with
-        # '"' and splits on newlines, so those rare names (impossible on Windows) go one at a time.
-        odd = {f for f in present if f.startswith('"') or "\n" in f or "\r" in f}
-        plain = [f for f in present if f not in odd]
-        current = dict(zip(plain, git("hash-object", "--stdin-paths",
-                                      input="".join(f + "\n" for f in plain)).split())) if plain else {}
-        current.update((f, git("hash-object", "--", f).strip()) for f in odd)
-        for f in present:
-            if current.get(f) != rg_blobs[f]:
+        current = hash_paths(present)
+        # Without an index, hash-object can't apply git's "the committed blob already has CRLF, leave
+        # it alone" rule, so such a file hashes as its LF form. A file whose raw bytes are exactly the
+        # red-gate blob is unchanged, so re-check only the mismatches that hold a CR without filters.
+        differ = [f for f in present if current.get(f) != rg_blobs[f]]
+        crlf = [f for f in differ if b"\r" in (ROOT / f).read_bytes()]
+        raw = hash_paths(crlf, "--no-filters")
+        for f in differ:
+            if raw.get(f) != rg_blobs[f]:
                 fails.append(f"Anti-gaming: red-gate test/protected file modified: {f}")
         for f in all_files():
             if f in rg_tree:
@@ -772,7 +816,13 @@ def verify(write: bool = True) -> bool:
         devs = deviation_paths(text)
         for f in changed:
             if matches(f, MACHINERY):
-                fails.append(f"Anti-gaming: agent permissions or agents modified after approval: {f}")
+                # Only a .claude/ entry in the approved §8.1 sanctions this; §10.3 deviations never do
+                if ok and machinery_allowed(f, text):
+                    warns.append(f"Anti-gaming (review): {f} changes agent permissions or agents "
+                                 "(approved in §8.1; reviewer must assess)")
+                else:
+                    fails.append(f"Anti-gaming: agent permissions or agents modified after approval: {f} "
+                                 "(only a .claude/ path listed in the approved §8.1 may change)")
                 continue
             if matches(f, cfg["test_globs"] + cfg["protected_globs"]):
                 continue
@@ -1358,6 +1408,12 @@ def cmd_approve(args):
     print(f"Plan hash {h}\nScope: {', '.join(scope_globs(text))}\n"
           f"Steps: {len(list_items('steps', text))}  Risks: {len(table_rows('risks', text))}  "
           f"ACs: {', '.join(acs(text))}\n")
+    mach = approved_machinery(text)
+    if mach:
+        print("⚠ This plan lets the task change agent permissions or agents (Claude Code settings, agents,\n"
+              "  commands or skills). Approve only if that is the point of the task:\n"
+              + "".join(f"    {g}" + (f"  (covers {', '.join(machinery_kinds(g))})" if machinery_kinds(g) else "")
+                        + "\n" for g in mach))
     if input(f'Type APPROVE to approve this plan as "{args.name}": ').strip() != "APPROVE":
         die("not approved")
     set_block("approval", f"**Approved by:** {args.name}  \n**When:** {now()}  \n**Plan hash:** `{h}`\n\n"

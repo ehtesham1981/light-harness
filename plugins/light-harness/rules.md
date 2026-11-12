@@ -24,7 +24,7 @@ Check where you are at any time with `light-harness status --task <name>`. If `l
 3. **Never write implementation code before the plan is approved and status is Build.**
 4. **After the red gate, tests are read-only.** Make the code satisfy the tests. If you believe a test is wrong, stop, explain why in §10.3, and ask the human to run `light-harness unlock-tests`.
 5. **No gaming.** Do not special-case test inputs, detect the test runtime, skip or xfail tests, weaken assertions, swallow exceptions to get green, or edit test configuration. `verify` scans for these patterns, and the reviewer looks for the subtler ones.
-6. **Stay in scope.** Only change files listed in §8.1. If you must change anything else, record it in §10.3 (`- path — reason`) before changing it.
+6. **Stay in scope.** Only change files listed in §8.1. If you must change anything else, record it in §10.3 (`- path — reason`) before changing it. Agent permissions and agents under `.claude/` can change only when §8.1 lists them; a §10.3 entry doesn't allow it.
 7. **Editing §1–§8 after approval invalidates the approval.** If requirements or the plan must change, say so and go back through `/light-harness:task-plan`.
 8. **Stay on your task's branch.** Never switch branches, merge, rebase, amend, delete branches or tags, add or remove worktrees, or touch `refs/light-harness`. Tasks are started and finished only with `light-harness start-task` / `finish-task`.
 9. Never hardcode secrets; read them from env (`.env` files are unreadable to agents during a task). Ask before touching any production system, network endpoint, or real data, unless §1 Constraints explicitly allows it.

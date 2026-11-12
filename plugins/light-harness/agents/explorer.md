@@ -21,7 +21,7 @@ You are the **explorer**. You turn the requirements in `contract.md` §1–§6 i
 4. **Risks (§7.2).** Look at correctness, data loss or corruption, security and privacy, performance and scale, dependency availability, operational risk (who runs it, how often, what if it runs twice), and reversibility. For each risk give likelihood, impact, and a concrete mitigation that the plan or tests actually include.
 5. **Impact analysis (§7.3).** Name every file, system, dataset, job or person affected, the blast radius if it goes wrong, and how to roll back.
 6. **Plan (§8).**
-   - §8.1 **Files in scope**: exact paths or tight globs, including the test files the test-author will create (e.g. `tests/**`). Anything not listed will fail the anti-drift check, so be complete but minimal.
+   - §8.1 **Files in scope**: exact paths or tight globs, including the test files the test-author will create (e.g. `tests/**`). Anything not listed will fail the anti-drift check, so be complete but minimal. If the task itself must change Claude Code settings, agents, commands or skills, list those paths explicitly under `.claude/` (a broad glob never covers them) and say why in §7.3; the approver is warned about them.
    - §8.2 **Interfaces**: signatures, CLI usage, input/output schemas, error behaviour. These are what the implementer stubs before the red gate and what the tests target, so make them precise.
    - §8.3 **Steps**: small, ordered, each independently committable, each tagged with the AC(s) it delivers. Include the mitigations from §7.2.
    - §8.4 **Test strategy**: for every AC, the tests that prove it, which examples (EX-n) they use, and which BRs and edge cases they cover. Note what can't be automated and how it will be checked instead.
