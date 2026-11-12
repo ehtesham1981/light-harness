@@ -58,6 +58,8 @@ echo "Start a task: nothing is added to the repo"
 M="$W/proj"; newrepo "$M"; cd "$M"
 mkdir -p .claude src; echo '{"permissions":{"allow":["Bash(ls:*)"]}}' > .claude/settings.json
 printf 'node_modules/\n' > .gitignore; touch src/__init__.py
+mkdir samples; for i in $(seq 2000); do echo "$i" > "samples/fixture-data-record-$i.json"; done  # > Windows's command line
+echo q > '"odd.test.txt'; echo n > "$(printf 'new\nline.test.txt')"   # names --stdin-paths can't take
 git add -A; git commit -qm "existing project"
 BEFORE="$(fingerprint "$M")"; HEAD0="$(git rev-parse HEAD)"
 nok $H start-task ""                             # no usable name
@@ -160,6 +162,11 @@ printf 'def dedupe(v):\n    s=set(); return [x for x in v if not (x.casefold() i
 cp "$A/tests/test_inv.py" "$W/keep.py"; sed -i 's/== \[\]/is not None/' "$A/tests/test_inv.py"
 nok $H verify $X                                 # weakened locked test
 cp "$W/keep.py" "$A/tests/test_inv.py"
+for f in samples/fixture-data-record-1999.json '"odd.test.txt' "$(printf 'new\nline.test.txt')"; do
+  cp "$A/$f" "$W/keep.f"; echo changed > "$A/$f"; p="file modified: ${f%%$'\n'*}"  # grep a line at a time
+  check '! $H verify $X > "$W/v.out" 2>&1 && grep -qF "$p" "$W/v.out"' "verify missed a change to a locked file: $f"
+  cp "$W/keep.f" "$A/$f"
+done
 echo x > "$A/rogue.txt"; nok $H verify $X; rm "$A/rogue.txt"            # out-of-scope change
 cp "$A/.light-harness/config.json" "$W/cfg.json"; sed -i 's/"-q"/"-q", "-x"/' "$A/.light-harness/config.json"
 nok $H verify $X                                 # config changed after approval

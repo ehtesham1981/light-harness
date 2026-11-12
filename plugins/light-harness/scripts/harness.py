@@ -42,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
@@ -699,9 +699,16 @@ def verify(write: bool = True) -> bool:
         # Compare blob ids, not raw bytes: hash-object applies the same EOL/clean filters as
         # `git add`, so an unchanged file checked out with CRLF (core.autocrlf=true, the Git for
         # Windows default) still matches, while any real content change does not.
-        current = git("hash-object", "--", *present).split() if present else []
-        for f, blob in zip(present, current):
-            if blob != rg_blobs[f]:
+        # Paths go on stdin: one argument each overflows Windows's 32,767-character command line
+        # in a repo with a few hundred test files. --stdin-paths C-unquotes a line that starts with
+        # '"' and splits on newlines, so those rare names (impossible on Windows) go one at a time.
+        odd = {f for f in present if f.startswith('"') or "\n" in f or "\r" in f}
+        plain = [f for f in present if f not in odd]
+        current = dict(zip(plain, git("hash-object", "--stdin-paths",
+                                      input="".join(f + "\n" for f in plain)).split())) if plain else {}
+        current.update((f, git("hash-object", "--", f).strip()) for f in odd)
+        for f in present:
+            if current.get(f) != rg_blobs[f]:
                 fails.append(f"Anti-gaming: red-gate test/protected file modified: {f}")
         for f in all_files():
             if f in rg_tree:
