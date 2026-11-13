@@ -8,8 +8,9 @@ everywhere else. Exit code 2 blocks the tool call and shows stderr to the agent;
 `permissionDecision` asks the human or skips the prompt.
 
 File edits (Edit, Write, MultiEdit, NotebookEdit):
-  1. The task's harness files (.light-harness/) are off limits, except the unowned sections of
-     contract.md, and config.json before the plan is approved. Agent permissions and agents
+  1. The task's harness files (.light-harness/, including saved probes) are off limits, except the
+     unowned sections of contract.md, and config.json before the plan is approved. So are the
+     base-commit copies in .light-harness-base/. Agent permissions and agents
      (harness.MACHINERY) are too, unless the approved §8.1 lists them under .claude/.
   2. In contract.md, the Status line and harness-owned blocks are never edited by hand.
   3. Tests and protected files are read-only once the red gate has passed.
@@ -108,9 +109,10 @@ def owned_snapshot(text: str):
 # --- Bash ---------------------------------------------------------------------
 GIT = r"\bgit(?:\s+-[cC]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+"   # `git`, its global options, then the subcommand
 BLOCK_BASH = [  # (pattern, why, only if this also matches, rule id for telemetry)
-    (r"\b(approve|unlock-tests|forget|uninstall|opt-in|opt-out)\b",
-     "approve, unlock-tests, forget, uninstall and telemetry opt-in/opt-out are human-only. Ask the human to "
-     "run it in their own terminal.", r"light-harness|harness\.py", "human-only"),
+    (r"\b(approve|unlock-tests|forget|uninstall|opt-in|opt-out)\b"
+     r"|\bprobe\b[^\n;&|]*?(?:^|\s)['\"\\]*d[\\'\"]*r[\\'\"]*o[\\'\"]*p['\"]*(?=\s|$)",
+     "approve, unlock-tests, forget, uninstall, telemetry opt-in/opt-out and probe drop are human-only. Ask the "
+     "human to run it in their own terminal.", r"light-harness|harness\.py", "human-only"),
     (r"\bLIGHT_HARNESS_(OTLP\w*|TELEMETRY|SESSION_ID|HUMAN_GAP_CAP|GIT_COMMON)=|(^|[\s;&|(])(unset|-u)\s+[^\n;&|]*\bLIGHT_HARNESS_|"
      + GIT + r"config\b[^\n;&|]*\b(?i:lightharness)\.",
      "telemetry settings and the engineer's opt-in belong to the human. Ask them to change it.", None,
@@ -133,9 +135,9 @@ BLOCK_BASH = [  # (pattern, why, only if this also matches, rule id for telemetr
     (r"\.git[/\\]+light-harness|refs/light-harness", "the task's audit trail and telemetry are maintained by the "
      "harness only. Read them with `light-harness show` / `log` / `metrics`.", None, "audit-trail"),
 ]
-ASK_BASH = r"(^|[\s;&|(])(curl|wget|ssh|scp|psql|mysql)(\s|$)|" + GIT + r"push\b"
+ASK_BASH = r"(^|[\s;&|('\"])(curl|wget|ssh|scp|psql|mysql)(\s|$|['\"])|" + GIT + r"push\b"
 LH_SAFE = (r"(status|check|set-status|redgate|verify|verdict|start-task|finish-task|tasks|show|log|metrics|"
-           r"telemetry\s+status|version)\b.*")
+           r"telemetry\s+status|baseline|probe\s+(?:add|list|run)|version)\b.*")
 SAFE_SEGMENT = [
     r"(\S*[/\\])?light-harness\s+" + LH_SAFE,
     r"sh\s+(\"[^\"]*light-harness\"|'[^']*light-harness')\s+" + LH_SAFE,
@@ -145,6 +147,49 @@ SAFE_SEGMENT = [
     r"cd\s+\S+",
 ]
 READ_ONLY = {"cat", "head", "tail", "less", "more", "grep", "rg", "wc", "ls", "diff", "file", "stat"}
+
+
+COPY_CMDS = {"cp", "mv", "ln", "install", "rsync"}          # the destination is the last argument (or -t DIR)
+TOUCH_CMDS = {"rm", "rmdir", "unlink", "tee", "touch", "truncate", "patch", "chmod", "chown", "mkdir", "shred"}
+WRAPPERS = {"sudo", "env", "command", "nohup", "nice", "time", "exec", "xargs", "stdbuf", "timeout"}
+
+
+def base_writes(cmd: str):
+    """Block Bash writes into the base-commit copies (.light-harness-base/). Judged by each segment's
+    command word and its destination, so reads (`grep rm .light-harness-base/x`, a script given the
+    folder as an argument) stay allowed. Best effort: probes get a fresh export from git outside the task
+    folder, and the suite runs with this folder moved aside, so a write this misses never reaches a check."""
+    in_base = False
+    for seg in re.split(r"&&|\|\||[;|\n]", cmd):
+        words = seg.split()
+        while words and (words[0] in WRAPPERS or re.fullmatch(r"\w+=\S*|-\S+", words[0])):
+            words = words[1:]
+        if not words:
+            continue
+        verb, args = words[0].rsplit("/", 1)[-1], [w.strip("'\"") for w in words[1:]]
+        if verb == "popd" or (verb == "cd" and args[:1] == ["-"]):
+            in_base = False
+            continue
+        if verb in ("cd", "pushd"):
+            inside = bool(args) and H.BASE_DIR in args[0] and not args[0].rstrip("/\\").endswith("..")
+            in_base = inside or (in_base and bool(args) and not args[0].startswith(("/", "~", "..")))
+            continue
+        paths = [a for a in args if not a.startswith("-")]
+        target = ""
+        redirects = [t for t in re.findall(r"(?:^|[^<&>])\d*>{1,2}\s*([^\s&>]\S*)", seg) if not t.startswith("/dev/")]
+        if redirects:
+            target = redirects[-1]
+        elif verb in COPY_CMDS:
+            t = next((args[i + 1] for i, a in enumerate(args[:-1]) if a in ("-t", "--target-directory")), None)
+            t = t or next((a.split("=", 1)[1] for a in args if a.startswith("--target-directory=")), None)
+            target = t or (paths[-1] if len(paths) >= 2 else "")
+        elif verb in TOUCH_CMDS or (verb == "sed" and any(a.startswith("-i") for a in args)) or verb == "dd":
+            hits = [p for p in (paths if verb != "dd" else [a[3:] for a in args if a.startswith("of=")])
+                    if H.BASE_DIR in p or (in_base and not p.startswith(("/", "~", "..")))]
+            target = hits[0] if hits else ""
+        if target and (H.BASE_DIR in target or (in_base and not target.startswith(("/", "~", "..")))):
+            block(f"{H.BASE_DIR}/ holds the base-commit copies, the oracle for unchanged behaviour. "
+                  "`light-harness baseline` writes it; read or run it, never change it.", "harness-files")
 
 
 def bash_rules(cmd: str):
@@ -157,6 +202,7 @@ def bash_rules(cmd: str):
             if ">" in seg or not words or words[0] not in READ_ONLY:
                 block(f"{H.LIVE}/ holds the task's contract and config. Edit contract.md with the Edit tool, "
                       "and change status with `light-harness set-status`.", "harness-files")
+    base_writes(cmd)
     if re.search(ASK_BASH, cmd):
         decide("ask", "network access and pushes need the human's OK during a task.", "network")
     # Skip the prompt only for a plain chain (`a && b`) of known-safe commands
@@ -199,6 +245,9 @@ def edit_rules(tool: str, ti: dict, p: Path, common: Path):
         block(f"{rel} is frozen once the plan is approved.", "config-frozen")
     if rel.startswith(f"{H.LIVE}/") and rel != f"{H.LIVE}/contract.md":
         block(f"{rel} is harness machinery. Use `light-harness ...` commands instead of editing it.", "harness-files")
+    if rel.startswith(f"{H.BASE_DIR}/"):
+        block(f"{rel} is a base-commit copy, the oracle for unchanged behaviour. `light-harness baseline` "
+              "writes it; read or run it, never edit it.", "harness-files")
     if H.matches(rel, H.MACHINERY):
         # Allowed only when the human approved it: a .claude/ entry in §8.1 of the current, approved plan
         if not (status in ("Build", "Rework") and H.approval_state(current)[0]
