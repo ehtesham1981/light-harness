@@ -309,7 +309,8 @@ check '[ -f .git/light-harness/config.json ]' "repo config not kept for the next
 check '[ "$(hook "$M" "$(file_json Write "$M" "$M/src/x.py")")" = 0 ]' "guard still blocks the main checkout with no task in progress"
 
 # flow <name>: one AC, square(x), driven from the main checkout with --task
-flow() {
+# flow_red <name> [extra §8.1 lines]: the same up to a passed red gate (approve output in $W/approve-<name>.out)
+flow_red() {
   local X="--task $1" D="$T/$1" K="$T/$1/.light-harness/contract.md"
   edit "$K" "<one or two sentences: what outcome, for whom>" "$1" \
     "| EX-1 | <input> | <expected> | <happy path / edge / error> |" "| EX-1 | 3 | 9 | happy |" \
@@ -318,15 +319,20 @@ flow() {
   edit "$K" "| R-1 | <risk> | <L/M/H> | <L/M/H> | <mitigation> |" "| R-1 | none | L | L | n/a |" \
     "| <area> | <change> | <who/what is affected> | <how to undo> |" "| src | new | none | delete |" \
     "- <src/path/or/glob>" "- src/**
-- tests/**" "1. <step> (AC-1)" "1. square (AC-1)"
+- tests/**${2:+
+$2}" "1. <step> (AC-1)" "1. square (AC-1)"
   ok  $H set-status Plan $X
-  check "human \"$H approve --name Approver $X\" APPROVE" "approve ($1)"
+  check "script -qec \"$H approve --name Approver $X\" /dev/null <<< APPROVE > \"$W/approve-$1.out\" 2>&1" "approve ($1)"
   ok  $H set-status Build $X
   mkdir -p "$D/src" "$D/tests"; touch "$D/src/__init__.py"
   printf 'from src.%s import f\ndef test_%s():\n    """AC-1"""\n    assert f(3) == 9\n' "$1" "$1" > "$D/tests/test_$1.py"
   printf 'def f(x):\n    raise NotImplementedError\n' > "$D/src/$1.py"
   ok  $H redgate $X
   printf 'def f(x):\n    return x * x\n' > "$D/src/$1.py"
+}
+flow() {
+  local X="--task $1" D="$T/$1" K="$T/$1/.light-harness/contract.md"
+  flow_red "$1"
   ok  $H verify $X
   ok  $H set-status Review $X
   edit "$K" "- [ ] AC-1" "- [x] AC-1"
@@ -393,5 +399,63 @@ ok  $H start-task new                            # works once cleaned up (change
 nok $H uninstall --dry-run                       # a task is in progress
 check '$H uninstall --dry-run --force | grep -q "unfinished task folder"' "--force doesn't offer to drop an unfinished task"
 check 'human "$H uninstall --force" UNINSTALL && [ ! -e .tasks ] && git rev-parse -q --verify refs/heads/task/new >/dev/null' "uninstall --force should drop the task folder and keep its branch"
+
+echo "Agent machinery only via the approved §8.1; CRLF blobs are not 'modified' (1.6.3)"
+N="$W/mach"; newrepo "$N"; cd "$N"; T="$N/.tasks"
+mkdir -p .claude/agents src samples; touch src/__init__.py; echo "# helper" > .claude/agents/helper.md
+printf 'a\r\nb\r\n' > samples/crlf.txt                   # committed WITH CRLF in the blob (i/crlf)
+git -c core.autocrlf=false add -A; git commit -qm "base"; git config core.autocrlf true
+check 'git ls-files --eol samples/crlf.txt | grep -q "i/crlf"' "setup: samples/crlf.txt should have a CRLF blob"
+ok  $H start-task delta; ok $H start-task epsilon; ok $H start-task zeta
+mod() { cp "$T/$1/$2" "$W/keep.m"; echo changed >> "$T/$1/$2"; }   # change a file behind the guard's back
+back() { cp "$W/keep.m" "$T/$1/$2"; }
+flow_red delta                                           # §8.1: src/** tests/**
+ok  $H verify --task delta                               # the CRLF protected file is unchanged
+mod delta samples/crlf.txt
+check '! $H verify --task delta > "$W/v.out" 2>&1 && grep -qF "file modified: samples/crlf.txt" "$W/v.out"' "a real change to a CRLF file was missed"
+back delta samples/crlf.txt
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/delta/.claude/agents/helper.md")")" = 2 ]' "guard allowed an agent edit that §8.1 doesn't list"
+check '! grep -q "lets the task change agent permissions" "$W/approve-delta.out"' "approve warned about machinery the plan doesn't list"
+mod delta .claude/agents/helper.md
+check '! $H verify --task delta > "$W/v.out" 2>&1 && grep -qF "✗ Anti-gaming: agent permissions or agents modified after approval: .claude/agents/helper.md" "$W/v.out"' "unlisted agent change didn't fail verify"
+edit "$T/delta/.light-harness/contract.md" "<!-- harness:deviations -->" "<!-- harness:deviations -->
+- .claude/agents/helper.md — needed"
+check '! $H verify --task delta >/dev/null 2>&1' "a §10.3-style entry sanctioned an agent change"
+back delta .claude/agents/helper.md
+K="$T/delta/.light-harness/contract.md"; cp "$K" "$W/keep.k"     # a scope block injected outside the approved plan
+edit "$K" "<!-- harness:plan -->" "<!-- harness:scope -->
+- src/**
+- tests/**
+- .claude/agents/**
+<!-- /harness:scope -->
+<!-- harness:plan -->"
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/delta/.claude/agents/helper.md")")" = 2 ]' "guard honoured a scope block injected outside the plan"
+mod delta .claude/agents/helper.md
+check '! $H verify --task delta > "$W/v.out" 2>&1 && grep -qF "✓ Plan approval" "$W/v.out" && grep -qF "✗ Anti-gaming: agent permissions or agents modified after approval" "$W/v.out"' "verify honoured a scope block injected outside the plan"
+back delta .claude/agents/helper.md; cp "$W/keep.k" "$K"
+flow_red zeta "- **"                                     # a broad glob never covers machinery
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/zeta/.claude/agents/helper.md")")" = 2 ]' "guard allowed an agent edit under a broad glob"
+mod zeta .claude/agents/helper.md
+check '! $H verify --task zeta > "$W/v.out" 2>&1 && grep -qF "✗ Anti-gaming: agent permissions or agents modified after approval: .claude/agents/helper.md" "$W/v.out"' "a broad §8.1 glob sanctioned an agent change"
+back zeta .claude/agents/helper.md
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 2 ]' "guard allowed an agent edit before approval"
+flow_red epsilon "- .claude/agents/**"
+check 'grep -q "lets the task change agent permissions" "$W/approve-epsilon.out" && grep -q "\.claude/agents/\*\*  (covers every agent)" "$W/approve-epsilon.out"' "approve didn't warn about the listed agent paths"
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 0 ]' "guard blocked an agent edit the approved §8.1 lists"
+check '[ "$(hook "$N" "$(file_json Write "$N" "$T/epsilon/.claude/settings.json")")" = 2 ]' "guard allowed settings.json, which §8.1 doesn't list"
+mod epsilon .claude/agents/helper.md
+check '$H verify --task epsilon > "$W/v.out" 2>&1 && grep -qF "⚠ Anti-gaming (review): .claude/agents/helper.md changes agent permissions" "$W/v.out"' "listed agent change should pass verify with a warning"
+K="$T/epsilon/.light-harness/contract.md"; cp "$K" "$W/keep.k"
+edit "$K" "1. square (AC-1)" "1. square it (AC-1)"     # plan changed after approval
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 2 ]' "guard allowed an agent edit after the plan changed"
+cp "$W/keep.k" "$K"
+ok  $H set-status Review --task epsilon
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 2 ]' "guard allowed an agent edit during Review"
+edit "$K" "|----|----------|--------|------|-------------|------------------|
+" "|----|----------|--------|------|-------------|------------------|
+| RV-1 | Medium | Open | src | needs a fix | R-1 |
+"
+ok  $H verdict fail --task epsilon
+check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 0 ]' "guard blocked a listed agent edit in Rework"
 
 echo; echo "Self-test: $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]

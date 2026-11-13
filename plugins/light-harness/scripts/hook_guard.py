@@ -9,7 +9,8 @@ everywhere else. Exit code 2 blocks the tool call and shows stderr to the agent;
 
 File edits (Edit, Write, MultiEdit, NotebookEdit):
   1. The task's harness files (.light-harness/) are off limits, except the unowned sections of
-     contract.md, and config.json before the plan is approved.
+     contract.md, and config.json before the plan is approved. Agent permissions and agents
+     (harness.MACHINERY) are too, unless the approved §8.1 lists them under .claude/.
   2. In contract.md, the Status line and harness-owned blocks are never edited by hand.
   3. Tests and protected files are read-only once the red gate has passed.
   4. Implementation files can only change in Build or Rework.
@@ -199,7 +200,11 @@ def edit_rules(tool: str, ti: dict, p: Path, common: Path):
     if rel.startswith(f"{H.LIVE}/") and rel != f"{H.LIVE}/contract.md":
         block(f"{rel} is harness machinery. Use `light-harness ...` commands instead of editing it.", "harness-files")
     if H.matches(rel, H.MACHINERY):
-        block(f"{rel} controls agent permissions or agents; it can't change during a task.", "machinery")
+        # Allowed only when the human approved it: a .claude/ entry in §8.1 of the current, approved plan
+        if not (status in ("Build", "Rework") and H.approval_state(current)[0]
+                and H.machinery_allowed(rel, current)):
+            block(f"{rel} controls agent permissions or agents; it can't change during a task unless the "
+                  "approved plan lists it under .claude/ in §8.1.", "machinery")
 
     cfg = H.load_config()
 

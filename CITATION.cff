@@ -10,7 +10,7 @@ authors:
   - given-names: Ehtesham
     family-names: Ahmed
     affiliation: Algomade Consulting
-version: 1.6.2
+version: 1.6.3
 date-released: 2026-11-12
 license: Apache-2.0
 repository-code: "https://github.com/ehtesham1981/light-harness"

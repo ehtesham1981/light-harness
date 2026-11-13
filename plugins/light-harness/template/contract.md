@@ -70,7 +70,7 @@ Each criterion must be observable and testable. Tests reference criteria by ID (
 ## 8. Implementation Plan
 
 ### 8.1 Files in scope
-Paths or globs the implementation may create or change. Changes outside this list fail the anti-drift check unless recorded in §10.3.
+Paths or globs the implementation may create or change. Changes outside this list fail the anti-drift check unless recorded in §10.3. Agent permissions and agents (`.claude/settings.json`, `.claude/settings.local.json`, `.claude/agents|commands|skills/**`) may change only if listed here by a `.claude/` path; §10.3 can't sanction them.
 <!-- harness:scope -->
 - <src/path/or/glob>
 <!-- /harness:scope -->
