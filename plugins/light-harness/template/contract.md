@@ -19,6 +19,16 @@ Status: Draft
 
 ## 2. Business Rules
 
+A rule is an Example rule unless tagged. Tag a rule that holds for **every input**, not just for a few examples: `[Invariant]` (a property of every input) or `[Preservation]` (outcomes unchanged from the base commit, apart from listed changes). A tagged rule states four things as indented sub-bullets, and §8.4 names its generated sweep. For example:
+
+```
+- BR-2 [Preservation]: commands the guard already blocks or allows keep their outcome
+  - Input space: prefixes × command words × targets × separators, including ones the rule doesn't know
+  - Oracle: the guard at the base commit (light-harness baseline <path>)
+  - Unacceptable failure: allowed now but blocked before; blocking more is acceptable only if listed
+  - Allowed changes: EX-3, EX-4
+```
+
 <!-- harness:rules -->
 - BR-1: <rule, stated precisely enough to test>
 <!-- /harness:rules -->
@@ -85,7 +95,7 @@ Each step names the AC(s) it satisfies.
 <!-- /harness:steps -->
 
 ### 8.4 Test Strategy
-Map every AC to the tests that will prove it.
+Map every AC to the tests that will prove it. For each `[Invariant]` or `[Preservation]` rule, add a sweep entry: a bullet with `BR-n [sweep]` and the test, naming its `generator:` (the dimensions and their values, including ones the rule doesn't recognise; a full cross product or a fixed seed) and its `oracle:` (how each expected outcome is computed), on that line or its sub-bullets. Examples illustrate; the sweep proves.
 <!-- harness:test-strategy -->
 - AC-1 → <unit / integration test description, examples used>
 <!-- /harness:test-strategy -->
@@ -127,13 +137,14 @@ _Not run._
 ### 11.2 Issues
 Severity: Critical | High | Medium | Low. Status: Open | Fixed | Resolved | Won't fix.
 Only the reviewer sets **Resolved**. **Won't fix** is allowed for Low only. Any Critical, High or Medium issue that isn't Resolved blocks a pass.
+Class: the defect class, as `<short name>: <its dimensions>` (examples go in the description). Another instance of an earlier class reuses its short name. `-` for none.
 <!-- harness:issues -->
-| ID | Severity | Status | Area | Description | Ref (AC/BR/Plan) |
-|----|----------|--------|------|-------------|------------------|
+| ID | Severity | Status | Area | Class | Description | Ref (AC/BR/Plan) |
+|----|----------|--------|------|-------|-------------|------------------|
 <!-- /harness:issues -->
 
 ### 11.3 Review Summary
-<reviewer's overall assessment>
+<reviewer's overall assessment. For each [Invariant] or [Preservation] rule: the sweep's method (dimensions and values), sample size and number of differences, and any probes saved>
 
 ### 11.4 Verdict
 <!-- harness:verdict -->

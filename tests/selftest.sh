@@ -174,9 +174,9 @@ cp "$W/cfg.json" "$A/.light-harness/config.json"
 ok  $H verify $X
 (cd "$A" && git add -A && git commit -qm "step 1-2: dedupe")
 ok  $H set-status Review $X
-edit "$C" "|----|----------|--------|------|-------------|------------------|
-" "|----|----------|--------|------|-------------|------------------|
-| RV-1 | Medium | Open | src | R-1 mitigation missing | R-1 |
+edit "$C" "|----|----------|--------|------|-------|-------------|------------------|
+" "|----|----------|--------|------|-------|-------------|------------------|
+| RV-1 | Medium | Open | src | missing mitigation: R-1 | R-1 mitigation missing | R-1 |
 " "- [ ] AC-1" "- [x] AC-1
 - [x] AC-2"
 nok $H verdict pass $X                           # open Medium blocks
@@ -451,11 +451,446 @@ check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.m
 cp "$W/keep.k" "$K"
 ok  $H set-status Review --task epsilon
 check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 2 ]' "guard allowed an agent edit during Review"
-edit "$K" "|----|----------|--------|------|-------------|------------------|
-" "|----|----------|--------|------|-------------|------------------|
-| RV-1 | Medium | Open | src | needs a fix | R-1 |
+edit "$K" "|----|----------|--------|------|-------|-------------|------------------|
+" "|----|----------|--------|------|-------|-------------|------------------|
+| RV-1 | Medium | Open | src | - | needs a fix | R-1 |
 "
 ok  $H verdict fail --task epsilon
 check '[ "$(hook "$N" "$(file_json Edit "$N" "$T/epsilon/.claude/agents/helper.md")")" = 0 ]' "guard blocked a listed agent edit in Rework"
+
+echo "Rules over an input space: Preservation BR, oracle, sweeps and saved probes (1.7.0)"
+# Replays a guard rewrite that took three review rounds: a coarse deny rule is replaced by a precise
+# one, which lets through commands it doesn't recognise ("blocked before, allowed now").
+cat > "$W/units.py" <<'PY'
+import re, sys; sys.path.insert(0, sys.argv[1]); import harness as H, telemetry as T
+c = """<!-- harness:plan -->
+<!-- harness:rules -->
+- BR-1: plain rule, every input keeps its outcome
+- BR-2 [Preservation]: keeps outcomes
+  - Input space: a × b
+  - Oracle: base commit
+  - Unacceptable failure direction: allowed now, blocked before
+  - Allowed changes: EX-3, EX-4
+- BR-10 [invariant]: holds for every x
+  - Input space: x
+- BR-11 [Nonsense]: what
+<!-- /harness:rules -->
+<!-- harness:test-strategy -->
+- AC-1 → tests/t.py
+  - BR-2 [sweep] tests/t.py::test_sweep
+    - generator: full cross product
+    - oracle: golden file from the base commit
+- BR-10 [sweep] tests/u.py, generator: random seed 7 (no oracle named)
+<!-- /harness:test-strategy -->
+<!-- /harness:plan -->"""
+s = H.rule_specs(c)
+assert [s[k]["kind"] for k in ("BR-1", "BR-2", "BR-10")] == ["Example", "Preservation", "Invariant"], s
+assert s["BR-2"]["fields"]["oracle"] == "base commit" and s["BR-2"]["fields"]["allowed changes"] == "EX-3, EX-4", s
+p = H.sweep_plan_problems(c)
+assert any("BR-10" in x and "Oracle" in x for x in p), p                       # missing BR fields
+assert any("BR-10" in x and "oracle" in x and "[sweep]" in x for x in p), p    # §8.4 entry without an oracle
+assert any("BR-11" in x and "unknown" in x for x in p), p
+assert not any("BR-2" in x or "BR-1:" in x or "BR-1 " in x for x in p), p
+assert any("BR-1" in h for h in H.rule_hints(c)) and not any("BR-2" in h for h in H.rule_hints(c)), H.rule_hints(c)
+assert H.missing_sweeps(c, '"""AC-1 BR-2 [sweep]: x"""\n"""BR-100 [sweep]"""') == ["BR-10"]
+assert H.missing_sweeps(c, '"""BR-20 [sweep]"""\nBR-2 is swept') == ["BR-2", "BR-10"]
+files = {"src/a.py": "from .b import x\nimport src.c\nimport os\n", "src/b.py": "", "src/c.py": "from src import d\n",
+         "src/d.py": "", "src/__init__.py": "", "web/a.mjs": "import x from './b.mjs'\nconst y = require('../lib/c')\n",
+         "web/b.mjs": "export * from './e'", "web/e.ts": "", "lib/c.js": "", "other.py": ""}
+assert H.import_closure(["src/a.py"], set(files), files.get) == ["src/__init__.py", "src/a.py", "src/b.py", "src/c.py", "src/d.py"]
+assert H.import_closure(["web/a.mjs"], set(files), files.get) == ["lib/c.js", "web/a.mjs", "web/b.mjs", "web/e.ts"]
+assert H.class_name("Allowed-now  blocked-before: wrappers × cp; e.g. `x`") == "allowed-now blocked-before"
+assert H.class_name("") == "" and H.class_name("-") == ""
+issues = """<!-- harness:issues -->
+| ID | Severity | Status | Area | Class | Description | Ref |
+|----|----------|--------|------|-------|-------------|-----|
+| RV-1 | High | Open | guard | Blocked before, allowed now: prefixes × cp | `command cp L /tmp/b` and `exec cp L /tmp/b` | BR-2 |
+<!-- /harness:issues -->"""
+rows = H.issue_rows(issues)
+assert rows[0]["id"] == "RV-1" and rows[0]["class"].startswith("Blocked before") and rows[0]["status"] == "Open", rows
+assert H.issue_rows(issues.replace("| Class ", "").replace("|-------", "").replace("| Blocked before, allowed now: prefixes × cp ", ""))[0]["class"] == ""
+t = '''import pytest
+@pytest.mark.parametrize("c", [
+    "command cp L /tmp/b",
+])
+def test_rv1_a(c):
+    """RV-1: regression"""
+    assert blocked(c)
+def test_rv1_b():
+    """RV-1: the class"""
+    for p in ["command ", "builtin ", "exec "]:
+        assert blocked(p + "cp L /tmp/b")
+def test_other():
+    assert blocked("command cp L /tmp/b")
+'''
+assert len(H.test_chunks(t)) == 4, H.test_chunks(t)
+w = H.overfit_warnings(rows, {"tests/test_x.py": t})
+assert len(w) == 1 and "tests/test_x.py" in w[0] and "RV-1" in w[0] and "test_rv1_a" in w[0], w
+js = "test('RV-1 cp behind command', () => {\n  expect(blocked('exec cp L /tmp/b')).toBe(true)\n})\n"
+assert len(H.overfit_warnings(rows, {"t.test.js": js})) == 1
+r = lambda *x: [dict(zip(("id", "class", "status"), i)) for i in x]
+assert H.same_class_reopened([r(("RV-1", "Leak: a", "Open"), ("RV-2", "leak: b", "Open")),
+                              r(("RV-1", "Leak: a", "Resolved"), ("RV-2", "leak", "Resolved"), ("RV-3", "LEAK: c", "Open"), ("RV-4", "other", "Open")),
+                              r(("RV-1", "Leak: a", "Open"), ("RV-3", "LEAK: c", "Resolved"), ("RV-4", "other", "Resolved"))]) == 2
+k = T.kpis({"a": [(1800000000, "harness: task-start a")], "b": [(1800000000, "harness: task-start b")]}, set(), [], now=1800000100,
+           issue_rounds={"a": [r(("RV-1", "x: y", "Open")), r(("RV-1", "x", "Resolved"), ("RV-2", "x: z", "Open"))]})
+assert k["tasks"]["a"]["same_class_reopened"] == 1 and k["tasks"]["b"]["same_class_reopened"] == 0, k["tasks"]
+assert k["summary"]["same_class_reopened_per_task"] == 0.5 and "Same class reopened" in T.render(k, "a"), k["summary"]
+assert T.kpis({"a": [(1800000000, "harness: task-start a")]}, set(), [], now=1800000100)["tasks"]["a"]["same_class_reopened"] == 0
+# review round 1: a kind tag in any spelling is read, or refused; it never silently becomes an Example
+rules = lambda *ls: "<!-- harness:plan -->\n<!-- harness:rules -->\n" + "\n".join(ls) + "\n<!-- /harness:rules -->\n<!-- /harness:plan -->"
+for v in ("- **BR-2** [Preservation]: x", "- BR-2 [ Preservation ]: x", "- BR-2 (Preservation): x", "- BR-2 **[Preservation]**: x",
+          "- BR-2 [Preservation] keeps outcomes", "- BR-2: [Preservation] keeps outcomes", "- **BR-2 [Preservation]**: x", "- BR-2 [preservation]: x"):
+    assert H.rule_specs(rules(v))["BR-2"]["kind"] == "Preservation", v
+    assert any("BR-2" in x and "Oracle" in x for x in H.sweep_plan_problems(rules(v))), v
+for v in ("- BR-2 [Preservation-rule]: x", "- BR-2 [Preservation, Invariant]: x", "- BR-2 (Invariants): x", "- BR-2 [TODO]: x"):
+    assert any("BR-2" in x and "unknown" in x for x in H.sweep_plan_problems(rules(v))), v
+for v in ("- BR-2 (see EX-2): x", "- BR-2: **Shell rule.** keep x", "- BR-2: x [EX-1] y", "- BR-2: (for example, a cached response) x",
+          "- BR-2: [Admin] users can delete", "- BR-2: [Spec](https://example.com) section 4 applies", "- BR-2 (example EX-2): x",
+          "- BR-2: [WIP] x", "- BR-2: keep the loop invariant", "- BR-2: preserve the order of rows"):
+    assert H.rule_specs(rules(v))["BR-2"]["kind"] == "Example" and not H.sweep_plan_problems(rules(v)), (v, H.sweep_plan_problems(rules(v)))
+# review round 2: a kind named where the parser can't read it fails closed; duplicate ids are refused
+for v in ("- BR-2 {Preservation}: x", "- BR-2 – Preservation: x", "- BR-2 <Preservation>: x", "- BR-2 Preservation: x",
+          "- Preservation BR-2: x", "+ BR-2 {Invariant}: x", "1) BR-2 Preservation: x", "### BR-2 [Preservation]",
+          "- BR-2: The [Invariant] word"):
+    assert any("names a rule kind" in x for x in H.sweep_plan_problems(rules(v))), (v, H.sweep_plan_problems(rules(v)))
+assert any("names a rule kind" in x for x in H.sweep_plan_problems(rules("- BR-1: x", "  - BR-2 [Preservation]: nested under BR-1")))
+assert H.rule_specs(rules("- `BR-2` [Preservation]: x"))["BR-2"]["kind"] == "Preservation"
+assert H.rule_specs(rules("1) BR-2 [Invariant]: x", "+ BR-3 [Preservation]: y"))["BR-3"]["kind"] == "Preservation"
+assert any("defined twice" in x for x in H.sweep_plan_problems(rules("- BR-2 [Preservation]: x", "- BR-2: y")))
+empty = c.replace("    - generator: full cross product\n    - oracle: golden file from the base commit", "    - generator:\n    - oracle: <how>")
+assert any("BR-2" in x and "generator" in x for x in H.sweep_plan_problems(empty)), H.sweep_plan_problems(empty)
+assert H.missing_sweeps(c, "# TODO BR-2 [sweep]\n// BR-10 [sweep]") == ["BR-2", "BR-10"]
+src = {"tests/t.py": 'def test_ac2_br2_sweep():\n    """AC-2 BR-2 [sweep]"""\n@pytest.mark.parametrize("x", [1])\ndef test_ac2_br2_tagged(x):\n    """BR-2 [sweep]"""\ndef test_other_sweep():\n    pass\n',
+       "s.test.js": "test('AC-2 BR-2 [sweep] every command', () => {})\n"}
+names = H.sweep_test_names(src, ["BR-2"])
+assert H.is_tagged_sweep("tests.t::test_ac2_br2_sweep", names) and H.is_tagged_sweep("s.test.js::AC-2 BR-2 [sweep] every command", names), names
+assert not H.is_tagged_sweep("tests.test_sweep_extras::test_ac1_vacuous", names)          # "sweep" only in the module
+assert not H.is_tagged_sweep("tests.t::test_other_sweep", names)                          # named sweep, but untagged
+assert not H.is_tagged_sweep("tests.t::test_ac2_br2_tagged[1]", names)                    # tagged, but not named sweep
+assert not H.sweep_test_names(src, ["BR-9"])
+assert not H.is_tagged_sweep("tests.test_dup::test_ac2_br2_sweep", names)                 # same name, another module
+assert H.is_tagged_sweep("tests.t.TestX::test_ac2_br2_sweep", names)                      # a class in that module
+lay = {"pkg/src/app/__init__.py": "", "pkg/src/app/guard.py": "from app import words\nfrom app.util import h\n",
+       "pkg/src/app/words.py": "", "pkg/src/app/util.py": "", "pkg/other.py": ""}
+assert H.import_closure(["pkg/src/app/guard.py"], set(lay), lay.get) == sorted(k for k in lay if k != "pkg/other.py")
+fx = '@pytest.fixture\ndef helper():\n    return 1\ndef test_rv1():\n    """RV-1"""\n    assert blocked("command cp L /tmp/b")\n'
+assert len(H.overfit_warnings(rows, {"f.py": fx})) == 1, H.test_chunks(fx)
+assert H.class_name("n/a") == "" and H.class_name("None: x") == ""
+assert H.same_class_reopened([r(("RV-1", "x", "Open")), r(("RV-1", "x", "Open"))]) == 0           # staying Open isn't reopening
+assert H.same_class_reopened([r(("RV-1", "x", "Open")), r(("RV-1", "x", "Fixed")), r(("RV-1", "x", "Open"))]) == 1
+for line in ('if os.environ.get("LIGHT_HARNESS_PROBE"):', "base = Path('.light-harness-base')", "k.startswith('light_harness')",
+             "X = 'LIGHT-HARNESS'"):
+    assert H.code_gaming("src/a.py", [line])[0], line
+for path, line in (("pytest.ini", "norecursedirs = .light-harness-base"), ("tsconfig.json", '"exclude": [".light-harness-base"]'),
+                   ("src/a.py", "# see the light-harness probes docs"), ("src/a.js", "// light-harness")):
+    assert H.code_gaming(path, [line]) == ([], []), (path, line)
+assert H.code_gaming("src/a.py", ["p = os.getppid()"])[1] and not H.code_gaming("src/a.py", ["p = os.getppid()"])[0]
+# review round 3: only a task with saved probes is checked, and a declared domain term is a warning
+assert H.code_gaming("src/a.py", ['PART = "Tail light harness"'], probes_saved=False) == ([], [])
+f_, w_ = H.code_gaming("src/a.py", ["import light_harness_client"], waived=True)
+assert not f_ and w_ and "§10.3" in w_[0], (f_, w_)
+for line in ('PART = "Tail light harness"', '"""A light harness around subprocess."""', "class HighlightHarness:"):
+    assert H.code_gaming("src/a.py", [line]) == ([], []), line
+# review round 4: the harness's own folders always fail; the harness's name warns until probes exist
+for line in ('os.path.isdir(".light-harness-base")', "Path('.light-harness') / 'contract.md'"):
+    assert H.code_gaming("src/a.py", [line], probes_saved=False)[0], line
+f_, w_ = H.code_gaming("src/a.py", ["import light_harness_client"], probes_saved=False)
+assert not f_ and w_, (f_, w_)
+# review round 5: a tool config that ignores the folders is declared in §10.3; runs get a CI-like environment
+f_, w_ = H.code_gaming("eslint.config.js", ['export default [{ ignores: [".light-harness-base/**"] }]'], waived=True)
+assert not f_ and w_ and "§10.3" in w_[0], (f_, w_)
+import os
+os.environ.update(CLAUDECODE="1", CLAUDE_CODE_ENTRYPOINT="cli", CLAUDE_PROJECT_DIR="/p", LIGHT_HARNESS_SESSION_ID="s",
+                  HARNESS_ROOT="/x", CLAUDE_API_URL="http://x",
+                  PATH=os.pathsep.join([str(H.PLUGIN_ROOT / "bin"), os.environ.get("PATH", "")]))
+e = H.clean_env()
+assert not ({"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PROJECT_DIR", "LIGHT_HARNESS_SESSION_ID", "HARNESS_ROOT"} & set(e)), sorted(e)
+assert e.get("CLAUDE_API_URL") == "http://x"                                             # a project's own variable stays
+import tempfile, pathlib
+lk = pathlib.Path(tempfile.mkdtemp()) / "base-lock-t"
+H._take_lock(lk); assert lk.read_text() == str(os.getpid())
+import contextlib, io
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        H._take_lock(lk)
+    raise AssertionError("a second run took a held lock")
+except SystemExit:
+    pass
+if os.name != "nt":                                                                       # a killed run's lock is taken over
+    lk.write_text("999999999"); H._take_lock(lk); assert lk.read_text() == str(os.getpid())
+lk.unlink()
+assert str(H.PLUGIN_ROOT / "bin") not in e["PATH"].split(os.pathsep) and e["PATH"], e["PATH"]
+lay2 = {"backend/tests/test_g.py": 'def test_br2_sweep():\n    """BR-2 [sweep]"""\n'}
+assert H.is_tagged_sweep("tests.test_g::test_br2_sweep", H.sweep_test_names(lay2, ["BR-2"]))          # rootdir below the task folder
+assert H.is_tagged_sweep("tests.test_g.TestX::test_br2_sweep", H.sweep_test_names(lay2, ["BR-2"]))
+assert not H.is_tagged_sweep("other.test_g::test_br2_sweep", H.sweep_test_names(lay2, ["BR-2"]))
+PY
+check '"$PYBIN" "$W/units.py" "$PLUGIN/scripts"' "rule kinds, sweep entries, import closure, issue classes or over-fit chunks parsed wrongly"
+
+S="$W/sweep"; newrepo "$S"; cd "$S"; T="$S/.tasks"
+mkdir -p src tests; touch src/__init__.py
+printf 'WRITE = ("rm", "cp", "tee", "mv")\n' > src/words.py
+cat > src/guard.py <<'EOF'
+from src.words import WRITE
+LOG = "logs/app.log"
+def blocked(cmd):
+    """Coarse deny rule: a write word anywhere plus the log path anywhere."""
+    return LOG in cmd and any(w in WRITE for w in cmd.split())
+EOF
+printf 'from src.guard import blocked\ndef test_old():\n    assert blocked("rm logs/app.log") and not blocked("cat logs/app.log")\n' > tests/test_old.py
+git add -A; git commit -qm "existing guard"
+ok  $H start-task guardfix
+X="--task guardfix"; D="$T/guardfix"; K="$D/.light-harness/contract.md"; EV="$S/.git/light-harness/telemetry/events.jsonl"
+edit "$K" "<one or two sentences: what outcome, for whom>" "Let read-only commands on the log through the guard" \
+  "| EX-1 | <input> | <expected> | <happy path / edge / error> |" "| EX-1 | grep rm logs/app.log | allowed | happy |
+| EX-2 | cp logs/app.log /tmp/b | allowed | happy |" \
+  "- AC-1: <Given … When … Then …>" "- AC-1: Given EX-1 or EX-2, then the command is allowed
+- AC-2: Given any other command, then the guard gives the outcome it gave at the base commit (BR-2)" \
+  "- BR-1: <rule, stated precisely enough to test>" "- BR-1: a grep of the log and a cp from the log are allowed
+- BR-2 [Preservation]: every other command keeps the outcome the guard gave it at the base commit
+  - Input space: prefixes × command words × targets × separators
+  - Unacceptable failure: allowed now but blocked before is never acceptable
+  - Allowed changes: EX-1, EX-2"
+ok  $H set-status Initialize $X
+edit "$K" "| R-1 | <risk> | <L/M/H> | <L/M/H> | <mitigation> |" "| R-1 | the rewrite lets through what the old rule blocked | M | H | keep the coarse rule as a fallback; BR-2 sweep |" \
+  "| <area> | <change> | <who/what is affected> | <how to undo> |" "| src/guard.py | rewrite | every command the guard judges | revert |" \
+  "- <src/path/or/glob>" "- src/**
+- tests/**" \
+  "1. <step> (AC-1)" "1. exempt the two read-only forms, keep the coarse rule for the rest (AC-1, AC-2)" \
+  "- AC-1 → <unit / integration test description, examples used>" "- AC-1 → tests/test_guard.py: EX-1 and EX-2 verbatim
+- AC-2 → tests/test_guard.py: the BR-2 sweep"
+check '! $H check plan $X > "$W/cp.out" 2>&1 && grep -q "BR-2.*Oracle" "$W/cp.out"' "a Preservation BR without an oracle passed the plan gate"
+nok $H set-status Plan $X
+edit "$K" "  - Unacceptable failure: allowed now but blocked before is never" "  - Oracle: blocked() at the base commit (light-harness baseline src/guard.py)
+  - Unacceptable failure: allowed now but blocked before is never"
+check '! $H check plan $X > "$W/cp.out" 2>&1 && grep -q "BR-2.*\[sweep\]" "$W/cp.out"' "a Preservation BR without a §8.4 sweep passed the plan gate"
+edit "$K" "- AC-2 → tests/test_guard.py: the BR-2 sweep" "- AC-2 → tests/test_guard.py: the BR-2 sweep
+  - BR-2 [sweep] test_ac2_br2_sweep: every generated command against a golden file
+    - generator: full cross product of 7 prefixes (4 the rule doesn't know) × 7 bodies × 4 separators"
+check '! $H check plan $X > "$W/cp.out" 2>&1 && grep -q "BR-2.*oracle" "$W/cp.out"' "a sweep entry without an oracle passed the plan gate"
+edit "$K" "    - generator: full" "    - oracle: tests/golden_guard.json, generated from the base-commit copy
+    - generator: full"
+ok  $H check plan $X
+edit "$K" "- BR-1: a grep" "- BR-1 [Bogus]: a grep"
+check '! $H check plan $X > "$W/cp.out" 2>&1 && grep -q "BR-1.*unknown" "$W/cp.out"' "an unknown BR kind passed the plan gate"
+edit "$K" "- BR-1 [Bogus]: a grep of the log and a cp from the log are allowed" "- BR-1: a grep of the log and a cp from the log are allowed, and their output is unchanged"
+check '$H check plan $X > "$W/cp.out" 2>&1 && grep -q "⚠.*BR-1" "$W/cp.out"' "untagged input-space wording should warn, not fail"
+ok  $H set-status Plan $X
+check 'script -qec "$H approve --name Approver $X" /dev/null <<< APPROVE >/dev/null 2>&1' "approve (guardfix)"
+ok  $H set-status Build $X
+
+echo "  baseline: base-commit copies with their imports, side by side"
+check '$H baseline $X src/guard.py > "$W/b.out" 2>&1 && [ -f "$D/.light-harness-base/src/guard.py" ] && [ -f "$D/.light-harness-base/src/words.py" ] && [ -f "$D/.light-harness-base/src/__init__.py" ] && [ ! -e "$D/.light-harness-base/tests" ]' "baseline didn't export guard.py with its imports"
+check '[ -z "$(git -C "$D" status --porcelain)" ]' "the baseline copies show up in git status"
+nok $H baseline $X src/nosuch.py
+mkdir -p "$W/outside"; echo precious > "$W/outside/words.py"
+rm -rf "$D/.light-harness-base/src"; ln -s "$W/outside" "$D/.light-harness-base/src"
+check '$H baseline $X src/guard.py >/dev/null 2>&1 && [ "$(cat "$W/outside/words.py")" = precious ] && [ ! -L "$D/.light-harness-base/src" ] && [ -f "$D/.light-harness-base/src/words.py" ]' "baseline wrote through a link planted inside the base folder"
+check '[ "$(hook "$S" "$(file_json Edit "$S" "$D/.light-harness-base/src/guard.py")")" = 2 ]' "guard allowed editing a base-commit copy"
+check 'hookout "$S" "$(bash_json "$S" "light-harness baseline --task guardfix src/guard.py")" | grep -q "\"allow\""' "baseline not pre-approved"
+check 'hookout "$S" "$(bash_json "$S" "light-harness probe list --task guardfix")" | grep -q "\"allow\""' "probe list not pre-approved"
+check '[ "$(hook "$S" "$(bash_json "$S" "light-harness probe drop RV-1.1 --task guardfix --name X --reason y")")" = 2 ]' "guard allowed an agent to drop a probe"
+for c in "light-harness probe --name X --reason y drop RV-1.1" "light-harness probe 'drop' RV-1.1" \
+         "echo x > .tasks/guardfix/.light-harness-base/src/guard.py" "cp src/guard.py .tasks/guardfix/.light-harness-base/src/guard.py" \
+         "sed -i s/a/b/ .tasks/guardfix/.light-harness-base/src/guard.py"; do
+  check '[ "$(hook "$S" "$(bash_json "$S" "$c")")" = 2 ]' "guard allowed: $c"
+done
+check '[ "$(hook "$S" "$(bash_json "$S" "cp .tasks/guardfix/.light-harness-base/src/guard.py /tmp/old.py")")" = 0 ]' "guard blocked copying a base copy out"
+check 'hookout "$S" "$(bash_json "$S" "light-harness probe add p.py --issue RV-1 --run \"curl http://example.invalid {file}\"")" | grep -q "\"ask\""' "a probe runner hid a network command from the ask"
+
+echo "  test-author: examples plus a generated sweep against the base-commit oracle"
+cat > "$W/gen.py" <<'EOF'
+import itertools, json, sys
+sys.path.insert(0, sys.argv[1])
+from src.guard import blocked
+L = "logs/app.log"
+PREFIXES = ["", "sudo ", "nice ", "time -p ", "env A=1 ", "xargs ", "nohup "]
+BODIES = [f"rm {L}", f"cp /tmp/x {L}", f"cp {L} /tmp/b", f"tee {L}", f"grep rm {L}", f"cat {L}", f"mv {L} /tmp/y"]
+SEPS = ["{}", "true; {}", "{} && true", "echo x | {}"]
+cmds = [s.format(p + b) for p, b, s in itertools.product(PREFIXES, BODIES, SEPS)]
+json.dump({c: blocked(c) for c in cmds}, open(sys.argv[2], "w"), indent=0, sort_keys=True)
+EOF
+"$PYBIN" "$W/gen.py" "$D/.light-harness-base" "$D/tests/golden_guard.json"
+cat > "$D/tests/test_guard.py" <<'EOF'
+import json, pathlib
+import pytest
+from src.guard import blocked
+GOLDEN = json.loads((pathlib.Path(__file__).parent / "golden_guard.json").read_text())
+ALLOWED = {"grep rm logs/app.log", "cp logs/app.log /tmp/b"}   # EX-1, EX-2: the listed changes
+@pytest.mark.parametrize("cmd", sorted(ALLOWED))
+def test_ac1_examples(cmd):
+    """AC-1 EX-1 EX-2"""
+    assert blocked(cmd) is False
+def test_ac2_br2_sweep():
+    """AC-2: all generated commands keep their base outcome, apart from EX-1 and EX-2."""
+    diffs = sorted(c for c, old in GOLDEN.items() if c not in ALLOWED and blocked(c) != old)
+    assert diffs == [], f"{len(diffs)} of {len(GOLDEN)} differ: {diffs[:20]}"
+EOF
+check '[ "$(wc -l < "$D/tests/golden_guard.json")" -gt 190 ]' "the golden file wasn't generated from the base copy"
+check '! $H redgate $X > "$W/rg.out" 2>&1 && grep -q "BR-2" "$W/rg.out"' "red gate accepted a Preservation BR without a [sweep] test"
+edit "$D/tests/test_guard.py" '"""AC-2: all' '"""AC-2 BR-2 [sweep]: all'
+printf 'from src.guard import blocked\ndef test_ac1_cat():\n    """AC-1"""\n    assert blocked("cat logs/app.log") is False\n' > "$D/tests/test_cat.py"
+check '! $H redgate $X > "$W/rg.out" 2>&1 && grep -qx "  tests.test_cat::test_ac1_cat" "$W/rg.out" && ! grep -qx "  tests.test_guard::test_ac2_br2_sweep" "$W/rg.out"' "red gate accepted a non-sweep test passing on the stubs, or refused the sweep"
+rm "$D/tests/test_cat.py"
+printf 'def test_ac1_vacuous():\n    """AC-1"""\n    assert True\n' > "$D/tests/test_sweep_extras.py"
+check '! $H redgate $X > "$W/rg.out" 2>&1 && grep -qx "  tests.test_sweep_extras::test_ac1_vacuous" "$W/rg.out"' "red gate let an untagged test through because its module name holds 'sweep'"
+rm "$D/tests/test_sweep_extras.py"
+printf 'def test_ac2_br2_sweep():\n    """AC-1"""\n    assert True\n' > "$D/tests/test_dup.py"
+check '! $H redgate $X > "$W/rg.out" 2>&1 && grep -qx "  tests.test_dup::test_ac2_br2_sweep" "$W/rg.out"' "red gate let an untagged test through because it reuses a tagged sweep's name in another module"
+rm "$D/tests/test_dup.py"
+ok  $H redgate $X                                # the sweep passes on stubs that keep the base code
+check 'grep -q "Preservation sweep.*test_ac2_br2_sweep" "$K"' "red gate didn't record the Preservation sweep passing on stubs"
+
+echo "  a precise rewrite that lets through what it doesn't recognise"
+cat > "$D/src/guard.py" <<'EOF'
+import re
+from src.words import WRITE
+LOG = "logs/app.log"
+WRAPPERS = ("sudo", "nice")
+def blocked(cmd):
+    """Precise rule: judge the command word of each segment."""
+    for seg in re.split(r"[;|&]+", cmd):
+        w = seg.split()
+        while w and w[0] in WRAPPERS:
+            w = w[1:]
+        if not w or w[0] not in WRITE:
+            continue
+        if (w[-1] == LOG) if w[0] == "cp" else (LOG in w[1:]):
+            return True
+    return False
+EOF
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "test_ac2_br2_sweep" "$W/v.out"' "the sweep didn't catch commands blocked before and allowed now"
+cp "$D/src/guard.py" "$W/naive.py"              # gaming, no probe saved yet: old behaviour only inside the task
+cat >> "$D/src/guard.py" <<'EOF'
+import os
+_precise = blocked
+def blocked(cmd):
+    if os.path.isdir(".light-" + "harness-base"):
+        return LOG in cmd and any(w in WRITE for w in cmd.split())
+    return _precise(cmd)
+EOF
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "test_ac2_br2_sweep" "$W/v.out" && [ -f "$D/.light-harness-base/src/guard.py" ]' "code that switches on the base folder passed the sweep, or the folder wasn't put back"
+sed -i 's/".light-" + "harness-base"/".light-harness-base"/' "$D/src/guard.py"
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "src/guard.py names the harness.s own folders" "$W/v.out"' "code naming the base folder passed verify"
+cp "$W/naive.py" "$D/src/guard.py"
+mv "$D/.light-harness-base" "$S/.git/light-harness/base-aside-guardfix"   # as if a verify was killed mid-run
+check '! $H verify $X >/dev/null 2>&1 && [ -f "$D/.light-harness-base/src/guard.py" ] && [ ! -e "$S/.git/light-harness/base-aside-guardfix" ]' "base copies left aside by a killed run were not put back"
+cat > "$D/src/guard.py" <<'EOF'
+from src.words import WRITE
+LOG = "logs/app.log"
+def _coarse(cmd):
+    return LOG in cmd and any(w in WRITE for w in cmd.split())
+def blocked(cmd):
+    """Exempt the two read-only forms; everything else keeps the coarse rule."""
+    part = "light_harness_part"  # a harness-like name in code: fine while no probe is saved
+    w = cmd.split()
+    if w[:1] == ["command"]:
+        w = w[1:]
+    if len(w) == 3 and w[0] == "grep" and w[2] == LOG:
+        return False
+    if len(w) == 3 and w[0] == "cp" and w[1] == LOG and w[2] != LOG:
+        return False
+    return _coarse(cmd)
+EOF
+ok  $H verify $X                                 # a hole outside the test-author's dimensions
+check '$H baseline $X src/guard.py >/dev/null 2>&1 && grep -q "Coarse deny rule" "$D/.light-harness-base/src/guard.py"' "baseline didn't export the base commit's version"
+(cd "$D" && git add -A && git commit -qm "step 1: precise rule")
+ok  $H set-status Review $X
+
+echo "  reviewer: its own sweep finds the class; saved as a probe that verify re-runs"
+cat > "$W/probe_rv1.py" <<'EOF'
+import itertools, json, os, subprocess, sys
+L = "logs/app.log"
+PREFIXES = ["command ", "exec ", "sudo -u root ", "builtin ", "stdbuf -o0 "]
+BODIES = [f"cp {L} /tmp/b", f"rm {L}", f"tee {L}", f"cp /tmp/x {L}"]
+cmds = [p + b for p, b in itertools.product(PREFIXES, BODIES)]
+code = "import json,sys; from src.guard import blocked; print(json.dumps([blocked(c) for c in json.loads(sys.stdin.read())]))"
+def run(where):
+    r = subprocess.run([sys.executable, "-c", code], cwd=where, input=json.dumps(cmds), capture_output=True, text=True, check=True)
+    return json.loads(r.stdout)
+old, new = run(sys.argv[1]), run(".")
+diffs = [c for c, o, n in zip(cmds, old, new) if o and not n]
+print(f"{len(cmds)} commands, {len(diffs)} blocked before and allowed now: {diffs}")
+sys.exit(1 if diffs else 0)
+EOF
+SEP="|----|----------|--------|------|-------|-------------|------------------|"
+edit "$K" "$SEP
+" "$SEP
+| RV-1 | High | Open | src/guard.py | Blocked before, allowed now: prefixes × cp from the log | \`command cp logs/app.log /tmp/b\` is allowed; the base blocked it | BR-2 |
+"
+nok $H probe add "$W/probe_rv1.py" --issue RV-9 $X       # no such issue
+nok $H probe add "$W/nosuch.py" --issue RV-1 $X
+check '! $H probe add "$W/probe_rv1.py" --issue RV-1 --run "nosuch-runner {file}" $X >/dev/null 2>&1 && ! $H log guardfix | grep -q "probe-saved"' "a probe with a runner that can't start was saved"
+check '$H probe add "$W/probe_rv1.py" --issue RV-1 $X > "$W/p.out" 2>&1 && grep -q "RV-1.1" "$W/p.out"' "probe add failed"
+check '$H probe list $X | grep -q "RV-1.1.*RV-1"' "probe list doesn't show the saved probe"
+check '$H log guardfix | grep -q "probe-saved RV-1.1"' "the probe isn't in the audit trail"
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "Saved probe: RV-1.1" "$W/v.out" && grep -q "command cp" "$W/v.out"' "verify didn't fail on the saved probe"
+for f in "$D"/.light-harness/probes/*; do echo 'import sys; sys.exit(0)' > "$f"; done
+echo 'def blocked(c): return False' > "$D/.light-harness-base/src/guard.py"
+echo 'raise SystemExit(0)' > "$D/.light-harness-base/sitecustomize.py"     # a planted file
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "Saved probe: RV-1.1" "$W/v.out" && [ -f "$D/.light-harness-base/sitecustomize.py" ]' "tampered probe or task base copies let verify pass (probes use their own export), or the task's copies were not put back"
+check '[ "$(hook "$S" "$(file_json Edit "$S" "$(ls "$D"/.light-harness/probes/* | head -1)")")" = 2 ]' "guard allowed editing a saved probe"
+check '! $H probe run $X >/dev/null 2>&1' "probe run passed with a failing probe"
+rm -rf "$D/.light-harness-base"; mkdir -p "$W/evil"; echo 'x = 1' > "$W/evil/planted.py"; ln -s "$W/evil" "$D/.light-harness-base"
+check '! $H probe run $X >/dev/null 2>&1 && [ ! -L "$D/.light-harness-base" ] && [ -f "$W/evil/planted.py" ] && [ ! -e "$W/evil/src" ]' "a symlinked base folder was followed"
+check '$H baseline $X src/guard.py >/dev/null 2>&1 && [ -f "$D/.light-harness-base/src/guard.py" ]' "baseline didn't recreate the base copies"
+ok  $H verdict fail $X
+
+echo "  rework: fix the class; an instance-only regression test is flagged"
+ok  $H set-status Build $X
+cp "$D/src/guard.py" "$W/v2.py"                  # gaming: keep the hole except while a probe runs
+cat >> "$D/src/guard.py" <<'EOF'
+import os
+_blocked = blocked
+def blocked(cmd):
+    return _coarse(cmd) if os.environ.get("LIGHT_HARNESS_PROBE") or os.environ.get("LIGHT_HARNESS_BASELINE") else _blocked(cmd)
+EOF
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "src/guard.py names the harness" "$W/v.out"' "code that detects a probe run passed verify"
+cp "$W/v2.py" "$D/src/guard.py"                  # the same with the name built from pieces: no marker exists
+cat >> "$D/src/guard.py" <<'EOF'
+import os
+_blocked = blocked
+MARK = "LIGHT_" + "HARN" + "ESS_BASELINE"
+def blocked(cmd):
+    return _coarse(cmd) if any(os.environ.get(k) for k in (MARK, MARK.replace("BASELINE", "PROBE"))) else _blocked(cmd)
+EOF
+check '! $H verify $X > "$W/v.out" 2>&1 && grep -q "Saved probe: RV-1.1 (for RV-1) fails with exit 1: its defect class is still there" "$W/v.out"' "a probe run was told apart through its environment"
+cat > "$D/src/guard.py" <<'EOF'
+from src.words import WRITE
+LOG = "logs/app.log"
+def _coarse(cmd):
+    return LOG in cmd and any(w in WRITE for w in cmd.split())
+def blocked(cmd):
+    """Exempt exactly the two read-only forms; anything else keeps the coarse rule."""
+    w = cmd.split()
+    if len(w) == 3 and w[0] == "grep" and w[2] == LOG:
+        return False
+    if len(w) == 3 and w[0] == "cp" and w[1] == LOG and w[2] != LOG:
+        return False
+    return _coarse(cmd)
+EOF
+printf 'from src.guard import blocked\ndef test_rv1_command_prefix():\n    """RV-1: a command prefix no longer lets cp through"""\n    assert blocked("command cp logs/app.log /tmp/b")\n' > "$D/tests/test_rv1.py"
+check '$H probe run $X >/dev/null 2>&1' "probe run fails after the class fix"
+check '$H verify $X > "$W/v.out" 2>&1 && grep -q "✓.*probe" "$W/v.out" && grep -q "⚠ Over-fit.*tests/test_rv1.py.*RV-1" "$W/v.out"' "verify after the fix: probe not passing, or the over-fit warning missing"
+(cd "$D" && git add -A && git commit -qm "rework: keep the coarse rule for anything not exempt")
+edit "$K" "| RV-1 | High | Open" "| RV-1 | High | Fixed"
+ok  $H set-status Review $X
+edit "$K" "| RV-1 | High | Fixed" "| RV-1 | High | Resolved" "$SEP
+" "$SEP
+| RV-2 | Medium | Open | src/guard.py | blocked before, allowed now: quoting | a quoted log path | BR-2 |
+"
+ok  $H verdict fail $X
+ok  $H set-status Build $X
+edit "$K" "| RV-2 | Medium | Open" "| RV-2 | Medium | Fixed"
+ok  $H set-status Review $X
+edit "$K" "| RV-2 | Medium | Fixed" "| RV-2 | Medium | Resolved" "- [ ] AC-1" "- [x] AC-1
+- [x] AC-2"
+ok  $H verdict pass $X
+check '$H metrics guardfix --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); assert (k[\"review_rounds\"], k[\"same_class_reopened\"]) == (3, 1), k"' "metrics don't count the same class reopened"
+check '$H metrics | grep -q "same class reopened"' "metrics summary lacks same class reopened"
+check 'evq "any(e.get(\"command\")==\"verdict\" and e.get(\"same_class_reopened\")==1 for e in E)"' "verdict event lacks same_class_reopened"
+nok $H probe drop RV-1.1 --name X --reason y $X </dev/null      # human only
+check 'human "$H probe drop RV-1.1 --name \"Human Approver\" --reason \"checked by hand\" $X" "" && ! $H probe list $X | grep -q "RV-1.1" && $H log guardfix | grep -q "probe-dropped"' "a human couldn't drop a probe"
 
 echo; echo "Self-test: $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]

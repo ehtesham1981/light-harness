@@ -17,7 +17,7 @@ You are running **/light-harness:task-review**.
 
 2. If status is Build, run `light-harness set-status Review --task <name>`. This re-runs full verification and refuses to enter Review if it fails. On refusal, report the failures and tell the human to run `/light-harness:task-implement`.
 
-3. **Delegate to the `light-harness:reviewer` subagent** with this brief: "Review the implementation independently against contract.md: re-run verify, check every AC with evidence (§11.1), check business rules, plan conformance, deviations, test quality and gaming. Log issues in §11.2 with severity and re-check any existing ones. Write §11.3. Return your recommended verdict and the blocking issue IDs."
+3. **Delegate to the `light-harness:reviewer` subagent** with this brief: "Review the implementation independently against contract.md: re-run verify, check every AC with evidence (§11.1), check business rules, plan conformance, deviations, test quality and gaming. For every Invariant or Preservation BR, run a sweep of your own against its oracle, record method, sample size and differences in §11.3, and save any sweep that found a defect with `light-harness probe add`. Log issues in §11.2 with severity and a defect Class, and re-check any existing ones over their whole class. Write §11.3. Return your recommended verdict and the blocking issue IDs."
    Don't pass it your own opinion of the work. It must judge from the contract, code, tests and git history.
 
 4. Record the verdict the reviewer recommends:

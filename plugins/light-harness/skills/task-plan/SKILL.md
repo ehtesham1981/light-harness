@@ -20,6 +20,7 @@ You are running **/light-harness:task-plan**.
 3. When it returns, read the contract yourself and run `light-harness check plan --task <name>`. If there are gaps, send the explorer back with the specific gaps. Don't fill them yourself.
 
 4. **Open questions.** If §6 has questions that need a human, ask them now, one at a time. Record the answers in §6. If an answer changes rules, examples or ACs, update §2–§4 (with the human's confirmation) and have the explorer revise the plan.
+   - When the human confirms that a BR is an `[Invariant]` or `[Preservation]` rule, write the tag and its four sub-bullets (`Input space:`, `Oracle:`, `Unacceptable failure:`, `Allowed changes:`) into §2 under that BR, and have the explorer add its `BR-n [sweep]` entry (with `generator:` and `oracle:`) to §8.4. `check plan` refuses the plan until both are there.
 
 5. Run `light-harness set-status Plan --task <name>`.
 

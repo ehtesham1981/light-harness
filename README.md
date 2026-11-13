@@ -15,9 +15,9 @@ task-init ─► Initialize ─► task-plan ─► Plan ─[human approves]─�
 | Command | Stage | What happens | Gate |
 |---|---|---|---|
 | `/light-harness:task-init` | Initialize | Starts the task in `.tasks/<name>/`, then interviews you for the goal, business rules, examples and acceptance criteria | ≥1 example, ≥1 testable acceptance criterion (AC) |
-| `/light-harness:task-plan` | Plan | **explorer** subagent writes findings, risks, impact analysis, files in scope, interfaces, steps and test strategy | Every AC mapped to steps and tests; **a human approves**, and their name, the time and the plan hash are recorded |
-| `/light-harness:task-implement` | Build | **test-author** subagent writes tests → stubs → **red gate** → implementation → **verify** | Red gate: the task's tests trace to every AC, fail on stubs, none pass vacuously, then get locked; tests from before the task must keep passing · Verify: locked tests unchanged and passing, anti-gaming scan, anti-drift vs approved scope |
-| `/light-harness:task-review` | Done / Rework | **reviewer** subagent checks every AC with evidence and logs issues with severity | PASS refused while any Critical/High/Medium issue is unresolved, any AC is unticked, or verify fails |
+| `/light-harness:task-plan` | Plan | **explorer** subagent writes findings, risks, impact analysis, files in scope, interfaces, steps and test strategy | Every AC mapped to steps and tests; every rule over an input space has an oracle and a generated sweep; **a human approves**, and their name, the time and the plan hash are recorded |
+| `/light-harness:task-implement` | Build | **test-author** subagent writes tests → stubs → **red gate** → implementation → **verify** | Red gate: the task's tests trace to every AC and sweep every input-space rule, fail on stubs, none pass vacuously, then get locked; tests from before the task must keep passing · Verify: locked tests unchanged and passing, saved probes passing, anti-gaming scan, anti-drift vs approved scope |
+| `/light-harness:task-review` | Done / Rework | **reviewer** subagent checks every AC with evidence, sweeps every input-space rule itself, and logs issues with severity and defect class | PASS refused while any Critical/High/Medium issue is unresolved, any AC is unticked, or verify fails |
 
 ## Install
 
@@ -80,6 +80,8 @@ For another task, run `/light-harness:task-init <name>` in a new session in the 
 |---|---|---|
 | Task folder | `.tasks/<name>/`, a git worktree, ignored through `.git/info/exclude` and removed by `finish-task` | no |
 | Live contract and stack config | `.tasks/<name>/.light-harness/contract.md` and `config.json`, ignored | no |
+| Base-commit copies | `.tasks/<name>/.light-harness-base/`, written by `light-harness baseline`, ignored; moved aside to `.git/light-harness/` while the suite and probes run | no |
+| Saved probes | the audit trail (`probes.json` and the scripts), run from `.tasks/<name>/.light-harness/probes/` against a fresh base export in `.git/light-harness/` | no |
 | Audit trail | `refs/light-harness/tasks/<name>`: one commit per gate event (task start, approval, baseline, red gate, unlocks, verdicts), each holding the contract and gate records plus a snapshot of the code at that moment | no (a hidden ref, not pushed by `git push`) |
 | Finished work | the task's branch (`task/<name>`, or the name you pass to `finish-task --branch`), plus `refs/light-harness/done/<name>` so later tasks can build on it | the branch is the deliverable |
 | Repo defaults | `.git/light-harness/config.json`, the last finished task's stack config, used to start the next task | no |
@@ -98,6 +100,9 @@ light-harness show <name>                                   # print a task's con
 light-harness log <name>                                    # print a task's audit trail
 light-harness metrics [<name>] [--json]                     # KPIs for tasks, agents and opted-in engineers
 light-harness telemetry status                              # where events go, and whether you're opted in
+light-harness baseline --task <name> <path…>                # base-commit copies of files (+ local imports) in .tasks/<name>/.light-harness-base/
+light-harness probe add <script> --issue RV-n --task <name> # save a sweep that found a defect; verify re-runs it from then on
+light-harness probe list|run --task <name>                  # show or run the saved probes
 ```
 
 - **Your main branch is never touched.** The harness commits nothing to it, and nothing is merged automatically. You merge or open a PR from a finished task's branch when you're ready.
@@ -106,6 +111,23 @@ light-harness telemetry status                              # where events go, a
 - **Building on earlier work:** `--from <finished-task>` starts the new task from the finished one's code, tests and stack config. Independent tasks start from the current branch.
 - **Existing tests:** a passed verdict records which tests pass. On an existing codebase, entering Build records them the first time. At the red gate, those tests may pass (and must keep passing at `verify`). Only the tests added in this task must fail on the stubs. AC numbers start at 1 in every task, because the red gate and `verify` only count the tests added or changed in the current task.
 - **Task folder location:** `worktree_dir` in the task's config (default `.tasks`).
+
+### Rules that hold for every input
+
+Some rules cover an open-ended input space: "existing outcomes don't change", "the guard blocks every write into X", "the parser reads every legacy file". A handful of examples can't prove them, and when each stage takes its examples from the stage before, they all share one blind spot. A rewrite of a guard is the classic case: a precise parser that replaces a coarse heuristic turns "blocks too much" into "lets through anything it doesn't recognise", and each review round finds a few more instances of the same class. So for these rules the evidence is a **generated sweep checked against an oracle**; examples only illustrate.
+
+- **Contract.** A business rule is `[Example]` (the default, untagged), `[Invariant]` (a property of every input) or `[Preservation]` (outcomes unchanged from the base commit, apart from listed changes). A tagged rule states its `Input space:`, `Oracle:` (the base-commit code, a reference implementation or a property), `Unacceptable failure:` direction and `Allowed changes:` as sub-bullets, and §8.4 has a `BR-n [sweep]` entry naming its `generator:` and `oracle:`. `check plan`, and so approval, refuses the plan otherwise; it also warns about untagged rules worded like "every" or "unchanged".
+  ```markdown
+  - BR-2 [Preservation]: commands the guard already blocks or allows keep their outcome
+    - Input space: prefixes × command words × targets × separators, including ones the rule doesn't know
+    - Oracle: the guard at the base commit (`light-harness baseline`)
+    - Unacceptable failure: allowed now but blocked before; blocking more is acceptable only if listed
+    - Allowed changes: EX-3, EX-4
+  ```
+- **Oracle from the base commit.** `light-harness baseline --task <name> <path…>` writes the base-commit versions of those files, with their local Python and JS/TS imports, to `.tasks/<name>/.light-harness-base/` (ignored, never committed). Old and new code can then run side by side. The guard blocks agent edits and Bash writes into it as best it can, and it never reaches a probe anyway: probes get a fresh export from git, outside the task folder. Tests turn it into a golden file under the test folder rather than reading it at run time: it isn't there in CI, and the harness moves it out of the task folder while the suite runs.
+- **Tests.** The test-author writes a deterministic sweep per tagged rule (full cross product or fixed seed, including values the rule doesn't recognise), tagged `BR-n [sweep]` in its docstring or title (not a comment) and with `sweep` in its own name. The red gate and `verify` require one per tagged rule. A Preservation sweep passes on stubs that keep the old code, and the red gate accepts that test, by its tag and name, without `--allow-passing`. A kind tag the plan gate can't read (`[Preservation-rule]`, `(Invariant, Example)`) is refused rather than treated as an Example rule.
+- **Review.** The reviewer runs its own sweep from dimensions it picks independently, records the method, sample size and differences, and names the defect **class** in the issues table's Class column. A sweep that found a defect is saved with `light-harness probe add`: it's kept in the task's audit trail, where agents can't change it, and every `verify` re-runs it, so a finding becomes a permanent check and later rounds cover earlier classes. A probe runs with its working directory at the task folder and gets, as its first argument, a fresh export of the base copies it recorded, made outside the task folder; exit 0 means the class is gone, 1 that it found differences, anything else that the probe broke. So that the code under test can't behave differently while it is checked: the test suite and the probes run as in CI, with the task's `.light-harness-base/` moved out of the task folder and no agent-session or harness markers in their environment (`CLAUDECODE`, `CLAUDE_CODE_*`, `CLAUDE_PROJECT_DIR`, `LIGHT_HARNESS_*`, the plugin on PATH; a project's own variables are kept); `verify` fails implementation code that names the harness's folders (`.light-harness-base`, `.light-harness`), and code that names the harness once probes are saved (a tool config that ignores those folders, or a domain term, can be declared in §10.3); and it warns about code that inspects its parent process. A task worktree still differs from CI in small ways (its `.git` is a file, its branch is `task/…`); code that tests for those stands out to the reviewer, and the committed sweep runs in CI too. Only a human can drop a probe (`probe drop <id> --name … --reason …`).
+- **Rework** fixes the class, not the listed instances; `verify` warns about a regression test whose inputs all come from its issue's text. `metrics` counts **same class reopened**: issues in a later review round whose class matches an earlier one, or that the reviewer set back to Open after the implementer marked them Fixed (the audit trail records the issues table when each review starts and at each verdict).
 
 ### Human-only commands
 Run these in your own terminal, in the project's main folder, as `python3 "<plugin folder>/scripts/harness.py" <command>`. The agent prints the exact path when one is needed.
@@ -116,6 +138,7 @@ forget <name>                                                   # delete a finis
 uninstall [--dry-run] [--force]                                 # remove every trace of Light Harness from this repo
 telemetry opt-in --as "<nickname>" [--repo]                     # attribute your harness events to a nickname you choose
 telemetry opt-out [--repo]                                      # stop attributing them
+probe drop <id> --task <name> --name "Full Name" --reason "..."  # remove a saved probe that verify re-runs
 ```
 
 ### Uninstall, and repos set up by 1.x
@@ -132,8 +155,9 @@ Light Harness 1.3 and earlier copied itself into the work repo: `contract.md`, `
 | Plan hash | Changing requirements or the plan after approval. Any edit to contract §1–§8 voids the approval and red gate |
 | Git-anchored audit trail | Task start, approval, baseline, red gate, test unlocks and verdicts are commits on `refs/light-harness/tasks/<name>`, each with a code snapshot. Gates are recomputed from that history, not from a side file. The red gate's snapshot is what locked tests are compared against |
 | Guard hook (PreToolUse) | Code edits before Build or during Review, edits to locked tests, hand edits of the Status line and harness-owned contract blocks, edits to the harness's files and to agent permissions (settings, agents, commands, skills under `.claude/`) unless the approved plan lists them by a `.claude/` path in §8.1. Bash: human-only commands, faked terminals, branch switching, merges, rebases, resets, amends, branch/tag deletion, worktree changes, `rm -rf`, and tampering with the audit trail or the telemetry settings. Network commands and pushes ask first, and `.env` files are unreadable. It fails closed in a harness repo if Python is missing, and it's inert in other repos |
-| Red gate | New tests that pass before implementation, ACs not traced to this task's tests, skipped tests |
-| `verify` | Modified, deleted or added protected files; test-runtime sniffing; skip/xfail/only markers; changes outside approved scope; stack config changed after approval; changes to agent permissions not listed under `.claude/` in the approved §8.1 (listed ones are a warning for the reviewer). Warns on swallowed exceptions, coverage exclusions, mocks in implementation code, and comparisons against test literals |
+| Plan gate (`check plan`, `approve`) | An `[Invariant]` or `[Preservation]` rule without an input space, oracle, failure direction, allowed changes or a §8.4 sweep entry; an unknown rule kind |
+| Red gate | New tests that pass before implementation (apart from tagged Preservation sweeps), ACs not traced to this task's tests, input-space rules with no `[sweep]` test, skipped tests |
+| `verify` | Saved probes that fail; implementation code that names the harness's folders, or (once probes are saved) the harness itself, so it could tell a check apart (a tool config that ignores the folders, or a domain term, is declared in §10.3 and becomes a warning); tests that read the base copies at run time (the suite runs with them moved out of the task folder); input-space rules with no `[sweep]` test; modified, deleted or added protected files; test-runtime sniffing; skip/xfail/only markers; changes outside approved scope; stack config changed after approval; changes to agent permissions not listed under `.claude/` in the approved §8.1 (listed ones are a warning for the reviewer). Warns on swallowed exceptions, coverage exclusions, mocks in implementation code, comparisons against test literals, regression tests that only use the inputs quoted in their issue, code that names the harness before any probe is saved, and code that inspects its parent process |
 | `finish-task` | A branch that differs from the code the reviewer passed |
 | Reviewer + verdict gate | Subtle gaming (special-casing example values), unmet ACs and rules, missing risk mitigations, unjustified deviations |
 
@@ -147,7 +171,7 @@ The harness records what happens to each task as local events. `light-harness me
 
 | Event | When | Main attributes |
 |---|---|---|
-| `command` | every gate and lifecycle command (`set-status`, `check`, `redgate`, `verify`, `verdict`, `approve`, `unlock-tests`, `start-task`, `finish-task`) | `ok`, `reason` (first line of a refusal), `ms`; plus test counts for the red gate, failure kinds for `verify`, issues by severity for a verdict, and the unlock reason |
+| `command` | every gate and lifecycle command (`set-status`, `check`, `redgate`, `verify`, `verdict`, `approve`, `unlock-tests`, `start-task`, `finish-task`, `probe`) | `ok`, `reason` (first line of a refusal), `ms`; plus test counts for the red gate, failure kinds for `verify`, issues by severity and `same_class_reopened` for a verdict, and the unlock reason |
 | `stage` | each status change | `from`, `to` |
 | `guard` | each guard hook block or ask | `decision`, `rule` (such as `locked-test`, `stage`, `git-surgery`, `network`), `tool`, `agent_type` |
 | `agent` | subagent start and stop (SubagentStart/SubagentStop hooks) | `phase`, `agent_type`, `agent_id`; the stop carries `run_s` |
@@ -160,7 +184,7 @@ Some gate events also carry durations already worked out, so an OTel dashboard c
 Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (the Claude Code session id) and `actor` (`agent` or `human`). It never holds code, contract text, test output or file contents. Events without a task are attributed through their session.
 
 **KPIs** (`light-harness metrics`, or `metrics <task> --json`):
-- **Task:** lead time, time in each stage, review rounds, first-pass review yield, plan approvals, test unlocks. These come from the audit trail, so they cover tasks from before 1.5 too.
+- **Task:** lead time, time in each stage, review rounds, first-pass review yield, plan approvals, test unlocks, and (from 1.7) same class reopened: issues in a later review round whose Class matches an earlier round's, or that the reviewer set back to Open after the implementer marked them Fixed (the audit trail records the issues table when each review starts and at each verdict). A rising count is the sign of example-anchored checks on a rule that holds for every input; those are the tasks to examine. These come from the audit trail, so they cover tasks from before 1.5 too.
 - **Time split** (from 1.6): each task's total time (its lead time, or its age while open) split three ways, overall and by stage:
   - **Agent:** time the main agent spent working in turns, not counting waits on a human inside them. Subagents run inside turns, so they're already included.
   - **Human:** time spent waiting on a human. That's the gaps between a turn ending and the next prompt in the same session (up to the human-gap cap, 2 hours by default), plus permission dialogs and `AskUserQuestion` answers inside turns.

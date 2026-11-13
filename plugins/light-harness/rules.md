@@ -36,6 +36,7 @@ Check where you are at any time with `light-harness status --task <name>`. If `l
 - Commit after each plan step with `step N: <summary>`. Before `finish-task`, the branch must hold exactly the reviewed work, all committed.
 - Tests that passed before the task started (from an earlier task or existing code) must keep passing; only the task's new tests must fail at the red gate. AC/BR/EX numbering starts at 1 in every task.
 - Prefer the simplest implementation that satisfies the contract. No speculative features.
+- **Rules over an input space.** A BR tagged `[Invariant]` or `[Preservation]` holds for every input, so its evidence is a generated sweep checked against an oracle (the base-commit code from `light-harness baseline`, a reference, or a property); examples only illustrate. Review issues name a defect class, and rework fixes the class. A sweep that found a defect is saved with `light-harness probe add` and re-run by every `verify`.
 
 ## Subagents
 

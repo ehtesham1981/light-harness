@@ -369,10 +369,43 @@ def time_split(ev: list[dict], start: float, end: float, stage_spans: list) -> d
     return out
 
 
-def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None) -> dict:
+def class_name(s) -> str:
+    """The short name of a review issue's defect class: its Class cell up to the first ':' or ';'
+    (the dimensions and examples follow), lowercased. "" for none or a placeholder such as "-"."""
+    s = re.split(r"[:;]|\s[—–]\s", str(s or ""), maxsplit=1)[0]
+    s = re.sub(r"\s+", " ", s.replace("`", "")).strip(" .-*_").lower()
+    return "" if s in ("n/a", "na", "none", "tbd") else s
+
+
+def same_class_reopened(rounds: list) -> int:
+    """How often a defect class came back in a later review round. `rounds` holds the issues table at
+    each snapshot (each review handed in, each verdict), oldest first, as dicts with id, class and
+    status. Counts a new issue whose class matches an earlier snapshot's, and an issue set back to Open
+    after it was Fixed or Resolved. An issue that just stays Open doesn't count."""
+    seen, status, count = set(), {}, 0
+    for k, rows in enumerate(rounds):
+        for r in rows:
+            iid, cls = str(r.get("id", "")).upper(), class_name(r.get("class"))
+            st = str(r.get("status", "")).strip().lower()
+            if iid not in status:
+                count += bool(k and cls and cls in seen)
+            elif st == "open" and status[iid] in ("fixed", "resolved"):
+                count += 1
+        for r in rows:
+            status[str(r.get("id", "")).upper()] = str(r.get("status", "")).strip().lower()
+            if class_name(r.get("class")):
+                seen.add(class_name(r.get("class")))
+    return count
+
+
+def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
+         issue_rounds: dict | None = None) -> dict:
     """KPIs from the audit trails ({task: [(epoch, subject), ...]} oldest first, available for every
-    task ever run here) and the event log (richer, from 1.5.0 on)."""
+    task ever run here) and the event log (richer, from 1.5.0 on). `issue_rounds` ({task: the issues
+    table each time a review started and at each verdict, oldest first}) gives the same-class-reopened
+    count."""
     now = now or time.time()
+    issue_rounds = issue_rounds or {}
     s2t = defaultdict(list)  # session -> [(time, task)] of its events that name a task
     for e in events:
         if e.get("task") and e.get("session"):
@@ -448,6 +481,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             "lead_time_s": done_t - start if done_t and start else None,
             "age_s": None if done_t or start is None else now - start,
             "review_rounds": len(verdicts),
+            "same_class_reopened": same_class_reopened(issue_rounds.get(slug) or []),
             "first_pass": verdicts[0][1] == "pass" if verdicts else None,
             "approvals": sum(s.startswith("harness: plan-approved") for _, s in tr),
             "unlocks": sum(s.startswith("harness: tests-unlocked") for _, s in tr),
@@ -518,6 +552,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         "median_lead_time_s": _median([t["lead_time_s"] for t in vals if t["lead_time_s"] is not None]),
         "first_pass_yield": _mean([1.0 if t["first_pass"] else 0.0 for t in reviewed]),
         "mean_review_rounds": _mean([t["review_rounds"] for t in reviewed]),
+        "same_class_reopened_per_task": _mean([t["same_class_reopened"] for t in vals]),
         "median_approval_wait_s": _median([w for w, _ in all_waits]),
         "time_split": split_tot,
         "median_response_s": _median(responses),
@@ -582,7 +617,8 @@ def render(data: dict, only: str | None = None) -> str:
         out.append(f"Task {only}: {t['status']}" + (f", stage {t['stage']}" if t["stage"] else "")
                    + f", started {t['started'] or '-'}")
         rows = [("Lead time", dur(t["lead_time_s"]) if t["lead_time_s"] is not None else f"- (open for {dur(t['age_s'])})"),
-                ("Review rounds", t["review_rounds"]), ("First-pass review", {True: "yes", False: "no", None: "-"}[t["first_pass"]]),
+                ("Review rounds", t["review_rounds"]), ("Same class reopened", t["same_class_reopened"]),
+                ("First-pass review", {True: "yes", False: "no", None: "-"}[t["first_pass"]]),
                 ("Plan approvals", t["approvals"]), ("Approval wait", ", ".join(map(dur, t["approval_wait_s"])) or "-"),
                 ("Test unlocks", t["unlocks"]), ("Red-gate refusals", t["red_gate_fails"]),
                 ("Verify failures", t["verify_fails"]), ("All gate refusals", t["gate_fails"]),
@@ -600,7 +636,8 @@ def render(data: dict, only: str | None = None) -> str:
     out.append(f"Tasks: {s['tasks']} ({s['done']} done)" + (f" · events since {s['since'][:10]}" if s["since"] else
                                                           " · no telemetry events yet (audit-trail KPIs only)"))
     out.append(f"  median lead time {dur(s['median_lead_time_s'])} · first-pass yield {_pct(s['first_pass_yield'])} · "
-               f"review rounds {_num(s['mean_review_rounds'])} · median approval wait {dur(s['median_approval_wait_s'])}")
+               f"review rounds {_num(s['mean_review_rounds'])} · same class reopened "
+               f"{_num(s['same_class_reopened_per_task'])} per task · median approval wait {dur(s['median_approval_wait_s'])}")
     out.append(f"  per task: red-gate refusals {_num(s['red_gate_fails_per_task'])} · verify failures "
                f"{_num(s['verify_fails_per_task'])} · guard blocks {_num(s['guard_blocks_per_task'])} · "
                f"test unlocks {_num(s['unlocks_per_task'])}")
@@ -619,13 +656,13 @@ def render(data: dict, only: str | None = None) -> str:
     if data["tasks"]:
         out.append("")
         out.append(f"{'Task':<24} {'Status':<12} {'Lead time':>10} {'Reviews':>8} {'1st pass':>8} "
-                   f"{'Appr. wait':>10} {'Red-gate✗':>9} {'Verify✗':>8} {'Blocks':>7} {'Unlocks':>8}")
+                   f"{'Appr. wait':>10} {'Red-gate✗':>9} {'Verify✗':>8} {'Blocks':>7} {'Unlocks':>8} {'Reopened':>8}")
         for slug, t in data["tasks"].items():
             lead = dur(t["lead_time_s"]) if t["lead_time_s"] is not None else f"({dur(t['age_s'])})"
             fp = {True: "yes", False: "no", None: "-"}[t["first_pass"]]
             out.append(f"{slug[:24]:<24} {t['status']:<12} {lead:>10} {t['review_rounds']:>8} {fp:>8} "
                        f"{dur(_median(t['approval_wait_s'])):>10} {t['red_gate_fails']:>9} {t['verify_fails']:>8} "
-                       f"{sum(t['guard_blocks'].values()):>7} {t['unlocks']:>8}")
+                       f"{sum(t['guard_blocks'].values()):>7} {t['unlocks']:>8} {t['same_class_reopened']:>8}")
         split = {k: t["time_split"] for k, t in data["tasks"].items() if t["time_split"]}
         if split:
             out.append("")

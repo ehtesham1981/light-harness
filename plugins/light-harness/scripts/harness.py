@@ -9,10 +9,12 @@ The harness leaves nothing in the work repo. It runs from the plugin, and its st
 git, outside the working tree, so it never reaches a commit, a branch or a pull request:
   * .tasks/<name>/              the task's git worktree on branch task/<name> (ignored through
                                 .git/info/exclude, removed when the task is finished)
-  * .tasks/<name>/.light-harness/   the task's live contract.md and config.json (ignored)
+  * .tasks/<name>/.light-harness/   the task's live contract.md and config.json, and saved probes
+                                copied out to probes/ when they run (ignored)
+  * .tasks/<name>/.light-harness-base/  base-commit copies written by `baseline` (ignored)
   * refs/light-harness/tasks/<name>  the audit trail: one commit per gate event ("harness: ..."),
-                                each holding the contract and gate records, with a snapshot of
-                                the task's code as its second parent. Gates are recomputed from
+                                each holding the contract and gate records (and saved probes),
+                                with a snapshot of the task's code as its second parent. Gates are recomputed from
                                 this history, not from a side file.
   * refs/light-harness/done/<name>   the reviewed work of a finished task (for --from)
   * .git/light-harness/         repo defaults (the last task's config.json), scratch files and the
@@ -26,13 +28,17 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import datetime as dt
 import fnmatch
 import hashlib
 import json
 import os
+import posixpath
 import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -42,7 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.6.3"
+__version__ = "1.7.0"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
@@ -155,6 +161,42 @@ WARN_PATTERNS = [
     (r"pragma:\s*no cover|istanbul ignore", "coverage exclusion"),
     (r"\bunittest\.mock\b|\bjest\.mock\(", "mocking library used in implementation code"),
 ]
+# Implementation code must not be able to tell a probe run from a normal one. Probes get no marker in
+# their environment (the base folder is an argument), so the code under test would have to name the
+# harness or look at the process that started it. Checked in code files only, outside comments, so a
+# config file that ignores .light-harness-base/ is fine.
+CODE_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".mts", ".cts", ".rb", ".go", ".java", ".kt",
+            ".cs", ".php", ".rs", ".sh", ".bash", ".ps1", ".pl", ".lua", ".swift", ".scala", ".c", ".cc", ".cpp", ".h"}
+HARNESS_NAME = re.compile(r"(?<![A-Za-z0-9])light[-_]?harness(?![A-Za-z0-9])|\bLightHarness\b", re.I)
+HARNESS_DIRS = re.compile(r"\.light-harness(?:-base)?(?![A-Za-z0-9])")  # task-only folders, never a domain term
+PARENT_PEEK = re.compile(r"\bgetppid\b|/proc/|\bpsutil\b|\bparent_process\b|\bprocess\.ppid\b")
+
+
+def code_gaming(path: str, lines: list[str], probes_saved: bool = True,
+                waived: bool = False) -> tuple[list[str], list[str]]:
+    """(failures, warnings) for implementation code that could tell it is being checked. Naming the
+    harness's own folders fails (they exist only inside a task). Naming the harness is a warning until
+    the task has saved probes, then a failure. A §10.3 deviation that lists the file (`waived`: a tool
+    config that ignores the folders, a product named after the harness) keeps either a warning."""
+    if Path(path).suffix.lower() not in CODE_EXT:
+        return [], []
+    code = [l for l in lines if not l.lstrip().startswith(("#", "//", "*", "/*", "--"))]
+    fails, warns = [], []
+    if any(HARNESS_DIRS.search(l) for l in code):
+        (warns if waived else fails).append(
+            f"Anti-gaming{' (review)' if waived else ''}: {path} names the harness's own folders (.light-harness-base/ "
+            "or .light-harness/), which exist only inside a task, so it could behave differently while it is checked"
+            + ("; declared in §10.3, reviewer must assess" if waived else
+               "; if it only ignores them (a tool's config), declare the file in §10.3 with the reason"))
+    elif any(HARNESS_NAME.search(l) for l in code):
+        hard = probes_saved and not waived
+        (fails if hard else warns).append(
+            f"Anti-gaming{'' if hard else ' (review)'}: {path} names the harness, so it could tell a check apart"
+            + ("; declared in §10.3, reviewer must assess" if waived else
+               "; if it's a domain term, declare the file in §10.3 with the reason" if hard else ""))
+    if any(PARENT_PEEK.search(l) for l in code):
+        warns.append(f"Anti-gaming (review): {path} inspects its parent process; check it can't tell a probe run apart")
+    return fails, warns
 
 
 # --- small utilities ----------------------------------------------------------
@@ -600,6 +642,754 @@ def deviation_paths(text: str | None = None) -> list[str]:
             for i in list_items("deviations", text)]
 
 
+# --- rules over an input space: kinds, sweeps, oracles, probes, issue classes ---------------------
+# A business rule is an Example rule (the default), an Invariant (a property of every input) or a
+# Preservation rule (outcomes unchanged from the base commit, apart from listed changes). The last two
+# cover an open-ended input space, so a few examples can't prove them: the plan names a generated
+# sweep and an oracle for each, and the tests and the reviewer sweep the space.
+RULE_KINDS = {"example": "Example", "invariant": "Invariant", "preservation": "Preservation"}
+SPACE_KINDS = ("Invariant", "Preservation")
+RULE_FIELDS = {"input space": "Input space", "oracle": "Oracle", "unacceptable failure": "Unacceptable failure",
+               "allowed changes": "Allowed changes"}
+_BULLET = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])\s+(.*)$")
+_EMPH = r"(?:\*\*|__|\*|_|`)?"
+_RULE_ID = re.compile(rf"{_EMPH}(BR-\d+){_EMPH}\s*(.*)$")
+_TAG = re.compile(rf"{_EMPH}([\[(])([^\])\n]*)[\])]{_EMPH}\s*")
+_FIELD = re.compile(r"(input space|oracle|unacceptable failure(?: direction)?|allowed changes?)\s*:\s*(.*)", re.I)
+_HINT = re.compile(r"\b(every|for all|all inputs|any input|unchanged|keeps? (?:their|its|the same) "
+                   r"(?:outcomes?|results?|output|behaviou?r)|existing (?:outcomes?|behaviou?r|results?)|"
+                   r"regardless of|never (?:lets?|allows?))\b", re.I)
+
+
+def _indent(s: str) -> int:
+    return len(s.expandtabs(4))
+
+
+def _tag_kind(bracket: str, raw: str, before_sep: bool):
+    """The kind a bracketed or parenthesised tag names; the tag as written when it tries to name a kind
+    but isn't exactly one (so the plan gate reports it instead of the rule silently becoming an
+    Example); None when it is prose, such as `(see EX-2)` or `[Admin] users …` after the colon."""
+    word = raw.strip().strip("*_` ").lower()
+    if word in RULE_KINDS:
+        return RULE_KINDS[word]
+    if re.search(r"invariant|preserv", word) or (before_sep and bracket == "[" and re.fullmatch(r"[A-Za-z-]+", word)):
+        return raw.strip()
+    return None
+
+
+def _rule_head(body: str):
+    """(id, kind, text) for a rule line such as `BR-2 [Preservation]: …`, `**BR-2** (Invariant) …` or
+    `BR-2: [Preservation] …`; None if the line doesn't start with a BR id."""
+    m = _RULE_ID.match(body)
+    if not m:
+        return None
+    rest, kind = m.group(2), None
+    for before_sep in (True, False):
+        t = _TAG.match(rest)
+        if t and kind is None and not rest[t.end(2) + 1:].startswith("(") and \
+                (k := _tag_kind(t.group(1), t.group(2), before_sep)) is not None:  # not a [markdown](link)
+            kind, rest = k, rest[t.end():]
+        if before_sep:
+            rest = re.sub(r"^[:\-–—]\s*", "", rest)
+    return m.group(1), kind or "Example", rest.strip()
+
+
+# A rules-block line that names a kind where a tag would go (before the rule's colon, or wrapped on its
+# own in brackets, braces, angle brackets, backticks or emphasis) must be read as that kind.
+_KIND_WORD = re.compile(r"\b(invariants?|preservation)\b", re.I)
+_KIND_WRAPPED = re.compile(r"[\[({<`*_]\s*(invariants?|preservation)\s*[\])}>`*_]", re.I)
+
+
+def _parse_rules(text: str | None):
+    """(specs, problems) for §2. Problems: duplicate ids, and lines that name a kind but don't parse as a
+    rule of that kind (`- BR-2 {Preservation}: …`, `### BR-2 [Invariant]`, `Preservation BR-2: …`), so a
+    spelling the parser doesn't know fails closed instead of quietly becoming an Example rule."""
+    specs, probs, cur, cur_ind = {}, [], None, 0
+    for line in block("rules", text).splitlines():
+        m = _BULLET.match(line)
+        head = _rule_head(m.group(2).strip()) if m else None
+        if m and head and (cur is None or _indent(m.group(1)) <= cur_ind):
+            br, kind, rest = head
+            if br in specs:
+                probs.append(f"{br} is defined twice in §2; give each rule its own id")
+            cur, cur_ind = {"kind": kind, "text": rest, "fields": {}}, _indent(m.group(1))
+            specs[br] = cur
+            if kind == "Example" and re.search(r"\bBR-\d+", line) and (
+                    _KIND_WORD.search(line.split(":", 1)[0]) or _KIND_WRAPPED.search(line)):
+                probs.append(f"{br}: its line names a rule kind but isn't read as one ({line.strip()[:60]!r}). "
+                             "Write it as `- BR-n [Preservation]: …` or `- BR-n [Invariant]: …`, or reword it.")
+            continue
+        f = _FIELD.match(m.group(2).strip()) if m else None
+        if f and cur is not None and _indent(m.group(1)) > cur_ind:
+            # a field's value may be just ids ("Allowed changes: EX-3, EX-4"), unlike filled()'s content
+            if re.sub(r"<[^>]*>", "", f.group(2)).strip(" \t-|*:`_()[],→>"):
+                key = f.group(1).lower()
+                key = next(k for k in RULE_FIELDS if key.startswith(k.split()[0]))
+                cur["fields"][key] = f.group(2).strip()
+            continue
+        if re.search(r"\bBR-\d+", line) and (_KIND_WORD.search(line.split(":", 1)[0]) or _KIND_WRAPPED.search(line)):
+            probs.append(f"a line in §2 names a rule kind but isn't read as a rule ({line.strip()[:60]!r}). "
+                         "Write it as a bullet: `- BR-n [Preservation]: …` or `- BR-n [Invariant]: …`.")
+    return specs, probs
+
+
+def rule_specs(text: str | None = None) -> dict:
+    """{BR id: {"kind", "text", "fields"}} from §2. A rule is `- BR-n [Kind]: text`; its fields are
+    more-indented sub-bullets (`- Oracle: …`). No tag means Example; a tag that tries to name a kind but
+    isn't one is kept as written, so the plan gate reports it."""
+    return _parse_rules(text)[0]
+
+
+def sweep_entries(text: str | None, br: str) -> list[str]:
+    """§8.4 bullets that hold `[sweep]` and the rule's id, each with its more-indented sub-lines."""
+    lines, out = block("test-strategy", text).splitlines(), []
+    for i, line in enumerate(lines):
+        m = _BULLET.match(line)
+        if not m or "[sweep]" not in line or not re.search(rf"\b{re.escape(br)}\b", line):
+            continue
+        ind, chunk = _indent(m.group(1)), [line]
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and _indent(nxt[:len(nxt) - len(nxt.lstrip())]) <= ind:
+                break
+            chunk.append(nxt)
+        out.append("\n".join(chunk))
+    return out
+
+
+def sweep_plan_problems(text: str | None = None) -> list[str]:
+    """Plan-gate problems: §2 lines that name a kind but don't parse as one, duplicate ids, unknown rule
+    kinds, and Invariant/Preservation rules without their four parts or without a §8.4 sweep entry
+    naming a generator and an oracle."""
+    specs, probs = _parse_rules(text)
+    for br, s in specs.items():
+        kind = s["kind"]
+        if kind not in RULE_KINDS.values():
+            probs.append(f"{br} has an unknown kind [{kind}]: use [Invariant] or [Preservation], or no tag for an Example rule")
+            continue
+        if kind not in SPACE_KINDS:
+            continue
+        miss = [name for key, name in RULE_FIELDS.items() if key not in s["fields"]]
+        if miss:
+            probs.append(f"{br} [{kind}] doesn't state: {', '.join(miss)} (indented sub-bullets under the rule, "
+                         f"e.g. `  - {miss[0]}: …`; Allowed changes may be `none`)")
+        entries = sweep_entries(text, br)
+        if not entries:
+            probs.append(f"{br} [{kind}] has no [sweep] entry in §8.4: a bullet with `{br} [sweep]` and the test, "
+                         "naming its `generator:` (dimensions, deterministic) and `oracle:`")
+            continue
+        def named(key: str, s: str):  # the key with a value after it, not a bare `oracle:`
+            return re.search(rf"\b{key}\s*:[ \t]*[^\s<]", s, re.I)
+        if not any(named("generator", e) and named("oracle", e) for e in entries):
+            have = "\n".join(entries)
+            need = [w for w in ("generator", "oracle") if not named(w, have)] or ["generator", "oracle"]
+            probs.append(f"{br}: its §8.4 [sweep] entry names no {' and no '.join(w + ':' for w in need)} "
+                         "(on the entry's line or its sub-bullets)")
+    return probs
+
+
+def rule_hints(text: str | None = None) -> list[str]:
+    """Untagged rules whose wording suggests they hold for every input (a warning, not a failure)."""
+    out = []
+    for br, s in rule_specs(text).items():
+        m = _HINT.search(s["text"]) if s["kind"] == "Example" else None
+        if m:
+            out.append(f"{br} reads like a rule over an input space ({m.group(0)!r}). If it holds for every input, "
+                       "tag it [Invariant] or [Preservation] with its input space and oracle; otherwise ignore this.")
+    return out
+
+
+def sweep_tag_lines(src: str) -> list[str]:
+    """Lines holding a `[sweep]` tag, leaving out comments (a TODO doesn't count as a sweep)."""
+    return [l for l in src.splitlines() if "[sweep]" in l and not l.lstrip().startswith(("#", "//"))]
+
+
+def missing_sweeps(text: str | None, tests_text: str) -> list[str]:
+    """Invariant/Preservation rules with no line in the tests holding both their id and `[sweep]`."""
+    tagged = sweep_tag_lines(tests_text)
+    return [br for br, s in rule_specs(text).items() if s["kind"] in SPACE_KINDS
+            and not any(re.search(rf"\b{re.escape(br)}\b", l) for l in tagged)]
+
+
+def sweep_test_names(files: dict, brs) -> set:
+    """(module, name) of each test whose own chunk carries `<BR> [sweep]` for one of `brs`: the test file's
+    dotted module path (`tests/test_x.py` → `tests.test_x`) with its Python test function names, and
+    with the titles of its it()/test() calls."""
+    names = set()
+    for path, src in files.items():
+        module = re.sub(r"\.[^./]+$", "", path).replace("/", ".")
+        for chunk in test_chunks(src):
+            if any(re.search(rf"\b{re.escape(b)}\b", l) for l in sweep_tag_lines(chunk) for b in brs):
+                names.update((module, n) for n in re.findall(r"def\s+(test\w*)", chunk))
+                names.update((module, n) for n in re.findall(r"\b(?:it|test)(?:\.\w+)?\s*\(\s*['\"`]([^'\"`]+)", chunk))
+    return names
+
+
+def is_tagged_sweep(junit_name: str, names: set) -> bool:
+    """A reported test (`module[.Class]::test[params]`) that is one of the tagged sweeps: the same
+    function in the same module, or, for JS, a title that itself holds the tag. The test's own name
+    must say `sweep`; a module or class name doesn't count."""
+    cls, _, leaf = junit_name.rpartition("::")
+    leaf = leaf.split("[")[0] if "[sweep]" not in leaf else leaf
+    for module, name in names:
+        if "[sweep]" in name:  # a JS title holding the tag itself: a copy elsewhere is tagged too
+            if name in junit_name:
+                return True
+        elif name == leaf and re.search(r"sweep", leaf, re.I):
+            # the module, optionally followed by a Test class; a rootdir below the task folder drops the
+            # module path's leading folders (tests.test_g for backend/tests/test_g.py)
+            mod = re.sub(r"\.Test\w*$", "", cls)
+            if mod == module or module.endswith("." + mod):
+                return True
+    return False
+
+
+# Base-commit copies ("light-harness baseline"): the files, plus their local imports, as they were at
+# the task's base, side by side with the new code. Never committed (local exclude), never edited by
+# agents (guard), always rewritten from git.
+BASE_DIR = ".light-harness-base"
+JS_EXT = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".mts", ".cts")
+_PY_IMPORT = re.compile(r"^[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)", re.M)
+_PY_FROM = re.compile(r"^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[^\n#]+)", re.M)
+_JS_SPEC = re.compile(r"""(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"](\.{1,2}/[^'"\n]+)['"]""")
+
+
+def _py_imports(path: str, src: str, exists) -> list[str]:
+    here = posixpath.dirname(path)
+    roots, d = [], here  # absolute imports: the repo root and every folder above the file (src layouts)
+    while d:
+        roots.append(d)
+        d = posixpath.dirname(d)
+    roots.append("")
+
+    def mod(dotted: str, base: str) -> list[str]:
+        stem = posixpath.join(base, *[p for p in dotted.split(".") if p]) if (base or dotted) else ""
+        return [c for c in (stem + ".py", posixpath.join(stem, "__init__.py")) if stem and c in exists]
+
+    out = []
+    for m in _PY_IMPORT.finditer(src):
+        for name in m.group(1).split(","):
+            parts = name.split()[0].split(".")
+            for base in roots:
+                for i in range(1, len(parts) + 1):
+                    out += mod(".".join(parts[:i]), base)
+    for m in _PY_FROM.finditer(src):
+        dots, dotted, names = m.groups()
+        bases = [here] if dots else roots
+        if dots:
+            for _ in range(len(dots) - 1):
+                bases = [posixpath.dirname(bases[0])]
+        parts = [p for p in dotted.split(".") if p]
+        for base in bases:
+            for i in range(1, len(parts) + 1):
+                out += mod(".".join(parts[:i]), base)
+            pkg = posixpath.join(base, *parts) if (base or parts) else ""
+            for n in re.split(r"[\s,()]+", names):
+                n = n.strip()
+                if n and n != "*" and n != "as" and re.fullmatch(r"\w+", n):
+                    out += mod(n, pkg)
+    return out
+
+
+def _js_imports(path: str, src: str, exists) -> list[str]:
+    out = []
+    for spec in _JS_SPEC.findall(src):
+        t = posixpath.normpath(posixpath.join(posixpath.dirname(path), spec))
+        cands = [t] + [t + e for e in JS_EXT] + [f"{t}/index{e}" for e in JS_EXT]
+        if t.endswith(".js"):  # TypeScript ESM imports name the compiled .js
+            cands += [t[:-3] + e for e in (".ts", ".tsx", ".mts")]
+        out += [c for c in cands if c in exists][:1]
+    return out
+
+
+def import_closure(paths, exists, read) -> list[str]:
+    """`paths` plus the local files they import, transitively (Python: absolute and relative imports
+    and the package __init__.py files; JS/TS: relative specifiers). `exists` is the set of files in the
+    tree, `read(path)` returns a file's text."""
+    todo, seen = list(paths), set()
+    while todo:
+        p = todo.pop()
+        if p in seen or p not in exists:
+            continue
+        seen.add(p)
+        if p.endswith(".py"):
+            d = posixpath.dirname(p)
+            while d:
+                if f"{d}/__init__.py" in exists:
+                    todo.append(f"{d}/__init__.py")
+                d = posixpath.dirname(d)
+            todo += _py_imports(p, read(p) or "", exists)
+        elif p.endswith(JS_EXT):
+            todo += _js_imports(p, read(p) or "", exists)
+    return sorted(seen)
+
+
+def base_commit() -> tuple[str, str]:
+    """(sha, label) of the code this task started from: its task-start, or a reopened task's PASS."""
+    base = task_base_row()
+    if not base:
+        die("this task has no recorded base (no task-start event); run it in a task started by light-harness")
+    return snap_of(base[1]), base[2].removeprefix("harness: ")
+
+
+def base_tree(sha: str) -> set[str]:
+    out = set()
+    for e in git("ls-tree", "-r", "-z", sha).split("\0"):
+        meta, _, path = e.partition("\t")
+        if path and meta.split()[1:2] == ["blob"]:
+            out.add(path)
+    return out
+
+
+def blob(sha: str, path: str) -> bytes:
+    return subprocess.run(["git", "cat-file", "blob", f"{sha}:{path}"], cwd=ROOT, capture_output=True).stdout
+
+
+def export_base(files, sha: str, root: Path | None = None) -> list[str]:
+    """Write the base-commit version of each file under `root` (default BASE_DIR in the task folder);
+    files not in the base are skipped. Never writes through a link, never outside `root`."""
+    if root is None:
+        reset_base_dir()
+        root = ROOT / BASE_DIR
+    tree, out = base_tree(sha), []
+    for f in files:
+        if f not in tree:
+            continue
+        cur = root
+        for part in Path(f).parts[:-1]:  # a link or file planted on the way is removed, not followed
+            cur = cur / part
+            if os.path.lexists(cur) and (_is_link(cur) or not cur.is_dir()):
+                _unlink_entry(cur)
+        dest = root / f
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(dest) and (_is_link(dest) or dest.is_dir()):
+            _rm_tree(dest)
+        if not is_within(Path(os.path.realpath(dest.parent)), Path(os.path.realpath(root))):
+            die(f"refusing to write {f} outside {root}")
+        tmp = dest.with_name(f".{dest.name}.lh-{os.getpid()}")
+        tmp.write_bytes(blob(sha, f))
+        os.replace(tmp, dest)  # a new file: a hard link planted at `dest` is replaced, not written through
+        out.append(f)
+    return out
+
+
+@contextlib.contextmanager
+def base_hidden():
+    """While tests or probes run, keep the base-commit copies out of the task folder, as in CI. Code
+    that behaves differently when .light-harness-base/ exists then gains nothing; probes get their own
+    copies from probe_base(), outside the task folder."""
+    d = ROOT / BASE_DIR
+    slug = task_slug() or "task"
+    aside = state_dir(create=True) / f"base-aside-{slug}"
+    lock = state_dir() / f"base-lock-{slug}"
+    _take_lock(lock)
+    try:
+        if not os.path.lexists(d) and aside.is_dir():
+            _move_dir(aside, d)  # an earlier run was killed before it could put the copies back
+        with _hidden(d, aside):
+            yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _take_lock(lock: Path):
+    """One test or probe run per task at a time, so a second run can't mistake the first's moved-aside
+    copies for a crashed run's. A lock left by a killed run is taken over: its process is gone (POSIX),
+    or it is over two hours old (Windows, where a process can't be probed safely)."""
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return
+        except FileExistsError:
+            try:
+                pid = int(lock.read_text().strip() or 0)
+            except (OSError, ValueError):
+                pid = 0
+            alive = False
+            if os.name != "nt" and pid > 0:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    alive = False
+                except PermissionError:
+                    alive = True
+            elif os.name == "nt":
+                try:
+                    alive = time.time() - lock.stat().st_mtime < 7200
+                except OSError:
+                    alive = False
+            if alive:
+                die(f"another test or probe run of this task is in progress (pid {pid}); wait for it to finish. "
+                    f"If none is running (it was killed), a human can delete {lock}.")
+            lock.unlink(missing_ok=True)
+    die(f"can't take the run lock {lock}")
+
+
+@contextlib.contextmanager
+def _hidden(d: Path, aside: Path):
+    """Move the task's base copies aside for the duration, and put them back."""
+    moved = False
+    if os.path.lexists(d) and (_is_link(d) or not d.is_dir()):
+        _unlink_entry(d)  # a link or a file in its place: regenerable, just drop it
+    elif d.is_dir():
+        if os.path.lexists(aside):
+            _rm_tree(aside)  # safe: the task folder holds the current copies
+        _move_dir(d, aside)
+        moved = True
+    try:
+        yield
+    finally:
+        if moved:
+            if os.path.lexists(d):
+                _rm_tree(d)  # something recreated it during the run
+            _move_dir(aside, d)
+
+
+def _move_dir(src: Path, dst: Path):
+    """Move a folder as one rename. Across drives (worktree_dir elsewhere), copy and then delete, and if
+    the delete fails, put everything back. Never leaves the copies split between two places."""
+    try:
+        os.rename(src, dst)
+        return
+    except OSError as e:
+        if getattr(e, "errno", None) != 18:  # not EXDEV: e.g. a shell is working inside it (Windows)
+            die(f"can't move {src} to {dst} ({e}). If a shell or program is working inside "
+                f"{BASE_DIR}/, leave it and retry; nothing was changed.")
+    shutil.copytree(src, dst, symlinks=True)
+    try:
+        _rm_tree(src)
+    except OSError as e:
+        shutil.copytree(dst, src, symlinks=True, dirs_exist_ok=True)
+        _rm_tree(dst)
+        die(f"can't move {src} aside ({e}). If a shell or program is working inside {BASE_DIR}/, leave it "
+            "and retry; its files were put back.")
+
+
+AGENT_ENV = {"CLAUDECODE", "CLAUDE_PROJECT_DIR", "CLAUDE_ENV_FILE", "CLAUDE_PLUGIN_ROOT", "HARNESS_ROOT"}
+AGENT_ENV_PREFIXES = ("CLAUDE_CODE_", "LIGHT_HARNESS_")
+
+
+def clean_env() -> dict:
+    """The environment for test and probe runs, as in CI: without the agent session's and the harness's
+    own variables (AGENT_ENV, CLAUDE_CODE_*, LIGHT_HARNESS_*) and without harness folders on PATH, so
+    code under test can't tell it is being checked from its environment. A project's own variables,
+    such as CLAUDE_API_URL, are kept."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k.upper() in AGENT_ENV or k.upper().startswith(AGENT_ENV_PREFIXES))}
+    if "PATH" in env:
+        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
+                                      if p and not is_within(Path(p), PLUGIN_ROOT))
+    return env
+
+
+def probe_base(entries: list[dict]) -> Path:
+    """A fresh export of the files the probes recorded, outside the task folder (in the harness's own
+    state, which agents can't write), for the probes to compare against."""
+    d = state_dir(create=True) / f"probe-base-{task_slug() or 'task'}"
+    if os.path.lexists(d):
+        _rm_tree(d)
+    d.mkdir(parents=True)
+    files = sorted({f for e in entries for f in e.get("baseline") or []})
+    if files:
+        export_base(files, base_commit()[0], root=d)
+    return d
+
+
+def base_copies() -> list[str]:
+    d = ROOT / BASE_DIR
+    return sorted(p.relative_to(d).as_posix() for p in d.rglob("*") if p.is_file()) if d.is_dir() else []
+
+
+def cmd_baseline(args):
+    contract()
+    sha, label = base_commit()
+    tree = base_tree(sha)
+    wanted, missing = [], []
+    for raw in args.paths:
+        p = Path(raw)
+        if p.is_absolute():
+            try:
+                p = p.resolve().relative_to(ROOT)
+            except ValueError:
+                die(f"{raw} is outside the task folder {ROOT}")
+        p = p.as_posix().strip("/")
+        hits = sorted(tree) if p in ("", ".") else \
+            sorted(f for f in tree if f == p or f.startswith(p + "/") or fnmatch.fnmatch(f, p))
+        (wanted.extend(hits) if hits else missing.append(raw))
+    if missing:
+        die(f"not in the base commit {sha[:8]} ({label}): {', '.join(missing)}. Paths are relative to the task "
+            "folder; a file this task created has no base version.")
+    ensure_excludes([])  # tasks started before 1.7 lack the BASE_DIR line
+    files = export_base(import_closure(wanted, tree, lambda f: blob(sha, f).decode(UTF8, "replace")), sha)
+    TEL.update(files=len(files))
+    shown = "".join(f"\n  {f}" for f in files[:40]) + (f"\n  … {len(files) - 40} more" if len(files) > 40 else "")
+    print(f"✓ {len(files)} base-commit file(s) from {sha[:8]} ({label}) in {ROOT / BASE_DIR}:{shown}\n"
+          "Run the old and the new code side by side, e.g. the same snippet in a separate process with its working "
+          f"directory at {BASE_DIR}/ (a saved probe gets a fresh export of these files as the argument after the "
+          f"script). Tests must not read {BASE_DIR}/ at run time (it isn't in CI, and the harness moves it out of "
+          "the task folder while the suite runs): generate a golden file under the test folder from it instead.")
+
+
+# Saved probes: a reviewer's sweep that found a defect, kept in the audit trail (agents can't change
+# it) and re-run by every `verify`, so a finding becomes a permanent check.
+PROBES = "probes.json"
+PROBE_TIMEOUT = 600
+PROBE_RUNNERS = {".py": ["python", "{file}", "{base}"], ".sh": ["sh", "{file}", "{base}"],
+                 ".js": ["node", "{file}", "{base}"], ".mjs": ["node", "{file}", "{base}"],
+                 ".cjs": ["node", "{file}", "{base}"]}
+
+
+def probes() -> list[dict]:
+    raw = state_file(state_ref(), PROBES)
+    try:
+        data = json.loads(raw) if raw.strip() else []
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def probe_cmd(entry: dict, path: Path, base: Path | None = None) -> list[str]:
+    """The probe's command: `{file}` is the probe script, `{base}` the base-commit copies' folder (both
+    appended, in that order, when --run leaves them out). The base path is an argument, never an
+    environment variable, so the code under test inherits no marker of a probe run."""
+    run = list(entry.get("run") or PROBE_RUNNERS.get(Path(entry["file"]).suffix.lower(), ["{file}", "{base}"]))
+    for key in ("{file}", "{base}"):
+        if not any(key in a for a in run):
+            run.append(key)
+    cmd = [a.replace("{file}", str(path)).replace("{base}", str(base or ROOT / BASE_DIR)) for a in run]
+    if cmd[0] in ("python", "python3", "py"):
+        cmd[0] = sys.executable
+    return cmd
+
+
+def _is_link(p: Path) -> bool:
+    """A symlink or a Windows junction (on every Python version: its real path isn't under its parent's)."""
+    if p.is_symlink():
+        return True
+    if not os.path.lexists(p):
+        return False
+    real, expect = os.path.realpath(p), os.path.join(os.path.realpath(p.parent), p.name)
+    return os.path.normcase(real) != os.path.normcase(expect)
+
+
+def _unlink_entry(p: Path):
+    """Remove a file, a symlink or a junction itself, never what a link points to."""
+    if os.path.isfile(p) and not _is_link(p):
+        os.chmod(p, stat.S_IWRITE | stat.S_IREAD)  # a read-only file on Windows
+    try:
+        p.unlink()
+    except (IsADirectoryError, PermissionError, OSError):
+        os.rmdir(p)  # a junction, or a link to a folder on Windows
+
+
+def _rm_tree(p: Path):
+    """Delete a folder without ever following a symlink or junction inside it."""
+    if _is_link(p) or not p.is_dir():
+        _unlink_entry(p)
+        return
+    for child in p.iterdir():
+        _rm_tree(child)
+    p.rmdir()
+
+
+def reset_base_dir():
+    """BASE_DIR must be a real folder in the task folder: remove a link or a file standing in its place."""
+    d = ROOT / BASE_DIR
+    if os.path.lexists(d) and (_is_link(d) or not d.is_dir()):
+        _unlink_entry(d)
+
+
+def run_probes(entries: list[dict]) -> list[tuple[dict, int, str]]:
+    """Run saved probes against fresh base copies outside the task folder, with the task's own
+    .light-harness-base/ moved aside: [(entry, exit code, output)]."""
+    if not entries:
+        return []
+    with base_hidden():
+        base = probe_base(entries)
+        return [(e, *run_probe(e, base)) for e in entries]
+
+
+def run_probe(entry: dict, base: Path) -> tuple[int, str]:
+    """Run a saved probe from its audit-trail copy (working directory: the task folder; the base-commit
+    copies' folder `base` as its argument after the script). Exit 0: its defect class is gone; 1: it
+    found differences; anything else: the probe broke."""
+    content = state_file(state_ref(), entry["file"])
+    pdir = ROOT / LIVE / "probes"
+    pdir.mkdir(parents=True, exist_ok=True)
+    path = pdir / entry["file"]
+    path.write_bytes(content.encode(UTF8))
+    cmd = probe_cmd(entry, path, base)
+    try:  # nothing in the environment marks a probe run (no session or harness markers either)
+        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace", env=clean_env(),
+                           stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT)
+    except FileNotFoundError as e:
+        return 127, f"can't run {cmd[0]}: {e}"
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {PROBE_TIMEOUT}s"
+    return r.returncode, r.stdout + r.stderr
+
+
+def cmd_probe(args):
+    text = contract()
+    if args.action == "list":
+        ps = probes()
+        if not ps:
+            print("No saved probes for this task.")
+        for p in ps:
+            run = " ".join(p.get("run") or PROBE_RUNNERS.get(Path(p["file"]).suffix.lower(), ["?"]))
+            print(f"{p['id']:<10} {p['issue']:<8} {p['file']:<28} {run:<22} saved {p.get('added', '?')}")
+        return
+    if args.action == "run":
+        ps, bad = probes(), 0
+        if not ps:
+            print("No saved probes for this task.")
+        for p, rc, out in run_probes(ps):
+            bad += rc != 0
+            print(f"{'✗' if rc else '✓'} {p['id']} ({p['issue']}): exit {rc}" + (f"\n{tail(out, 15)}" if rc else ""))
+        TEL.update(probes=len(ps), failing=bad)
+        sys.exit(1 if bad else 0)
+    if args.action == "drop":
+        require_human("probe drop")
+        if not (args.name and args.reason):
+            die("probe drop needs --name \"Full Name\" and --reason \"...\"")
+        ps = probes()
+        hit = next((p for p in ps if p["id"].lower() == (args.target or "").lower()), None)
+        if not hit:
+            die(f"no saved probe {args.target!r} (see `light-harness probe list`)")
+        rest = [p for p in ps if p is not hit]
+        record(f"harness: probe-dropped {hit['id']} by {args.name}: {args.reason}",
+               {PROBES: json.dumps(rest, indent=2) + "\n", hit["file"]: None})
+        TEL.update(reason_given=args.reason[:200])
+        print(f"✓ Probe {hit['id']} dropped; `verify` no longer runs it.")
+        return
+    # add
+    st = get_status(text)
+    if st not in ("Build", "Review", "Rework"):
+        die(f"status is {st}; probes are saved in Build, Review or Rework")
+    iid = (args.issue or "").strip().upper()
+    if not iid:
+        die("name the issue the probe checks: --issue RV-n")
+    if not any(r["id"].upper() == iid for r in issue_rows(text)):
+        die(f"no issue {iid} in §11.2; log the issue, with its Class, before saving its probe")
+    src = Path(args.target) if args.target else None
+    if not src or not src.is_file():
+        die(f"probe script not found: {args.target}")
+    data = src.read_bytes()
+    if len(data) > 512 * 1024:
+        die("the probe is larger than 512 KB; keep a probe a small, self-contained script")
+    try:
+        content = data.decode(UTF8)
+    except UnicodeDecodeError:
+        die("the probe must be a UTF-8 text script")
+    ext = src.suffix.lower()
+    run = shlex.split(args.run, posix=os.name != "nt") if args.run else None
+    if run and os.name == "nt":
+        run = [a[1:-1] if len(a) > 1 and a[0] == a[-1] and a[0] in "\"'" else a for a in run]
+    if not run and ext not in PROBE_RUNNERS:
+        die(f"no default runner for {ext or 'a file without an extension'}; pass --run \"<command> {{file}}\"")
+    n = 1 + sum(s.startswith(f"harness: probe-saved {iid}.") for _, _, s in harness_log())
+    pid = f"{iid}.{n}"
+    entry = {"id": pid, "issue": iid, "file": f"probe-{pid.lower()}{ext}", "run": run, "baseline": base_copies(),
+             "added": now(), "stage": st}
+    exe = probe_cmd(entry, src)[0]
+    if not (shutil.which(exe) or Path(exe).is_file()):
+        die(f"can't find the probe's runner {exe!r}; fix --run (nothing was saved)")
+    record(f"harness: probe-saved {pid} for {iid}",
+           {PROBES: json.dumps(probes() + [entry], indent=2) + "\n", entry["file"]: content})
+    _, rc, out = run_probes([entry])[0]
+    TEL.update(issue=iid, failing=int(rc != 0))
+    print(f"✓ Probe {pid} saved for {iid} ({entry['file']}, kept in the task's audit trail). `verify` re-runs it "
+          f"from now on and fails while it fails.\n  Now: {'fails' if rc else 'passes'} (exit {rc})\n{tail(out, 10)}"
+          + ("" if entry["baseline"] else f"\n  Note: no base-commit copies were in {BASE_DIR}/ when it was saved, so "
+             "verify restores none for it. If it reads them, run `light-harness baseline` first and save it again."))
+
+
+# Review issues and their defect class
+def issue_rows(text: str | None = None) -> list[dict]:
+    """§11.2 rows as dicts keyed by the header's first word, lowercased (id, severity, status, area,
+    class, description, ref). Older contracts have no Class column: their class is ""."""
+    rows, head = [], None
+    for line in block("issues", text).splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        body = line[1:-1] if line.endswith("|") and not line.endswith("\\|") else line[1:]
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", body)]
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+            continue
+        if head is None:
+            head = [m.group(0) if (m := re.match(r"\w+", c.lower())) else f"col{i}" for i, c in enumerate(cells)]
+            continue
+        if not any(filled(c) for c in cells[1:]):
+            continue
+        row = {k: (cells[i] if i < len(cells) else "") for i, k in enumerate(head)}
+        for k in ("id", "severity", "status", "class"):
+            row.setdefault(k, "")
+        rows.append(row)
+    return rows
+
+
+class_name = telemetry.class_name
+same_class_reopened = telemetry.same_class_reopened
+
+
+def issue_rounds(slug: str) -> list[list[dict]]:
+    """The §11.2 issues each time a review started and at each verdict, oldest first (audit trail)."""
+    out = git("log", "--first-parent", "--reverse", "--format=%H%x09%s", REF_TASKS + slug, check=False)
+    return [issue_rows(state_file(sha, "contract.md")) for sha, _, subj in (l.partition("\t") for l in out.splitlines())
+            if subj.startswith(("harness: verdict", "harness: review-requested"))]
+
+
+# Over-fit check: a rework regression test whose inputs are all quoted from its issue
+_TEST_DEF = re.compile(r"\s*(?:async\s+)?def\s+test|\s*class\s+Test|\s*(?:it|test)(?:\.\w+)?\s*\(")
+_TRIPLE = re.compile(r'("""|\'\'\')(.*?)\1', re.S)
+_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*?)\1""")
+_IDS = re.compile(r"\b(?:AC|BR|EX|RV|R)-\d+\b")
+
+
+def test_chunks(src: str) -> list[str]:
+    """A test file split into one chunk per test (a test function with its decorators, or an it()/test()
+    call); text before the first test is a chunk of its own."""
+    chunks, cur, in_deco = [], [], False
+    for line in src.splitlines():
+        if line.strip().startswith("@"):
+            if not in_deco:
+                if cur:
+                    chunks.append(cur)
+                cur, in_deco = [], True
+        elif in_deco and re.match(r"\s*(?:async\s+)?(?:def|class)\s", line):
+            in_deco = False  # the decorated function, test or helper (a fixture), stays with its decorators
+        elif _TEST_DEF.match(line):
+            if cur:
+                chunks.append(cur)
+            cur = []
+        cur.append(line)
+    if cur:
+        chunks.append(cur)
+    return ["\n".join(c) for c in chunks]
+
+
+def overfit_warnings(issues: list[dict], files: dict) -> list[str]:
+    texts = {r["id"].upper(): " ".join(r.values()) for r in issues if r.get("id")}
+    out = []
+    for path, src in files.items():
+        for chunk in test_chunks(src):
+            ids = sorted({i.upper() for i in re.findall(r"\bRV-\d+\b", chunk)} & set(texts))
+            if not ids:
+                continue
+            lits = [m.group(2) for m in _LITERAL.finditer(_TRIPLE.sub("", chunk))]
+            lits = [l for l in lits if len(l.strip()) >= 4 and not _IDS.search(l)]
+            m = re.search(r"def\s+(test\w*)", chunk) or re.search(r"\b(?:it|test)\s*\(\s*['\"`]([^'\"`]*)", chunk)
+            name = m.group(1) if m else "a test"
+            for iid in ids:
+                if lits and all(l in texts[iid] for l in lits):
+                    out.append(f"Over-fit (review): {path} {name} for {iid} only uses inputs quoted in the issue "
+                               f"({len(lits)} value(s)); a regression test should cover the class's dimensions")
+    return out
+
+
 # --- gate checks --------------------------------------------------------------
 def check_init(text: str) -> list[str]:
     if not block_span(text, "plan"):
@@ -629,7 +1419,7 @@ def check_plan(text: str) -> list[str]:
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", plan_refs)]
     if missing:
         p.append(f"ACs not covered by §8.3 steps / §8.4 test strategy: {', '.join(missing)}")
-    return p
+    return p + sweep_plan_problems(text)
 
 
 def approval_state(text: str | None = None):
@@ -675,7 +1465,8 @@ def run_tests(cfg):
     junit_path.unlink(missing_ok=True)
     if cfg.get("junit_arg"):
         cmd.append(cfg["junit_arg"].format(path=str(junit_path)))
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace")
+    with base_hidden():  # the suite never sees the base-commit copies or session markers, just as in CI
+        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace", env=clean_env())
     results = {}
     if junit_path.exists():
         for tc in ET.parse(junit_path).getroot().iter("testcase"):
@@ -777,6 +1568,19 @@ def verify(write: bool = True) -> bool:
                 elif outcome != "passed":
                     fails.append(f"Green gate: red-gate test is {outcome}: {name}")
 
+        # 2b. saved probes: every sweep a reviewer saved still passes (run from the audit-trail copy)
+        saved = probes()
+        failing = []
+        for p, prc, pout in run_probes(saved):
+            if prc:
+                failing.append(p["id"])
+                why = "its defect class is still there" if prc == 1 else "the probe itself broke (see its output)"
+                fails.append(f"Saved probe: {p['id']} (for {p['issue']}) fails with exit {prc}: {why}"
+                             f"\n```\n{tail(pout, 15)}\n```")
+        if saved and not failing:
+            info.append(f"Saved probes: all {len(saved)} pass")
+        TEL.update(probes=len(saved), probes_failing=len(failing))
+
         # 3. anti-gaming scan of everything changed since the plan was approved
         #    (covers stubs written before the red gate as well as the implementation)
         base = snap_of(appr[1])
@@ -801,6 +1605,10 @@ def verify(write: bool = True) -> bool:
                     fails.append(f"Anti-gaming: {f} {why}")
             if is_test:
                 continue
+            cg_fails, cg_warns = code_gaming(f, lines, probes_saved=bool(saved),
+                                             waived=matches(f, deviation_paths(text)))
+            fails += cg_fails
+            warns += cg_warns
             for pat, why in WARN_PATTERNS:
                 if any(re.search(pat, l) for l in lines):
                     warns.append(f"Anti-gaming (review): {f} has {why}")
@@ -833,14 +1641,26 @@ def verify(write: bool = True) -> bool:
             else:
                 fails.append(f"Anti-drift: {f} changed but is outside §8.1 scope and not declared in §10.3")
 
-    # 5. traceability: every AC exercised by this task's tests (earlier tasks may reuse AC ids)
-    alltests = "\n".join((ROOT / f).read_text(encoding=UTF8, errors="ignore") for f in task_test_files(cfg)
-                         if (ROOT / f).is_file())
+    # 5. traceability: every AC exercised by this task's tests (earlier tasks may reuse AC ids), and
+    #    every rule over an input space swept by a [sweep]-tagged test
+    texts = {f: (ROOT / f).read_text(encoding=UTF8, errors="ignore") for f in task_test_files(cfg)
+             if (ROOT / f).is_file()}
+    alltests = "\n".join(texts.values())
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", alltests)]
     if missing:
         fails.append(f"Traceability: no test added or changed in this task references {', '.join(missing)}")
     else:
         info.append(f"Traceability: all {len(acs(text))} ACs referenced by this task's tests")
+    specs = rule_specs(text)
+    swept = [b for b, s in specs.items() if s["kind"] in SPACE_KINDS]
+    for b in missing_sweeps(text, alltests):
+        fails.append(f"Traceability: {b} [{specs[b]['kind']}] has no generated sweep test tagged `{b} [sweep]` "
+                     "in this task's tests")
+    if swept and not missing_sweeps(text, alltests):
+        info.append(f"Traceability: {', '.join(swept)} swept by [sweep]-tagged tests")
+
+    # 6. over-fit: a rework regression test whose inputs all come from its issue's text
+    warns += overfit_warnings(issue_rows(text), texts)
 
     passed = not fails
     TEL.update(failures=len(fails), warnings=len(warns),
@@ -885,9 +1705,9 @@ def exclude_file() -> Path:
 def ensure_excludes(extra: list[str]):
     ex = exclude_file()
     text = ex.read_text(encoding=UTF8) if ex.exists() else ""
-    # The harness's own folder, plus the caches its Python test runs create, so they never land in
-    # a snapshot or a commit. Local to this clone; `uninstall` removes the block.
-    want = [f"/{LIVE}/", "__pycache__/", "*.py[cod]", ".pytest_cache/"] + extra
+    # The harness's own folders (the task's contract and config, and base-commit copies), plus the
+    # caches its Python test runs create, so they never land in a snapshot or a commit. Local to this clone; `uninstall` removes the block.
+    want = [f"/{LIVE}/", f"/{BASE_DIR}/", "__pycache__/", "*.py[cod]", ".pytest_cache/"] + extra
     m = re.search(rf"{re.escape(EXCLUDE_BEGIN)}\n(.*?){re.escape(EXCLUDE_END)}\n?", text, re.S)
     have = m.group(1).splitlines() if m else []
     lines = have + [w for w in want if w not in have]
@@ -1359,12 +2179,13 @@ def cmd_status(args):
 def cmd_check(args):
     text = contract()
     probs = check_plan(text) if args.stage == "plan" else check_init(text)
-    TEL.update(problems=len(probs))
+    hints = rule_hints(text)
+    TEL.update(problems=len(probs), hints=len(hints))
     if probs:
         TEL["reason"] = probs[0][:200]
-        print("\n".join(f"✗ {p}" for p in probs))
+        print("\n".join([f"✗ {p}" for p in probs] + [f"⚠ {h}" for h in hints]))
         sys.exit(1)
-    print(f"✓ contract satisfies the {args.stage} gate")
+    print("\n".join([f"✓ contract satisfies the {args.stage} gate"] + [f"⚠ {h}" for h in hints]))
 
 
 def cmd_set_status(args):
@@ -1393,6 +2214,10 @@ def cmd_set_status(args):
         TEL["reason"] = probs[0][:200]
         die("gate not satisfied:\n  - " + "\n  - ".join(probs))
     write_status(target, args.note or "")
+    if target == "Review":
+        # the issues table as the implementer hands it back (issues set to Fixed), so a reviewer's
+        # reopening of a Fixed issue is visible to `metrics` (same class reopened)
+        record("harness: review-requested")
     print(f"✓ Status: {cur} → {target}")
 
 
@@ -1458,6 +2283,13 @@ def cmd_redgate(args):
     missing = [a for a in acs(text) if not re.search(rf"\b{a}\b", alltests)]
     if missing:
         die(f"this task's tests don't reference: {', '.join(missing)} (each AC needs at least one test)")
+    specs = rule_specs(text)
+    unswept = missing_sweeps(text, alltests)
+    if unswept:
+        die("these rules hold for every input, but this task's tests have no generated sweep for them: "
+            + ", ".join(f"{b} [{specs[b]['kind']}]" for b in unswept)
+            + ". Write the sweep from the §8.4 entry and tag it with `BR-n [sweep]` in its docstring or title.")
+    preserve = [b for b, s in specs.items() if s["kind"] == "Preservation"]
     rc, out, results = run_tests(cfg)
     if rc == 0:
         die("tests PASS before implementation — they don't prove anything yet. "
@@ -1469,21 +2301,32 @@ def cmd_redgate(args):
     # only this task's new tests must fail against the stubs.
     existing = (baseline_tests() or set()) & set(results)
     passing = sorted(n for n, o in results.items() if o == "passed" and n not in existing)
+    # A Preservation sweep compares the new code with the base outcomes, so it passes on stubs that keep
+    # the base code. It is recognised by its tag (`BR-n [sweep]` for a Preservation rule, on that test in
+    # that module) and its own name (`…sweep…`); listed for the reviewer instead of refused.
+    names = sweep_test_names({f: (ROOT / f).read_text(encoding=UTF8, errors="ignore") for f in mine
+                              if (ROOT / f).is_file()}, preserve) if preserve else set()
+    sweeps = [n for n in passing if is_tagged_sweep(n, names)]
+    passing = [n for n in passing if n not in sweeps]
     broken = sorted(n for n in existing if results[n] != "passed")
     skipped = sorted(n for n, o in results.items() if o == "skipped")
     errors = sorted(n for n, o in results.items() if o == "error")
-    TEL.update(new_tests=len(set(results) - existing), passing_new=len(passing), skipped=len(skipped),
-               errored=len(errors), existing_broken=len(broken))
+    TEL.update(new_tests=len(set(results) - existing), passing_new=len(passing), passing_sweeps=len(sweeps),
+               skipped=len(skipped), errored=len(errors), existing_broken=len(broken))
     if skipped:
         die("skipped tests at red gate: " + ", ".join(skipped))
     if passing and not args.allow_passing:
         die("these new tests already pass against the stubs (they may be vacuous):\n  " + "\n  ".join(passing) +
-            "\nFix them, or re-run with --allow-passing \"<reason>\" (recorded in the contract).")
+            "\nFix them, or re-run with --allow-passing \"<reason>\" (recorded in the contract)."
+            + ("\nA Preservation sweep that passes on stubs keeping the base code is accepted without it when "
+               "the test's own name contains `sweep` and its docstring or title holds `BR-n [sweep]` for a "
+               "[Preservation] rule." if preserve else ""))
     meta = {"tests": sorted(results), "existing": sorted(existing), "passing_at_red": passing,
-            "allow_passing": args.allow_passing, "base": snap_of(base[1]) if base else None,
+            "passing_sweeps": sweeps, "allow_passing": args.allow_passing, "base": snap_of(base[1]) if base else None,
             "plan_hash": plan_hash(text), "when": now()}
     new_count = len(results) - len(existing)
-    lines = [f"**Passed** {now()} — {new_count if results else '?'} new tests, all failing against stubs.",
+    lines = [f"**Passed** {now()} — {new_count if results else '?'} new tests, all failing against stubs"
+             + (f" apart from {len(sweeps)} Preservation sweep(s)." if sweeps else "."),
              f"- Test files locked: {', '.join(tests)}",
              f"- ACs covered: {', '.join(acs(text))}"]
     if existing:
@@ -1492,6 +2335,9 @@ def cmd_redgate(args):
         lines.append(f"- ⚠ Existing tests failing against the stubs (must pass again at verify): {', '.join(broken)}")
     if errors:
         lines.append(f"- ⚠ {len(errors)} tests errored (not failed) at red gate: {', '.join(errors)}")
+    if sweeps:
+        lines.append(f"- Preservation sweeps passing on stubs that keep the base code (expected; "
+                     f"{', '.join(preserve)}): {', '.join(sweeps)}")
     if passing:
         lines.append(f"- ⚠ Allowed passing at red gate ({args.allow_passing}): {', '.join(passing)}")
     set_block("redgate", "\n".join(lines))
@@ -1528,7 +2374,8 @@ def cmd_verdict(args):
         elif st.startswith("won") and sev in BLOCKING_SEVERITIES:
             blocking.append(f"{iid} ({r[1]}, {r[2]})")
     TEL.update(issues=dict(collections.Counter(r[1].strip().lower() or "?" for r in rows)),
-               unresolved=len(unresolved), blocking=len(blocking))
+               unresolved=len(unresolved), blocking=len(blocking),
+               same_class_reopened=same_class_reopened(issue_rounds(task_slug()) + [issue_rows(text)]))
     if illegal:
         die("issues table invalid:\n  - " + "\n  - ".join(illegal))
 
@@ -1599,7 +2446,8 @@ def cmd_metrics(args):
     slug = slugify(name) if name else None
     if slug and slug not in trails:
         die(f"no task {slug!r} (see `light-harness tasks`)")
-    data = telemetry.kpis(trails, finished, telemetry.read_events(common))
+    data = telemetry.kpis(trails, finished, telemetry.read_events(common),
+                          issue_rounds={s: issue_rounds(s) for s in trails})
     if args.json:
         print(json.dumps(data["tasks"][slug] if slug else data, indent=2, default=str))
     else:
@@ -1646,7 +2494,7 @@ def cmd_telemetry(args):
 
 # Commands whose outcome is a telemetry event: gates, stage moves and task lifecycle
 TRACKED = {"check", "set-status", "approve", "unlock-tests", "redgate", "verify", "verdict",
-           "start-task", "finish-task", "telemetry"}
+           "start-task", "finish-task", "telemetry", "probe"}
 HUMAN_ONLY = {"approve", "unlock-tests", "telemetry"}
 
 
@@ -1662,16 +2510,18 @@ def run_tracked(args):
         code = 1
         raise
     finally:
-        if args.cmd != "telemetry" or args.action != "status":
+        # read-only views and diagnostics aren't gate outcomes (a failing `probe run` isn't a refusal)
+        if not (args.cmd == "telemetry" and args.action == "status") and \
+                not (args.cmd == "probe" and args.action in ("list", "run")):
             target = {"set-status": "status", "check": "stage", "verdict": "result",
-                      "telemetry": "action"}.get(args.cmd)
-            attrs = {k: v for k, v in TEL.items() if k != "task"}
+                      "telemetry": "action", "probe": "action"}.get(args.cmd)
+            attrs = {k: v for k, v in TEL.items() if k not in ("task", "action")}
             attrs.update(ok=code == 0, exit=code, ms=int((time.monotonic() - t0) * 1000))
             if code == 0:
                 attrs.pop("reason", None)
+            human = args.cmd in HUMAN_ONLY or (args.cmd == "probe" and args.action == "drop")
             emit("command", common, TEL.get("task") or slug, command=args.cmd,
-                 target=getattr(args, target) if target else None,
-                 actor="human" if args.cmd in HUMAN_ONLY else None, **attrs)
+                 target=getattr(args, target) if target else None, actor="human" if human else None, **attrs)
 
 
 def main():
@@ -1730,6 +2580,19 @@ def main():
                    help="opt-in: the pseudonym your events carry (any nickname you like)")
     s.add_argument("--repo", action="store_true", help="this repo only (default: all your repos)")
     s.set_defaults(f=cmd_telemetry)
+    s = sub.add_parser("baseline", help="write base-commit copies of files (with their local imports) to "
+                                        f"{BASE_DIR}/ in the task folder, to run old and new side by side")
+    s.add_argument("paths", nargs="+", metavar="PATH", help="files, folders or globs, relative to the task folder")
+    s.set_defaults(f=cmd_baseline)
+    s = sub.add_parser("probe", help="saved probes: add (a sweep that found a defect), list, run; "
+                                     "drop is HUMAN ONLY")
+    s.add_argument("action", choices=["add", "list", "run", "drop"])
+    s.add_argument("target", nargs="?", metavar="SCRIPT_OR_ID", help="add: the probe script; drop: the probe id")
+    s.add_argument("--issue", metavar="RV-n", help="add: the §11.2 issue whose defect class the probe checks")
+    s.add_argument("--run", metavar="CMD", help="add: how to run it, e.g. \"deno run {file} {base}\" ({base} is the base copies' folder; default by extension: "
+                                                ".py, .sh, .js/.mjs/.cjs)")
+    s.add_argument("--name", help="drop: your full name"); s.add_argument("--reason", help="drop: why")
+    s.set_defaults(f=cmd_probe)
     s = sub.add_parser("version", help="print the harness version")
     s.set_defaults(f=lambda a: print(__version__))
     args = ap.parse_args()
