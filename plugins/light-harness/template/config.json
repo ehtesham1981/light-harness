@@ -30,5 +30,7 @@
     ".gitignore",
     "README.md"
   ],
-  "worktree_dir": ".tasks"
+  "worktree_dir": ".tasks",
+  "parallel": 3,
+  "probe_timeout": 600
 }

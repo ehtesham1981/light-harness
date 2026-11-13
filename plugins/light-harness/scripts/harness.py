@@ -41,14 +41,16 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
@@ -143,7 +145,37 @@ DEFAULT_CONFIG = {
                         "jest.config.*", "vitest.config.*", "samples/**"],
     "always_allowed": [".gitignore", "README.md"],
     "worktree_dir": ".tasks",
+    "parallel": 3,          # sweeper subagents and saved probes that run at once (1-4)
+    "probe_timeout": 600,   # seconds before a saved probe counts as broken
 }
+PARALLEL_MAX = 4
+
+
+def parallel_limit(cfg: dict) -> int:
+    """How many sweepers or probes run at once: the config's `parallel`, clamped to 1..PARALLEL_MAX."""
+    v = cfg.get("parallel", DEFAULT_CONFIG["parallel"])
+    if isinstance(v, bool) or not isinstance(v, int):
+        return DEFAULT_CONFIG["parallel"]
+    return max(1, min(PARALLEL_MAX, v))
+
+
+def probe_workers(raw: dict | None = None) -> int:
+    """How many saved probes run at once. A task whose config predates 1.8 (no `parallel` key, and the
+    config is frozen once approved) keeps running them one at a time, as its probes were written for."""
+    if raw is None:
+        try:
+            raw = json.loads(CONFIG.read_text(encoding=UTF8)) if CONFIG and CONFIG.exists() else {}
+        except (OSError, ValueError):
+            raw = {}
+    return parallel_limit(raw) if isinstance(raw, dict) and "parallel" in raw else 1
+
+
+def probe_timeout(cfg: dict) -> int:
+    """Seconds a saved probe may run: the config's `probe_timeout` if it's a positive whole number."""
+    v = cfg.get("probe_timeout", DEFAULT_CONFIG["probe_timeout"])
+    if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+        return DEFAULT_CONFIG["probe_timeout"]
+    return v
 
 # --- anti-gaming patterns ----------------------------------------------------
 FAIL_PATTERNS = [
@@ -375,18 +407,26 @@ def state_ref(slug: str | None = None) -> str:
     return REF_TASKS + slug
 
 
-def snapshot() -> str:
-    """A commit of the task worktree as it is now (tracked + untracked, honouring ignores), made
-    with a scratch index so the branch, the index and the working tree are left untouched."""
-    head = ref_sha("HEAD")
-    idx = state_dir(create=True) / f"index-{os.getpid()}"
+def worktree_tree(head: str | None = None) -> str:
+    """The tree of the task worktree as it is now (tracked + untracked, honouring ignores), written
+    with a scratch index so the branch, the index and the working tree are left untouched. The scratch
+    index starts from HEAD, never from the real index, so index flags (assume-unchanged, skip-worktree)
+    can't hide a changed file."""
+    head = head or ref_sha("HEAD")
+    idx = state_dir(create=True) / f"index-{os.getpid()}-{threading.get_ident()}"
     env = {**os.environ, "GIT_INDEX_FILE": str(idx)}
     try:
         git("read-tree", head, env=env)
         git("add", "-A", env=env)
-        tree = git("write-tree", env=env).strip()
+        return git("write-tree", env=env).strip()
     finally:
         idx.unlink(missing_ok=True)
+
+
+def snapshot() -> str:
+    """A commit of the task worktree as it is now (see worktree_tree)."""
+    head = ref_sha("HEAD")
+    tree = worktree_tree(head)
     if tree == git("rev-parse", f"{head}^{{tree}}").strip():
         return head
     return git(*ident(), "commit-tree", tree, "-p", head, "-m", "light-harness: snapshot").strip()
@@ -976,19 +1016,34 @@ def export_base(files, sha: str, root: Path | None = None) -> list[str]:
 def base_hidden():
     """While tests or probes run, keep the base-commit copies out of the task folder, as in CI. Code
     that behaves differently when .light-harness-base/ exists then gains nothing; probes get their own
-    copies from probe_base(), outside the task folder."""
-    d = ROOT / BASE_DIR
-    slug = task_slug() or "task"
-    aside = state_dir(create=True) / f"base-aside-{slug}"
-    lock = state_dir() / f"base-lock-{slug}"
+    copies from probe_bases(), outside the task folder."""
+    with base_lock():
+        restore_aside()
+        with _hidden(ROOT / BASE_DIR, aside_dir()):
+            yield
+
+
+def aside_dir() -> Path:
+    return state_dir(create=True) / f"base-aside-{task_slug() or 'task'}"
+
+
+@contextlib.contextmanager
+def base_lock():
+    """One test or probe run per task at a time (see _take_lock)."""
+    lock = state_dir(create=True) / f"base-lock-{task_slug() or 'task'}"
     _take_lock(lock)
     try:
-        if not os.path.lexists(d) and aside.is_dir():
-            _move_dir(aside, d)  # an earlier run was killed before it could put the copies back
-        with _hidden(d, aside):
-            yield
+        yield
     finally:
         lock.unlink(missing_ok=True)
+
+
+def restore_aside():
+    """Put back base copies that an earlier run moved aside and was killed before it could return them.
+    Call it with base_lock() held."""
+    d, aside = ROOT / BASE_DIR, aside_dir()
+    if not os.path.lexists(d) and aside.is_dir():
+        _move_dir(aside, d)
 
 
 def _take_lock(lock: Path):
@@ -1084,17 +1139,24 @@ def clean_env() -> dict:
     return env
 
 
-def probe_base(entries: list[dict]) -> Path:
-    """A fresh export of the files the probes recorded, outside the task folder (in the harness's own
-    state, which agents can't write), for the probes to compare against."""
+def probe_bases(entries: list[dict]) -> list[Path]:
+    """A fresh export of the files the probes recorded, one folder per probe so probes running at the
+    same time can't affect each other through it. Outside the task folder (in the harness's own state,
+    which agents can't write), for the probes to compare against."""
     d = state_dir(create=True) / f"probe-base-{task_slug() or 'task'}"
     if os.path.lexists(d):
         _rm_tree(d)
     d.mkdir(parents=True)
     files = sorted({f for e in entries for f in e.get("baseline") or []})
-    if files:
-        export_base(files, base_commit()[0], root=d)
-    return d
+    sha = base_commit()[0] if files else ""
+    out = []
+    for i in range(len(entries)):
+        sub = d / str(i + 1)
+        sub.mkdir()
+        if files:
+            export_base(files, sha, root=sub)
+        out.append(sub)
+    return out
 
 
 def base_copies() -> list[str]:
@@ -1121,8 +1183,32 @@ def cmd_baseline(args):
     if missing:
         die(f"not in the base commit {sha[:8]} ({label}): {', '.join(missing)}. Paths are relative to the task "
             "folder; a file this task created has no base version.")
+    closure = import_closure(wanted, tree, lambda f: blob(sha, f).decode(UTF8, "replace"))
+    if args.out:
+        # A folder of the caller's own, e.g. one per parallel sweeper: never inside the repo or a task,
+        # so it can't show up in the code under test, the task's base copies or the audit trail.
+        out = Path(args.out).expanduser().resolve()
+        no_go = [(ROOT, "the task folder"), (main_checkout(), "the main checkout"), (common_dir(), "the git folder")]
+        no_go += [(Path(w["worktree"]), "a task folder") for w in worktrees() if w.get("worktree")]
+        for where, what in no_go:
+            if is_within(out, where):
+                die(f"--out {args.out} is inside {what} ({where}); pick a folder outside the repository, "
+                    "e.g. in your temp folder")
+        # Only a new or empty folder: nothing already there is ever replaced or removed.
+        if _is_link(Path(args.out).expanduser()) or (os.path.lexists(out) and not out.is_dir()):
+            die(f"--out {args.out} is a link or a file; give a new or empty folder")
+        if out.is_dir() and any(out.iterdir()):
+            die(f"--out {args.out} isn't empty; give a new or empty folder (one per sweep)")
+        out.mkdir(parents=True, exist_ok=True)
+        files = export_base(closure, sha, root=out)
+        TEL.update(files=len(files), out=True)
+        print(f"✓ {len(files)} base-commit file(s) from {sha[:8]} ({label}) in {out}:"
+              + "".join(f"\n  {f}" for f in files[:40]) + (f"\n  … {len(files) - 40} more" if len(files) > 40 else "")
+              + f"\nPass this folder to your sweep as its first argument. {BASE_DIR}/ in the task folder is untouched; "
+                "`probe add` saves the base files that are in it, so run `baseline` without --out before saving a probe.")
+        return
     ensure_excludes([])  # tasks started before 1.7 lack the BASE_DIR line
-    files = export_base(import_closure(wanted, tree, lambda f: blob(sha, f).decode(UTF8, "replace")), sha)
+    files = export_base(closure, sha)
     TEL.update(files=len(files))
     shown = "".join(f"\n  {f}" for f in files[:40]) + (f"\n  … {len(files) - 40} more" if len(files) > 40 else "")
     print(f"✓ {len(files)} base-commit file(s) from {sha[:8]} ({label}) in {ROOT / BASE_DIR}:{shown}\n"
@@ -1135,7 +1221,7 @@ def cmd_baseline(args):
 # Saved probes: a reviewer's sweep that found a defect, kept in the audit trail (agents can't change
 # it) and re-run by every `verify`, so a finding becomes a permanent check.
 PROBES = "probes.json"
-PROBE_TIMEOUT = 600
+PROBE_TIMEOUT = DEFAULT_CONFIG["probe_timeout"]  # the default; a task's config can set its own
 PROBE_RUNNERS = {".py": ["python", "{file}", "{base}"], ".sh": ["sh", "{file}", "{base}"],
                  ".js": ["node", "{file}", "{base}"], ".mjs": ["node", "{file}", "{base}"],
                  ".cjs": ["node", "{file}", "{base}"]}
@@ -1206,15 +1292,22 @@ def run_probes(entries: list[dict]) -> list[tuple[dict, int, str]]:
     .light-harness-base/ moved aside: [(entry, exit code, output)]."""
     if not entries:
         return []
+    cfg = load_config()
+    timeout, workers = probe_timeout(cfg), min(probe_workers(), len(entries))
     with base_hidden():
-        base = probe_base(entries)
-        return [(e, *run_probe(e, base)) for e in entries]
+        bases = probe_bases(entries)
+        if workers == 1:
+            return [(e, *run_probe(e, b, timeout)) for e, b in zip(entries, bases)]
+        with ThreadPoolExecutor(max_workers=workers) as ex:  # results in saved order, whichever ends first
+            futures = [ex.submit(run_probe, e, b, timeout) for e, b in zip(entries, bases)]
+            return [(e, *f.result()) for e, f in zip(entries, futures)]
 
 
-def run_probe(entry: dict, base: Path) -> tuple[int, str]:
+def run_probe(entry: dict, base: Path, timeout: int | None = None) -> tuple[int, str]:
     """Run a saved probe from its audit-trail copy (working directory: the task folder; the base-commit
     copies' folder `base` as its argument after the script). Exit 0: its defect class is gone; 1: it
     found differences; anything else: the probe broke."""
+    timeout = timeout or probe_timeout(load_config())
     content = state_file(state_ref(), entry["file"])
     pdir = ROOT / LIVE / "probes"
     pdir.mkdir(parents=True, exist_ok=True)
@@ -1223,11 +1316,11 @@ def run_probe(entry: dict, base: Path) -> tuple[int, str]:
     cmd = probe_cmd(entry, path, base)
     try:  # nothing in the environment marks a probe run (no session or harness markers either)
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace", env=clean_env(),
-                           stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT)
+                           stdin=subprocess.DEVNULL, timeout=timeout)
     except FileNotFoundError as e:
         return 127, f"can't run {cmd[0]}: {e}"
     except subprocess.TimeoutExpired:
-        return 124, f"timed out after {PROBE_TIMEOUT}s"
+        return 124, f"timed out after {timeout}s"
     return r.returncode, r.stdout + r.stderr
 
 
@@ -1501,7 +1594,78 @@ def _json_or_raw(s: str):
         return s
 
 
-def verify(write: bool = True) -> bool:
+# Reusing a passing verify run. Between the implementer's last `verify`, `set-status Review`, the
+# reviewer's `verify` and `verdict pass` the code usually doesn't change, yet each ran the whole suite
+# and every probe. Only the slow parts are reused (the suite's results and the probes' exit codes), only
+# from a run where all of them passed, only for VERIFY_REUSE_S, and only while everything that could
+# change their outcome is the same. Every other check in verify() runs each time.
+VERIFY_REUSE_S = 1800
+CACHE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".hypothesis", ".cache"}
+VOLATILE_ENV = {"PWD", "OLDPWD", "SHLVL", "_"}  # differ between shells without changing a run
+
+
+def ignored_names(cfg: dict) -> list[str]:
+    """Ignored files and folders in the task folder, by name (git collapses a wholly ignored folder to
+    one entry), without the harness's own folders, test-tool caches and the JUnit report. Adding or
+    removing one changes the reuse key; editing an ignored file's content doesn't (see the README)."""
+    junit = str(cfg.get("junit_path") or "").replace("\\", "/").strip("/")
+    out = []
+    for p in git("ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory", check=False).split("\0"):
+        parts = p.rstrip("/").split("/")
+        if not p or parts[0] in (LIVE, BASE_DIR) or CACHE_DIRS & set(parts) or (junit and p.rstrip("/") == junit):
+            continue
+        out.append(p)
+    return sorted(out)
+
+
+def reuse_key(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> str:
+    """Everything a suite or probe run's outcome depends on that the harness can see: the code (tracked
+    and untracked files, as git would commit them), the ignored entries' names, the config, the saved
+    probes, the gate records, the base commit, the harness version, the interpreter and the environment the
+    suite and probes run with (a pass under a PYTHONPATH shim isn't reused by a run without it)."""
+    base = task_base_row()
+    env = {k: v for k, v in clean_env().items() if k.upper() not in VOLATILE_ENV}
+    parts = {
+        "version": __version__, "python": sys.executable, "tree": worktree_tree(), "env": env,
+        "ignored": ignored_names(cfg), "config": CONFIG.read_text(encoding=UTF8) if CONFIG.exists() else "",
+        "probes": [[p, state_file(state_ref(), p.get("file", ""))] for p in saved],
+        "redgate": rg_state, "approval": appr_state, "base": snap_of(base[1]) if base else "",
+    }
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode(UTF8)).hexdigest()
+
+
+def reuse_file() -> Path:
+    """In the harness's own state inside .git, which the guard keeps agents from writing."""
+    return state_dir(create=True) / f"verify-cache-{task_slug() or 'task'}.json"
+
+
+def load_reuse(key: str):
+    try:
+        c = json.loads(reuse_file().read_text(encoding=UTF8))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(c, dict) or c.get("key") != key:
+        return None
+    when, results = c.get("when"), c.get("results")
+    if isinstance(when, bool) or not isinstance(when, (int, float)) or not isinstance(results, dict) \
+            or not all(isinstance(k, str) and isinstance(v, str) for k, v in results.items()):
+        return None
+    return c if 0 <= time.time() - when < VERIFY_REUSE_S else None
+
+
+def drop_reuse():
+    reuse_file().unlink(missing_ok=True)
+
+
+def store_reuse(key: str, out: str, results: dict):
+    f = reuse_file()
+    tmp = f.with_name(f".{f.name}.{os.getpid()}")
+    tmp.write_text(json.dumps({"key": key, "when": time.time(), "label": now(), "out": tail(out, 40),
+                               "results": results}), encoding=UTF8)
+    os.replace(tmp, f)
+
+
+def verify(write: bool = True, fresh: bool = False) -> bool:
     cfg = load_config()
     text = contract()
     fails, warns, info = [], [], []
@@ -1553,33 +1717,60 @@ def verify(write: bool = True) -> bool:
             elif matches(f, cfg["test_globs"]) and not matches(f, cfg["always_allowed"]):
                 warns.append(f"Test file added after red gate (not part of the gate): {f}")
 
-        # 2. green: full suite passes and every red-gate test now passes
-        rc, out, results = run_tests(cfg)
+        # 2. green: full suite passes and every red-gate test now passes. A fully passing run of the
+        #    suite and the probes on exactly this code is reused for a while (see reuse_key).
+        saved = probes()
+        key = reuse_key(cfg, saved, rg_state, appr[1] if appr else "")
+        hit = None if fresh else load_reuse(key)
+        reused = ""
+        if hit:
+            with base_lock():
+                restore_aside()  # what a run would have done: put back copies a killed run left aside
+            rc, out, results = 0, hit.get("out", ""), dict(hit.get("results") or {})
+            LAST_RESULTS.clear()
+            LAST_RESULTS.update(results)
+            probe_runs = [(p, 0, "") for p in saved]
+            reused = f"; reused the passing run from {hit.get('label', '?')} on the same code, `verify --fresh` re-runs"
+        else:
+            rc, out, results = run_tests(cfg)
+            probe_runs = run_probes(saved)
+        TEL["reused"] = bool(hit)
+        green = rc == 0
         if rc != 0:
             fails.append(f"Green gate: test suite failed (exit {rc})\n```\n{tail(out)}\n```")
         else:
-            info.append(f"Green gate: test suite passed ({len(results) or '?'} tests)")
+            info.append(f"Green gate: test suite passed ({len(results) or '?'} tests{reused})")
         rg_meta = json.loads(state_file(rg_state, "redgate.json") or "{}")
         if results:
             for name in rg_meta.get("tests", []):
                 outcome = results.get(name)
                 if outcome is None:
+                    green = False
                     fails.append(f"Green gate: red-gate test no longer runs: {name}")
                 elif outcome != "passed":
+                    green = False
                     fails.append(f"Green gate: red-gate test is {outcome}: {name}")
 
         # 2b. saved probes: every sweep a reviewer saved still passes (run from the audit-trail copy)
-        saved = probes()
         failing = []
-        for p, prc, pout in run_probes(saved):
+        for p, prc, pout in probe_runs:
             if prc:
                 failing.append(p["id"])
                 why = "its defect class is still there" if prc == 1 else "the probe itself broke (see its output)"
                 fails.append(f"Saved probe: {p['id']} (for {p['issue']}) fails with exit {prc}: {why}"
                              f"\n```\n{tail(pout, 15)}\n```")
         if saved and not failing:
-            info.append(f"Saved probes: all {len(saved)} pass")
+            info.append(f"Saved probes: all {len(saved)} pass{reused}")
         TEL.update(probes=len(saved), probes_failing=len(failing))
+        if not hit:
+            # Store only a fully passing run, and only if the key is the same after the run as before it
+            # (this catches code left changed by the run; a swap that is undone before the run ends can
+            # still store a pass, which is why `verdict pass` never reuses one). Any other real run drops
+            # the stored one, so a failing `verify --fresh` is never followed by a reused pass.
+            if green and not failing and reuse_key(cfg, probes(), rg_state, appr[1] if appr else "") == key:
+                store_reuse(key, out, results)
+            else:
+                drop_reuse()
 
         # 3. anti-gaming scan of everything changed since the plan was approved
         #    (covers stubs written before the red gate as well as the implementation)
@@ -2171,9 +2362,12 @@ def cmd_status(args):
     print(f"Task:      {slug} (folder {ROOT}, branch {TASK_PREFIX}{slug})")
     if base:
         print(f"Base:      {snap_of(base[1])[:8]} {base[2].removeprefix('harness: ')}")
+    swept = [f"{b} [{s['kind']}]" for b, s in rule_specs(text).items() if s["kind"] in SPACE_KINDS]
     print(f"Status:    {st}\nPlan hash: {plan_hash(text)}\nApproval:  {'✓ ' if ok else '✗ '}{msg}\n"
           f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nACs:       {', '.join(acs(text)) or 'none'}\n"
-          f"Contract:  {CONTRACT}\nNext:      {nxt}")
+          + (f"Sweeps:    {', '.join(swept)} (each needs an independent sweep; up to "
+             f"{parallel_limit(load_config())} sweepers at once)\n" if swept else "")
+          + f"Contract:  {CONTRACT}\nNext:      {nxt}")
 
 
 def cmd_check(args):
@@ -2349,7 +2543,7 @@ def cmd_verify(args):
     st = get_status()
     if st not in ("Build", "Review"):
         die(f"status is {st}; verify runs in Build/Review")
-    sys.exit(0 if verify() else 1)
+    sys.exit(0 if verify(fresh=args.fresh) else 1)
 
 
 def cmd_verdict(args):
@@ -2390,7 +2584,8 @@ def cmd_verdict(args):
             problems.append("ACs not ticked in §11.1: " + ", ".join(unchecked))
         if problems:
             die("PASS refused:\n  - " + "\n  - ".join(problems))
-        if not verify():
+        # The final gate never reuses a stored run: it runs the suite and the probes on the code it passes
+        if not verify(fresh=True):
             die("PASS refused: verification fails on the current tree")
         # Everything passing now is the baseline for the next task built on this one
         extra = {"baseline.json": baseline_json(f"verdict pass ({task_slug()})")[0]}
@@ -2544,7 +2739,10 @@ def main():
     s.add_argument("--name", required=True); s.add_argument("--reason", required=True); s.set_defaults(f=cmd_unlock_tests)
     s = sub.add_parser("redgate", help="run the red gate and lock the tests")
     s.add_argument("--allow-passing", metavar="REASON", default=""); s.set_defaults(f=cmd_redgate)
-    s = sub.add_parser("verify", help="green gate + anti-gaming + anti-drift + traceability"); s.set_defaults(f=cmd_verify)
+    s = sub.add_parser("verify", help="green gate + anti-gaming + anti-drift + traceability")
+    s.add_argument("--fresh", action="store_true", help="run the suite and the probes even if a passing run on "
+                                                        "the same code can be reused")
+    s.set_defaults(f=cmd_verify)
     s = sub.add_parser("verdict", help="record the review verdict (pass is gated)")
     s.add_argument("result", choices=["pass", "fail"]); s.add_argument("--by", default="reviewer")
     s.set_defaults(f=cmd_verdict)
@@ -2583,6 +2781,8 @@ def main():
     s = sub.add_parser("baseline", help="write base-commit copies of files (with their local imports) to "
                                         f"{BASE_DIR}/ in the task folder, to run old and new side by side")
     s.add_argument("paths", nargs="+", metavar="PATH", help="files, folders or globs, relative to the task folder")
+    s.add_argument("--out", metavar="DIR", help="write the copies to DIR instead, outside the task folder, the "
+                                                "main checkout and .git (one per parallel sweeper)")
     s.set_defaults(f=cmd_baseline)
     s = sub.add_parser("probe", help="saved probes: add (a sweep that found a defect), list, run; "
                                      "drop is HUMAN ONLY")

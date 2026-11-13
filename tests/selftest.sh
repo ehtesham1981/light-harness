@@ -893,4 +893,181 @@ check 'evq "any(e.get(\"command\")==\"verdict\" and e.get(\"same_class_reopened\
 nok $H probe drop RV-1.1 --name X --reason y $X </dev/null      # human only
 check 'human "$H probe drop RV-1.1 --name \"Human Approver\" --reason \"checked by hand\" $X" "" && ! $H probe list $X | grep -q "RV-1.1" && $H log guardfix | grep -q "probe-dropped"' "a human couldn't drop a probe"
 
+check '$H status $X | grep -q "^Sweeps: .*BR-2 \[Preservation\].*up to 3 sweepers"' "status doesn't list the rules to sweep or the sweeper limit"
+
+echo "A faster review: reused verify runs, parallel probes, baseline --out, sweeper (1.8.0)"
+check '[ "$($H version)" = 1.8.0 ] && grep -q "\"version\": \"1.8.0\"" "$PLUGIN/.claude-plugin/plugin.json" && grep -q "^version: 1.8.0" "$REPO/CITATION.cff"' "version is not 1.8.0 everywhere"
+cat > "$W/units18.py" <<'PY'
+import json, sys; sys.path.insert(0, sys.argv[1]); import harness as H
+assert H.parallel_limit({}) == 3 and H.parallel_limit({"parallel": 9}) == 4 and H.parallel_limit({"parallel": 0}) == 1
+assert H.parallel_limit({"parallel": "x"}) == 3 and H.parallel_limit({"parallel": True}) == 3 and H.parallel_limit({"parallel": 2}) == 2
+assert H.probe_timeout({}) == 600 and H.probe_timeout({"probe_timeout": 5}) == 5
+assert H.probe_workers({}) == 1 and H.probe_workers({"parallel": 2}) == 2 and H.probe_workers({"parallel": 9}) == 4   # pre-1.8 configs: serial
+assert H.probe_timeout({"probe_timeout": -1}) == 600 and H.probe_timeout({"probe_timeout": "9"}) == 600
+tpl = json.loads((H.TEMPLATE / "config.json").read_text(encoding="utf-8"))
+assert tpl["parallel"] == 3 and tpl["probe_timeout"] == 600, tpl
+assert H.DEFAULT_CONFIG["parallel"] == 3 and H.DEFAULT_CONFIG["probe_timeout"] == 600
+PY
+check '"$PYBIN" "$W/units18.py" "$PLUGIN/scripts"' "parallel / probe_timeout config helpers wrong"
+AG="$PLUGIN/agents"; SK="$PLUGIN/skills"
+check '[ -f "$AG/sweeper.md" ] && grep -q "^name: sweeper" "$AG/sweeper.md" && grep -q "^tools: .*Bash" "$AG/sweeper.md" && ! grep -q "^tools: .*Edit" "$AG/sweeper.md"' "sweeper agent missing, or it can edit files in place"
+check 'grep -q "baseline --out" "$AG/sweeper.md" && grep -qi "never.*contract" "$AG/sweeper.md" && grep -q "verify" "$AG/sweeper.md"' "sweeper agent lacks baseline --out or its limits"
+check '! grep -q "Re-run \`light-harness probe run" "$AG/reviewer.md" && ! grep -q "probe run --task <name>\` (the reviewer" "$SK/task-implement/SKILL.md"' "a duplicate probe run is still in the reviewer or implement instructions"
+check 'grep -q "light-harness:sweeper" "$SK/task-review/SKILL.md" && grep -q "parallel" "$SK/task-review/SKILL.md" && grep -q "SendMessage" "$SK/task-review/SKILL.md"' "task-review doesn't fan out to sweepers"
+check 'grep -qi "review-requested" "$AG/reviewer.md" && grep -qi "round 2" "$AG/reviewer.md"' "reviewer lacks the delta re-review"
+check 'grep -q "60 s" "$AG/sweeper.md" && grep -q "30 s" "$AG/reviewer.md" && grep -q "mkdtemp" "$AG/reviewer.md" && grep -q "mkdtemp" "$AG/sweeper.md"' "sweep/probe budgets or the temp-file rule missing"
+check 'grep -q "last \`verdict\` event" "$AG/reviewer.md" && grep -q "last \`verdict\` event" "$SK/task-review/SKILL.md" && grep -q "Base files" "$AG/sweeper.md" && grep -qi "re-run every sweep" "$AG/reviewer.md"' "re-review anchor, base files or the reviewer's re-run of sweeps missing"
+check 'grep -q "verify --fresh" "$PLUGIN/README.md" && grep -q "baseline --out" "$PLUGIN/README.md" && grep -q "light-harness:sweeper" "$PLUGIN/README.md"' "README doesn't document 1.8.0"
+
+Q="$W/speed"; newrepo "$Q"; cd "$Q"; T="$Q/.tasks"
+mkdir -p src tests; touch src/__init__.py; printf '.env\n' > .gitignore
+printf 'def double(x):\n    return x + x\n' > src/m.py
+git add -A; git commit -qm "existing"
+ok  $H start-task speedy
+X="--task speedy"; D="$T/speedy"; K="$D/.light-harness/contract.md"; EV="$Q/.git/light-harness/telemetry/events.jsonl"
+export ST_COUNT="$W/runs.count" ST_DIR="$W/probes18"; : > "$ST_COUNT"; mkdir -p "$ST_DIR"
+runs() { wc -c < "$ST_COUNT" | tr -d ' '; }
+edit "$K" "<one or two sentences: what outcome, for whom>" "Triple numbers" \
+  "| EX-1 | <input> | <expected> | <happy path / edge / error> |" "| EX-1 | 2 | 6 | happy |" \
+  "- AC-1: <Given … When … Then …>" "- AC-1: Given 2, then 6"
+ok  $H set-status Initialize $X
+edit "$K" "| R-1 | <risk> | <L/M/H> | <L/M/H> | <mitigation> |" "| R-1 | none | L | L | none |" \
+  "| <area> | <change> | <who/what is affected> | <how to undo> |" "| src/t.py | new | none | delete |" \
+  "- <src/path/or/glob>" "- src/**
+- tests/**" "1. <step> (AC-1)" "1. triple (AC-1)"
+ok  $H set-status Plan $X
+check '! $H status $X | grep -q "^Sweeps:"' "status lists sweeps for a task with no tagged rules"
+"$PYBIN" - "$D/.light-harness/config.json" <<'EOF'
+import json, sys; p = sys.argv[1]; c = json.load(open(p)); c.update(parallel=2, probe_timeout=6); json.dump(c, open(p, "w"), indent=2)
+EOF
+check 'human "$H approve --name \"Human Approver\" $X" APPROVE' "approve (speedy)"
+ok  $H set-status Build $X
+mkdir -p "$D/tests"
+cat > "$D/tests/test_t.py" <<'EOF'
+import os
+from src.t import triple
+def test_ac1():
+    """AC-1"""
+    open(os.environ["ST_COUNT"], "a").write("x")
+    assert triple(2) == 6
+EOF
+printf 'def triple(x):\n    raise NotImplementedError\n' > "$D/src/t.py"
+ok  $H redgate $X
+printf 'def triple(x):\n    return 3 * x\n' > "$D/src/t.py"
+CF="$Q/.git/light-harness/verify-cache-speedy.json"
+
+echo "  verify: a passing run is reused while nothing changed"
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "reused" "$W/v.out" && [ -f "$CF" ]' "first verify didn't run the suite or store its result"
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $n ] && grep -q "Green gate: test suite passed.*reused" "$W/v.out"' "an unchanged tree re-ran the suite"
+check 'grep -q "reused" "$K"' "the verify block doesn't say the run was reused"
+check 'evq "any(e.get(\"command\")==\"verify\" and e.get(\"reused\") is True for e in E)"' "telemetry doesn't mark the reused verify"
+(cd "$D" && git add -A && git commit -qm "triple")
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "a commit of the same tree invalidated the stored run"
+n=$(runs); check '$H verify --fresh $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "reused" "$W/v.out"' "verify --fresh reused a run"
+check 'hookout "$Q" "$(bash_json "$Q" "light-harness verify --fresh --task speedy")" | grep -q "\"allow\""' "verify --fresh not pre-approved"
+printf 'def triple(x):\n    return x * 3\n' > "$D/src/t.py"
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a code change reused the stored run"
+echo "# note" > "$D/src/notes.py"
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a new untracked file reused the stored run"
+echo SECRET=1 > "$D/.env"
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a new ignored file reused the stored run"
+printf 'import os
+def triple(x):
+    return x * 3 + (1 if "BROKEN" in open(".env").read() else 0)
+' > "$D/src/t.py"
+ok  $H verify $X
+echo BROKEN > "$D/.env"                          # an ignored file's content: not in the key (documented)
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "an edit to an ignored file's content re-ran the suite (expected: reused)"
+nok $H verify --fresh $X
+n=$(runs); check '! $H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q reused "$W/v.out"' "a failing verify --fresh left the old passing run to be reused"
+echo SECRET=1 > "$D/.env"
+ok  $H verify $X
+n=$(runs); check 'ST_EXTRA=1 $H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a run under another environment reused the stored run"
+ok  $H verify $X
+echo '[]' > "$CF"
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a stored run that isn't an object crashed verify or was reused"
+mkdir -p "$D/src/__pycache__" "$D/.pytest_cache/v"; echo x > "$D/.pytest_cache/v/new"
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "cache folders invalidated the stored run"
+ok  $H baseline $X src/m.py
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "base-commit copies invalidated the stored run"
+"$PYBIN" - "$CF" <<'EOF'
+import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["when"] -= 3600; json.dump(c, open(p, "w"))
+EOF
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "reused" "$W/v.out"' "an expired run was reused"
+printf 'def triple(x):\n    return 0\n' > "$D/src/t.py"
+n=$(runs); nok $H verify $X; nok $H verify $X
+check '[ "$(runs)" = $((n+2)) ]' "a failing run was stored and reused"
+printf 'def triple(x):\n    return x * 3\n' > "$D/src/t.py"
+ok  $H verify $X
+mv "$D/.light-harness-base" "$Q/.git/light-harness/base-aside-speedy"   # as if a run was killed
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ] && [ -f "$D/.light-harness-base/src/m.py" ]' "a reused run didn't put back base copies left aside by a killed run"
+
+echo "  baseline --out: base copies outside the task, for parallel sweepers"
+check '$H baseline $X --out "$W/bo1" src/m.py >/dev/null 2>&1 && [ -f "$W/bo1/src/m.py" ] && [ -f "$D/.light-harness-base/src/m.py" ]' "baseline --out didn't export outside the task"
+rm -rf "$D/.light-harness-base"
+check '$H baseline $X --out "$W/bo2" src/m.py >/dev/null 2>&1 && [ -f "$W/bo2/src/m.py" ] && [ ! -e "$D/.light-harness-base" ]' "baseline --out wrote the task's own base folder"
+mkdir -p "$W/bo3" "$W/full"; echo keep > "$W/full/m.py"; ln -s "$W/bo3" "$W/bolink"
+check '$H baseline $X --out "$W/bo3" src/m.py >/dev/null 2>&1 && [ -f "$W/bo3/src/m.py" ]' "baseline --out refused an existing empty folder"
+nok $H baseline $X --out "$W/full" src/m.py
+nok $H baseline $X --out "$W/bo2" src/m.py
+nok $H baseline $X --out "$W/bolink" src/m.py
+check '[ "$(cat "$W/full/m.py")" = keep ] && [ ! -e "$W/full/src" ]' "baseline --out wrote into a folder that wasn't empty"
+nok $H baseline $X --out "$D/inside" src/m.py
+nok $H baseline $X --out "$Q/inmain" src/m.py
+nok $H baseline $X --out "$Q/.git/elsewhere" src/m.py
+check '[ ! -e "$D/inside" ] && [ ! -e "$Q/inmain" ] && [ ! -e "$Q/.git/elsewhere" ]' "a refused baseline --out still wrote files"
+check 'hookout "$Q" "$(bash_json "$Q" "light-harness baseline --task speedy --out /tmp/sw1 src/m.py")" | grep -q "\"allow\""' "baseline --out not pre-approved"
+
+echo "  review: probes run in parallel, each with its own base export, under probe_timeout"
+ok  $H baseline $X src/m.py
+(cd "$D" && git add -A && git commit -qm "notes")
+n=$(runs); ok $H set-status Review $X
+check '[ "$(runs)" = $n ]' "set-status Review re-ran the suite on unchanged code"
+n=$(runs); ok $H verify $X
+check '[ "$(runs)" = $n ]' "the reviewer's verify re-ran the suite right after set-status Review"
+SEP="|----|----------|--------|------|-------|-------------|------------------|"
+edit "$K" "$SEP
+" "$SEP
+| RV-1 | Low | Open | src | timing: x | probe a | AC-1 |
+| RV-2 | Low | Open | src | timing: y | probe b | AC-1 |
+| RV-3 | Low | Open | src | timing: z | probe c | AC-1 |
+| RV-4 | Low | Open | src | timing: w | probe d | AC-1 |
+"
+cat > "$W/pr.py" <<'EOF'
+import os, sys, time
+d, me = os.environ["ST_DIR"], os.path.basename(__file__)
+open(os.path.join(d, me + ".start"), "w").write(repr(time.time()))
+open(os.path.join(d, me + ".base"), "w").write(sys.argv[1])
+time.sleep(2.0 if "rv-1" in me else 1.0)   # the first saved probe ends last
+open(os.path.join(d, me + ".end"), "w").write(repr(time.time()))
+EOF
+ok  $H probe add "$W/pr.py" --issue RV-1 $X
+n=$(runs); ok $H verify $X
+check '[ "$(runs)" = $((n+1)) ]' "a newly saved probe didn't invalidate the stored run"
+ok  $H probe add "$W/pr.py" --issue RV-2 $X
+check '$H probe run $X >/dev/null 2>&1 && "$PYBIN" - "$ST_DIR" <<EOF
+import sys, pathlib; d = pathlib.Path(sys.argv[1]); r = lambda n: float((d / n).read_text())
+a, b = "probe-rv-1.1.py", "probe-rv-2.1.py"
+assert r(a + ".start") < r(b + ".end") and r(b + ".start") < r(a + ".end"), "probes ran one after another"
+assert (d / (a + ".base")).read_text() != (d / (b + ".base")).read_text(), "probes shared one base export"
+EOF' "probes didn't run in parallel with their own base exports"
+check '$H probe run $X | head -1 | grep -q "RV-1.1"' "probe results not in saved order"
+printf 'import time\ntime.sleep(10)\n' > "$W/slow.py"
+ok  $H probe add "$W/slow.py" --issue RV-3 $X
+check '! $H probe run $X > "$W/p.out" 2>&1 && grep -q "timed out after 6s" "$W/p.out"' "probe_timeout from the config not applied"
+check 'human "$H probe drop RV-3.1 --name \"Human Approver\" --reason slow $X" ""' "drop slow probe"
+ok  $H verify $X
+printf 'print("difference")
+raise SystemExit(1)
+' > "$W/bad.py"
+ok  $H probe add "$W/bad.py" --issue RV-4 $X
+n=$(runs); nok $H verify $X; nok $H verify $X
+check '[ "$(runs)" = $((n+2)) ]' "a run with a failing probe was stored and reused"
+check 'human "$H probe drop RV-4.1 --name \"Human Approver\" --reason done $X" ""' "drop failing probe"
+edit "$K" "| RV-1 | Low | Open" "| RV-1 | Low | Resolved" "| RV-2 | Low | Open" "| RV-2 | Low | Resolved" "| RV-3 | Low | Open" "| RV-3 | Low | Resolved" "| RV-4 | Low | Open" "| RV-4 | Low | Resolved" "- [ ] AC-1" "- [x] AC-1"
+ok  $H verify $X
+n=$(runs); ok $H verdict pass $X
+check '[ "$(runs)" = $((n+1)) ] && git show refs/light-harness/tasks/speedy:baseline.json | grep -q "test_ac1"' "verdict pass reused a stored run instead of running fresh, or its baseline lost the passing tests"
+unset ST_COUNT ST_DIR
+
 echo; echo "Self-test: $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]
