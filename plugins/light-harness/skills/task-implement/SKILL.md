@@ -22,7 +22,7 @@ Run `light-harness status --task <name>`.
 If resuming from **Rework**, read every unresolved issue in §11.2 first. **Your work list is the defect classes those issues name** (their Class column), in addition to the plan, not the instances they list:
 - Fix the class. An issue's examples show where the class bites; other inputs of the same class must be fixed too.
 - A regression test covers the class's dimensions (a generated sweep over them), not only the inputs quoted in the issue. `verify` warns about a regression test whose inputs all come from its issue's text.
-- Before handing back, run `light-harness probe run --task <name>` (the reviewer's saved sweeps) and the Invariant/Preservation sweeps, and check the fix didn't open a new hole in the same rule.
+- Before handing back, run the Invariant/Preservation sweep tests and `light-harness verify --task <name>`, which also re-runs the reviewer's saved probes, and check the fix didn't open a new hole in the same rule.
 - If you believe a saved probe is wrong (it ignores the rule's `Allowed changes:`, or crashes), don't work around it: explain why in §10.3 and ask the human to run `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" probe drop <id> --task <name> --name "Full Name" --reason "..."` in their own terminal, in the project's main folder.
 - You may set an issue's status to **Fixed**, but never to Resolved.
 
@@ -58,6 +58,8 @@ Run `light-harness verify --task <name>`. This checks:
 - **Over-fit** (warning): a rework regression test whose inputs all come from its issue's text.
 
 Fix every ✗ and re-run until it passes. For each ⚠, either fix it or explain it in §10.2 so the reviewer can judge it.
+
+A passing run of the suite and probes is reused for 30 minutes while the code, config, probes and gates stay exactly the same, so `/task-review` doesn't run them again for nothing. `verify` says when it reused a run, and `verify --fresh` always runs everything.
 
 ### 6. Record and hand off
 Fill §10.2 Implementation Notes: what each step delivered, how to run the result, known limitations, and the explanation for any ⚠. Commit any remaining work on the task branch (the contract isn't part of the branch). Then report to the human: steps completed, test count, verification result, deviations, and "Next: `/light-harness:task-review`".
