@@ -1,3 +1,25 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+    <img alt="Light Harness: run several AI-built stories in parallel, planned, tested and reviewed" src="docs/assets/banner-light.svg" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="Licence: Apache 2.0" src="https://img.shields.io/badge/licence-Apache%202.0-blue"></a>
+  <img alt="Version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fehtesham1981%2Flight-harness%2Fmain%2Fplugins%2Flight-harness%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=blue">
+  <a href="https://github.com/ehtesham1981/light-harness/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ehtesham1981/light-harness/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-d97757">
+</p>
+
+- **Several stories in parallel.** Each task runs in its own git worktree, so several Claude Code sessions build one project side by side.
+- **Nothing left in your repo.** No files, settings or ignore entries are added to your branches; you get a branch with tests and code.
+- **Gates the agent can't skip.** A human-approved plan, tests written and failing first, then an independent review.
+
+<!-- Demo: a GIF of a task run or a `light-harness metrics` screenshot goes here. -->
+
+<p align="center"><sub>Built by Ehtesham Ahmed (Algomade Consulting)</sub></p>
+
 # Light Harness
 
 A lightweight, gated development harness for [Claude Code](https://code.claude.com), for tasks where you want agentic work to be planned, test-driven, reviewed, and auditable. A task can be a standalone one-off or one story in a set that builds a project.
