@@ -424,8 +424,11 @@ def test_ac5_single_hook():
     calls = _calls(tree, "verify_reuse_decision")
     assert [ast.unparse(c) for c in calls] == ["verify_reuse_decision(key, fresh)"]
     assert _calls(tree, "load_reuse") == []
-    assigns = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Assign) and n.value is calls[0]]
-    assert assigns == ["cache, hit = verify_reuse_decision(key, fresh)"]
+    # Compare the targets' structure, not unparse() text: Python 3.9 writes a tuple target as "(cache, hit)".
+    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign) and n.value is calls[0]]
+    assert len(assigns) == 1 and len(assigns[0].targets) == 1
+    target = assigns[0].targets[0]
+    assert isinstance(target, ast.Tuple) and [getattr(e, "id", None) for e in target.elts] == ["cache", "hit"]
 
 
 # --- AC-7 / BR-9: --fresh is a bypass ---------------------------------------------------------------
