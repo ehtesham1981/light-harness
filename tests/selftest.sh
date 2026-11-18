@@ -981,7 +981,7 @@ check 'human "$H probe drop RV-1.1 --name \"Human Approver\" --reason \"checked 
 check '$H status $X | grep -q "^Sweeps: .*BR-2 \[Preservation\].*up to 3 sweepers"' "status doesn't list the rules to sweep or the sweeper limit"
 
 echo "A faster review: reused verify runs, parallel probes, baseline --out, sweeper (1.8.0)"
-check '[ "$($H version)" = 1.8.1 ] && grep -q "\"version\": \"1.8.1\"" "$PLUGIN/.claude-plugin/plugin.json" && grep -q "^version: 1.8.1" "$REPO/CITATION.cff"' "version is not 1.8.1 everywhere"
+check '[ "$($H version)" = 1.9.0 ] && grep -q "\"version\": \"1.9.0\"" "$PLUGIN/.claude-plugin/plugin.json" && grep -q "^version: 1.9.0" "$REPO/CITATION.cff"' "version is not 1.9.0 everywhere"
 cat > "$W/units18.py" <<'PY'
 import json, sys; sys.path.insert(0, sys.argv[1]); import harness as H
 assert H.parallel_limit({}) == 3 and H.parallel_limit({"parallel": 9}) == 4 and H.parallel_limit({"parallel": 0}) == 1
