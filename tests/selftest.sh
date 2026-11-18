@@ -40,6 +40,8 @@ hook_json() { "$PYBIN" -c 'import json,sys; print(json.dumps({"hook_event_name":
 telhook() { echo "$2" | CLAUDE_PROJECT_DIR="$1" sh "$PLUGIN/scripts/telemetry.sh" ${3:-}; }
 # turn_json <event> <cwd> <session> [tool] [duration_ms]: a turn/permission/tool hook payload
 turn_json() { "$PYBIN" -c 'import json,sys; a=sys.argv; print(json.dumps({"hook_event_name":a[1],"cwd":a[2],"session_id":a[3],"prompt":"hi","tool_name":a[4] if len(a)>4 else None,"duration_ms":int(a[5]) if len(a)>5 else None,"tool_input":{"command":"x \"session_id\": \"spoof\""}}))' "$@"; }
+# prompt_json <cwd> <session> <prompt>: a UserPromptSubmit payload with this prompt text
+prompt_json() { "$PYBIN" -c 'import json,sys; a=sys.argv; print(json.dumps({"hook_event_name":"UserPromptSubmit","cwd":a[1],"session_id":a[2],"prompt":a[3]}))' "$@"; }
 newrepo() { mkdir -p "$1"; git -C "$1" init -q; git -C "$1" config user.name "Self Test"; git -C "$1" config user.email t@t; }
 # the work repo's own state: tracked and untracked files (ignored ones too), branches' content
 fingerprint() { (cd "$1" && git status --porcelain --ignored --untracked-files=all | grep -v '^!! .tasks/'; git ls-files; cat .gitignore CLAUDE.md .claude/settings.json 2>/dev/null) | md5sum; }
@@ -256,10 +258,90 @@ k = T.kpis({"a": [(int(T0), "harness: task-start a"), (int(T0) + 12000, "harness
 x = k["tasks"]["a"]["time_split"]
 assert (x["total_s"], x["agent_s"], x["in_turn_wait_s"], x["response_s"]) == (12000, 840, 60, 7500), x
 assert abs(x["agent_s"] + x["human_s"] + x["idle_s"] - x["total_s"]) < 1e-6 and x["interrupted"] == 1, x
-assert x["by_stage"]["Initialize"] == {"agent_s": 340, "human_s": 660, "idle_s": 90}, x["by_stage"]
+assert {f: x["by_stage"]["Initialize"][f] for f in ("agent_s", "human_s", "idle_s")} == {"agent_s": 340, "human_s": 660, "idle_s": 90}, x["by_stage"]
+assert (x["agent_main_s"], x["agent_bg_s"]) == (840, 0), x
 assert k["engineers"]["Owl"]["median_response_s"] == 600 and k["summary"]["time_split"]["agent_s"] == 840, k
 assert "Time split" in T.render(k) and "agent/human/idle" in T.render(k, "a")
 EOF' "agent/human/idle split is wrong"
+# where a prompt came from (#11): a background-task notification or another session isn't a human response
+telhook "$M" "$(prompt_json "$M" sess-n "build it")"
+telhook "$M" "$(hook_json SubagentStart "$M" sess-n)"; telhook "$M" "$(turn_json Stop "$M" sess-n)"; sleep 0.3
+telhook "$M" "$(hook_json SubagentStop "$M" sess-n)"
+telhook "$M" "$(prompt_json "$M" sess-n "<task-notification><task-id>t1</task-id><status>completed</status></task-notification>")"
+telhook "$M" "$(turn_json Stop "$M" sess-n)"; sleep 0.3
+telhook "$M" "$(prompt_json "$M" sess-n "<cross-session-message from=\"local_x\">run verify</cross-session-message>")"
+telhook "$M" "$(turn_json Stop "$M" sess-n)"; sleep 0.3
+telhook "$M" "$(prompt_json "$M" sess-n "looks good, go on")"
+telhook "$M" "$(turn_json SessionEnd "$M" sess-n)"
+check '"$PYBIN" - "$EV" <<EOF
+import json, sys
+E = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8")]
+S = [e for e in E if e["event"] == "turn" and e["phase"] == "start" and e.get("session") == "sess-n"]
+got = [(e.get("source"), e.get("response_s") is not None, (e.get("bg_s") or 0) > 0.25) for e in S]
+assert got == [("human", False, False), ("notification", False, True), ("peer", False, False), ("human", True, False)], got
+assert all(e.get("gap_s", 0) > 0.25 for e in S[1:]), S
+assert any(e["event"] == "agent" and e.get("phase") == "stop" and e.get("session") == "sess-n" and e.get("run_start") for e in E), "no run_start"
+EOF' "prompt sources (human / notification / peer) or the subagent run_start not recorded"
+# the split with background work (#11), on fixed timestamps: a subagent then a notification, a peer prompt,
+# a question inside a turn, a background verify inside a human gap, a notification gap over the cap
+check '"$PYBIN" - "$PLUGIN/scripts" <<EOF
+import sys; sys.path.insert(0, sys.argv[1]); import telemetry as T
+T0 = 1_800_000_000.0
+def ev(t, event, **a):
+    a.setdefault("task", "b"); a.setdefault("session", "s1"); a.update(event=event, ts=T.iso(T0 + t), _t=T0 + t); return a
+I = lambda t: T.iso(T0 + t)
+E = [ev(0, "stage", to="Build"),
+     ev(0, "turn", phase="start", source="human"),
+     ev(50, "agent", phase="start", agent_id="x", agent_type="light-harness:test-author"),
+     ev(100, "turn", phase="stop", turn_start=I(0), turn_s=100),
+     ev(950, "agent", phase="stop", agent_id="x", agent_type="light-harness:test-author", run_s=900, run_start=I(50)),
+     ev(1000, "turn", phase="start", source="notification", gap_start=I(100), gap_s=900, bg_s=900),
+     ev(1100, "turn", phase="stop", turn_start=I(1000), turn_s=100),
+     ev(1700, "command", command="approve", ok=True, ms=500000, actor="human"),
+     ev(1700, "turn", phase="start", source="peer", gap_start=I(1100), gap_s=600),
+     ev(1800, "turn", phase="stop", turn_start=I(1700), turn_s=100),
+     ev(2000, "turn", phase="start", source="human", gap_start=I(1800), gap_s=200, response_s=200, engineer="Owl"),
+     ev(2280, "wait", kind="question", tool="AskUserQuestion", wait_start=I(2100), wait_s=180),
+     ev(2400, "turn", phase="stop", turn_start=I(2000), turn_s=400),
+     ev(2700, "command", command="verify", ok=True, ms=300000),
+     ev(3000, "turn", phase="start", source="human", gap_start=I(2400), gap_s=600, response_s=600, engineer="Owl"),
+     ev(3100, "turn", phase="stop", turn_start=I(3000), turn_s=100),
+     ev(13100, "turn", phase="start", source="notification", gap_start=I(3100), gap_s=10000, bg_s=7200, capped=True),
+     ev(13200, "turn", phase="stop", turn_start=I(13100), turn_s=100)]
+E.sort(key=lambda e: e["_t"])
+k = T.kpis({"b": [(int(T0), "harness: task-start b"), (int(T0) + 20000, "harness: verdict pass by r")]}, set(), E, now=T0 + 30000)
+x = k["tasks"]["b"]["time_split"]
+got = tuple(round(x[f]) for f in ("total_s", "agent_s", "agent_main_s", "agent_bg_s", "human_s", "idle_s", "response_s", "in_turn_wait_s"))
+assert got == (20000, 9120, 720, 8400, 680, 10200, 500, 180), (got, x)
+assert {f: round(v) for f, v in x["by_stage"]["Build"].items()} == {"agent_s": 9120, "agent_main_s": 720, "agent_bg_s": 8400, "human_s": 680, "idle_s": 10200}, x["by_stage"]
+assert k["summary"]["median_response_s"] == 250 and k["engineers"]["Owl"]["median_response_s"] == 250, (k["summary"], k["engineers"])
+s = k["summary"]["time_split"]
+assert (round(s["agent_main_s"]), round(s["agent_bg_s"])) == (720, 8400), s
+assert "background" in T.render(k) and "background" in T.render(k, "b")
+EOF' "background subagent / verify / notification time not counted as agent time, or peer prompts counted as human"
+# background work counts only outside its own session's turns: a wait inside a turn stays human time even while
+# that session's subagent runs (another session's subagent still takes precedence); an agent stop without
+# run_start ends at its event; a human gap outside the task's time isn't one of its responses
+check '"$PYBIN" - "$PLUGIN/scripts" <<EOF
+import sys; sys.path.insert(0, sys.argv[1]); import telemetry as T
+T0 = 1_800_000_000.0
+def ev(t, event, **a):
+    a.setdefault("task", "c"); a.setdefault("session", "s1"); a.update(event=event, ts=T.iso(T0 + t), _t=T0 + t); return a
+I = lambda t: T.iso(T0 + t)
+E = [ev(0, "turn", phase="start", source="human", gap_start=I(-200), gap_s=200, response_s=200, engineer="Kit"),
+     ev(500, "wait", kind="permission", tool="Bash", wait_start=I(200), wait_s=300),
+     ev(450, "agent", session="s2", phase="stop", agent_id="y", agent_type="light-harness:sweeper", run_s=50),
+     ev(900, "agent", phase="stop", agent_id="x", agent_type="light-harness:reviewer", run_s=800, run_start=I(100)),
+     ev(1000, "turn", phase="stop", turn_start=I(0), turn_s=1000),
+     ev(1300, "turn", phase="start", source="human", gap_start=I(1000), gap_s=300, response_s=300, engineer="Kit"),
+     ev(1400, "turn", phase="stop", turn_start=I(1300), turn_s=100)]
+E.sort(key=lambda e: e["_t"])
+k = T.kpis({"c": [(int(T0), "harness: task-start c"), (int(T0) + 2000, "harness: verdict pass by r")]}, set(), E, now=T0 + 3000)
+x = k["tasks"]["c"]["time_split"]
+got = tuple(round(x[f]) for f in ("total_s", "agent_s", "agent_main_s", "agent_bg_s", "human_s", "idle_s", "response_s", "in_turn_wait_s"))
+assert got == (2000, 850, 800, 50, 550, 600, 300, 250), (got, x)
+assert k["engineers"]["Kit"]["median_response_s"] == 300 and k["summary"]["median_response_s"] == 300, (k["summary"], k["engineers"])
+EOF' "a wait inside a turn became background agent time, the run_start fallback is wrong, or a gap outside the task counted"
 N="$(wc -l < "$EV")"
 LIGHT_HARNESS_TELEMETRY=0 $H check plan $X >/dev/null 2>&1
 check '[ "$(wc -l < "$EV")" = "$N" ]' "LIGHT_HARNESS_TELEMETRY=0 didn't turn telemetry off"
@@ -896,7 +978,7 @@ check 'human "$H probe drop RV-1.1 --name \"Human Approver\" --reason \"checked 
 check '$H status $X | grep -q "^Sweeps: .*BR-2 \[Preservation\].*up to 3 sweepers"' "status doesn't list the rules to sweep or the sweeper limit"
 
 echo "A faster review: reused verify runs, parallel probes, baseline --out, sweeper (1.8.0)"
-check '[ "$($H version)" = 1.8.0 ] && grep -q "\"version\": \"1.8.0\"" "$PLUGIN/.claude-plugin/plugin.json" && grep -q "^version: 1.8.0" "$REPO/CITATION.cff"' "version is not 1.8.0 everywhere"
+check '[ "$($H version)" = 1.8.1 ] && grep -q "\"version\": \"1.8.1\"" "$PLUGIN/.claude-plugin/plugin.json" && grep -q "^version: 1.8.1" "$REPO/CITATION.cff"' "version is not 1.8.1 everywhere"
 cat > "$W/units18.py" <<'PY'
 import json, sys; sys.path.insert(0, sys.argv[1]); import harness as H
 assert H.parallel_limit({}) == 3 and H.parallel_limit({"parallel": 9}) == 4 and H.parallel_limit({"parallel": 0}) == 1

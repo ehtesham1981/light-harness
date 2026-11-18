@@ -317,15 +317,54 @@ def _interval(e, start_key, len_key):
     return (t0, t0 + max(0.0, n)) if t0 is not None else None
 
 
+# A person's decisions, not machine work: keep in step with HUMAN_ONLY (and `probe drop`) in harness.py
+HUMAN_COMMANDS = {"approve", "unlock-tests", "telemetry"}
+
+
+def _background(ev: list[dict]) -> list:
+    """(session, interval) of agent work besides the main agent's turns: subagent runs, harness
+    commands (verify, redgate, probes...: their `ms` before the event), and gaps a background-task
+    notification ended (bg_s, already capped by the hook)."""
+    out = []
+    for e in ev:
+        if e["event"] == "agent" and e.get("phase") == "stop":
+            try:
+                n = max(0.0, float(e.get("run_s")))
+            except (TypeError, ValueError):
+                continue
+            t0 = _epoch(e.get("run_start")) if e.get("run_start") else None
+            t0 = e["_t"] - n if t0 is None else t0
+            out.append((e.get("session"), (t0, t0 + n)))
+        elif e["event"] == "command" and e.get("command") not in HUMAN_COMMANDS \
+                and not (e.get("command") == "probe" and e.get("target") == "drop"):
+            try:
+                n = max(0.0, float(e.get("ms")) / 1000.0)
+            except (TypeError, ValueError):
+                continue
+            out.append((e.get("session"), (e["_t"] - n, e["_t"])))
+        elif e["event"] == "turn" and e.get("phase") == "start" and e.get("source") == "notification":
+            iv = _interval(e, "gap_start", "bg_s")
+            if iv:
+                out.append((e.get("session"), iv))
+    return out
+
+
 def time_split(ev: list[dict], start: float, end: float, stage_spans: list) -> dict | None:
     """Split the task's wall-clock time [start, end] into agent, human and idle time, from its
-    `turn` and `wait` events (1.6.0 on). None if it has no turn events.
-      agent  main-agent turns, minus the time inside them spent waiting on a human
+    `turn`, `wait`, `agent` and `command` events (1.6.0 on). None if it has no turn events.
+      agent  main  main-agent turns, minus the time inside them spent waiting on a human
+             background  agent work while its own session has no turn running: subagent runs,
+                   harness commands (verify, redgate...), and gaps that ended when background
+                   work re-invoked the session. Inside a turn the turn's own accounting holds, so a
+                   wait on a human there stays human time
       human  in-turn waits (permission dialogs, AskUserQuestion) and the gaps between a turn
-             ending and the next prompt in the same session, up to the human-gap cap
-      idle   the rest: no session working on the task, or the part of a gap over the cap
+             ending and the next human prompt in the same session, up to the human-gap cap.
+             A prompt from another session or a background-task notification is no human response
+      idle   the rest: no session or agent working on the task, or the part of a gap over the cap
     Sessions running at once are merged, agent time taking precedence over human time, so the
-    three always add up to the total."""
+    three always add up to the total. `_responses` holds each human gap's human time inside the
+    task's time (with any agent time in it taken out) and its engineer, for the response-time
+    medians; a gap wholly outside the task's time isn't one of its responses."""
     turns = [e for e in ev if e["event"] == "turn"]
     if not turns or start is None or end <= start:
         return None
@@ -335,31 +374,42 @@ def time_split(ev: list[dict], start: float, end: float, stage_spans: list) -> d
             iv = _interval(e, "turn_start", "turn_s")
             if iv:
                 by_session[e.get("session")].append(iv)
-        elif e.get("phase") == "start":
+        elif e.get("phase") == "start" and e.get("source", "human") == "human":
             iv = _interval(e, "gap_start", "response_s")
             if iv:
-                gaps.append(iv)
+                gaps.append((iv, e.get("engineer")))
     for e in ev:
         if e["event"] == "wait":
             iv = _interval(e, "wait_start", "wait_s")
             if iv:
                 waits_by_session[e.get("session")].append(iv)
-    agent = _merge([iv for s in by_session for iv in _minus(_merge(by_session[s]), _merge(waits_by_session[s]))])
+    main = _merge([iv for s in by_session for iv in _minus(_merge(by_session[s]), _merge(waits_by_session[s]))])
+    bg_by_session = defaultdict(list)
+    for s, iv in _background(ev):
+        bg_by_session[s].append(iv)
+    bg = _minus(_merge([iv for s in bg_by_session for iv in _minus(_merge(bg_by_session[s]), _merge(by_session[s]))]),
+                main)
+    agent = _merge(main + bg)
     waits = _minus(_merge([iv for s in waits_by_session for iv in waits_by_session[s]]), agent)
-    responses = _minus(_minus(_merge(gaps), agent), waits)
-    agent, waits, responses = (_clip(x, start, end) for x in (agent, waits, responses))
+    responses = _minus(_minus(_merge([iv for iv, _ in gaps]), agent), waits)
+    per_gap = [(_span(_minus(_minus(_clip([list(iv)], start, end), agent), waits)), nick)
+               for iv, nick in gaps if _clip([list(iv)], start, end)]
+    main, bg, agent, waits, responses = (_clip(x, start, end) for x in (main, bg, agent, waits, responses))
 
     def split(lo, hi):
-        a, w, r = (_span(_clip(x, lo, hi)) for x in (agent, waits, responses))
-        return {"agent_s": a, "human_s": w + r, "idle_s": max(0.0, (hi - lo) - a - w - r)}
+        a, am, ab, w, r = (_span(_clip(x, lo, hi)) for x in (agent, main, bg, waits, responses))
+        return {"agent_s": a, "agent_main_s": am, "agent_bg_s": ab, "human_s": w + r,
+                "idle_s": max(0.0, (hi - lo) - a - w - r)}
 
     total = end - start
     out = split(start, end)
     out.update(total_s=total, response_s=_span(responses), in_turn_wait_s=_span(waits),
                agent_pct=out["agent_s"] / total if total else None,
                turns=sum(e.get("phase") == "start" for e in turns),
-               interrupted=sum(e.get("phase") == "stop" and bool(e.get("interrupted")) for e in turns))
-    by_stage = defaultdict(lambda: {"agent_s": 0.0, "human_s": 0.0, "idle_s": 0.0})
+               interrupted=sum(e.get("phase") == "stop" and bool(e.get("interrupted")) for e in turns),
+               _responses=per_gap)
+    by_stage = defaultdict(lambda: {"agent_s": 0.0, "agent_main_s": 0.0, "agent_bg_s": 0.0, "human_s": 0.0,
+                                    "idle_s": 0.0})
     for name, lo, hi in stage_spans:
         lo, hi = max(lo, start), min(hi, end)
         if hi > lo:
@@ -429,6 +479,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
 
     tasks = {}
     all_waits = []  # (seconds, engineer)
+    all_responses = []  # (seconds, engineer): each human response between turns, agent time taken out
     for slug in sorted(trails):
         tr, ev = trails[slug], by_task.get(slug, [])
         start = next((t for t, s in tr if s.startswith("harness: task-start")), tr[0][0] if tr else None)
@@ -455,6 +506,8 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         for name, lo, hi in spans:
             in_stage[name] += max(0.0, hi - lo)
         split = time_split(ev, start, done_t or now, spans)
+        if split:
+            all_responses += split.pop("_responses")
         waits, plan_t = [], None
         for e in cmds:
             if e.get("command") == "set-status" and e.get("target") == "Plan" and e.get("ok"):
@@ -502,17 +555,11 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
 
     engineers = defaultdict(lambda: {"tasks": set(), "sessions": set(), "approvals": 0, "unlocks": 0,
                                      "prompts": 0, "approval_wait_s": [], "response_s": []})
-    responses = []  # every human response between turns (capped), for the summary
     for e in events:
-        resp = e.get("response_s") if e["event"] == "turn" and e.get("phase") == "start" else None
-        if isinstance(resp, (int, float)):
-            responses.append(resp)
         nick = e.get("engineer")
         if not nick:
             continue
         d = engineers[nick]
-        if isinstance(resp, (int, float)):
-            d["response_s"].append(resp)
         if owner(e):
             d["tasks"].add(owner(e))
         if e.get("session"):
@@ -526,6 +573,9 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
     for w, nick in all_waits:
         if nick:
             engineers[nick]["approval_wait_s"].append(w)
+    for r, nick in all_responses:
+        if nick:
+            engineers[nick]["response_s"].append(r)
     eng_out = {n: {"tasks": len(d["tasks"]), "sessions": len(d["sessions"]), "approvals": d["approvals"],
                    "median_approval_wait_s": _median(d["approval_wait_s"]), "unlocks": d["unlocks"],
                    "prompts": d["prompts"], "median_response_s": _median(d["response_s"])}
@@ -533,7 +583,8 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
 
     vals = list(tasks.values())
     splits = [t["time_split"] for t in vals if t["time_split"]]
-    split_tot = {k: sum(s[k] for s in splits) for k in ("total_s", "agent_s", "human_s", "idle_s")} if splits else None
+    split_tot = {k: sum(s[k] for s in splits) for k in ("total_s", "agent_s", "agent_main_s", "agent_bg_s", "human_s",
+                                                         "idle_s")} if splits else None
     if split_tot:
         split_tot["agent_pct"] = split_tot["agent_s"] / split_tot["total_s"] if split_tot["total_s"] else None
         split_tot["tasks"] = len(splits)
@@ -555,7 +606,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         "same_class_reopened_per_task": _mean([t["same_class_reopened"] for t in vals]),
         "median_approval_wait_s": _median([w for w, _ in all_waits]),
         "time_split": split_tot,
-        "median_response_s": _median(responses),
+        "median_response_s": _median([r for r, _ in all_responses]),
         "red_gate_fails_per_task": _mean([t["red_gate_fails"] for t in vals]),
         "verify_fails_per_task": _mean([t["verify_fails"] for t in vals]),
         "guard_blocks_per_task": _mean([sum(t["guard_blocks"].values()) for t in vals]),
@@ -601,6 +652,8 @@ def _split_rows(x) -> list:
         return [("Time split", "- (no turn data: recorded from 1.6.0 on)")]
     rows = [("Time split", f"total {dur(x['total_s'])} = agent {dur(x['agent_s'])} ({_pct(x['agent_pct'])}) + "
                            f"human {dur(x['human_s'])} + idle {dur(x['idle_s'])}"),
+            ("  Agent time", f"main agent turns {dur(x.get('agent_main_s'))} · background (subagents, harness "
+                             f"commands, notified gaps) {dur(x.get('agent_bg_s'))}"),
             ("  Human time", f"responses between turns {dur(x['response_s'])} · waits inside turns "
                              f"{dur(x['in_turn_wait_s'])}"),
             ("  Turns", f"{x['turns']}" + (f" ({x['interrupted']} interrupted)" if x["interrupted"] else ""))]
@@ -645,7 +698,8 @@ def render(data: dict, only: str | None = None) -> str:
         out.append("  time in stage: " + " · ".join(f"{k} {dur(v)}" for k, v in s["time_in_stage_s"].items()))
     if s["time_split"]:
         x = s["time_split"]
-        out.append(f"  time split ({x['tasks']} tasks with turn data): agent {dur(x['agent_s'])} ({_pct(x['agent_pct'])}) · "
+        out.append(f"  time split ({x['tasks']} tasks with turn data): agent {dur(x['agent_s'])} ({_pct(x['agent_pct'])}; "
+                   f"main {dur(x['agent_main_s'])} · background {dur(x['agent_bg_s'])}) · "
                    f"human {dur(x['human_s'])} · idle {dur(x['idle_s'])} · median human response "
                    f"{dur(s['median_response_s'])}")
     if s["subagents"]:
@@ -666,10 +720,11 @@ def render(data: dict, only: str | None = None) -> str:
         split = {k: t["time_split"] for k, t in data["tasks"].items() if t["time_split"]}
         if split:
             out.append("")
-            out.append(f"{'Time split':<24} {'Total':>10} {'Agent':>10} {'Human':>10} {'Idle':>10} {'Agent %':>8} "
-                       f"{'Responses':>10} {'Waits':>10}")
+            out.append(f"{'Time split':<24} {'Total':>10} {'Agent':>10} {'Background':>10} {'Human':>10} {'Idle':>10} "
+                       f"{'Agent %':>8} {'Responses':>10} {'Waits':>10}")
             for slug, x in split.items():
-                out.append(f"{slug[:24]:<24} {dur(x['total_s']):>10} {dur(x['agent_s']):>10} {dur(x['human_s']):>10} "
+                out.append(f"{slug[:24]:<24} {dur(x['total_s']):>10} {dur(x['agent_s']):>10} {dur(x['agent_bg_s']):>10} "
+                           f"{dur(x['human_s']):>10} "
                            f"{dur(x['idle_s']):>10} {_pct(x['agent_pct']):>8} {dur(x['response_s']):>10} "
                            f"{dur(x['in_turn_wait_s']):>10}")
     out.append("")
