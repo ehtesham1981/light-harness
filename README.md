@@ -222,13 +222,15 @@ Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (t
 **KPIs** (`light-harness metrics`, or `metrics <task> --json`):
 - **Task:** lead time, time in each stage, review rounds, first-pass review yield, plan approvals, test unlocks, and (from 1.7) same class reopened: issues in a later review round whose Class matches an earlier round's, or that the reviewer set back to Open after the implementer marked them Fixed (the audit trail records the issues table when each review starts and at each verdict). A rising count is the sign of example-anchored checks on a rule that holds for every input; those are the tasks to examine. These come from the audit trail, so they cover tasks from before 1.5 too.
 - **Time split** (from 1.6): each task's total time (its lead time, or its age while open) split three ways, overall and by stage:
-  - **Agent:** time the main agent spent working in turns, not counting waits on a human inside them. Subagents run inside turns, so they're already included.
-  - **Human:** time spent waiting on a human. That's the gaps between a turn ending and the next prompt in the same session (up to the human-gap cap, 2 hours by default), plus permission dialogs and `AskUserQuestion` answers inside turns.
-  - **Idle:** everything else, such as when no session was working on the task, or the part of a gap beyond the cap.
+  - **Agent:** time an agent spent working on the task, shown in two parts (from 1.8.1):
+    - **main:** the main agent's turns, not counting waits on a human inside them.
+    - **background:** agent work while its own session has no turn running. That's subagent runs, harness commands such as `verify` and `redgate` (by their recorded duration), and a gap that ends when a background task's notification re-invokes the session (up to the human-gap cap).
+  - **Human:** time spent waiting on a human. That's the gaps between a turn ending and the person's next prompt in the same session (up to the human-gap cap, 2 hours by default), plus permission dialogs and `AskUserQuestion` answers inside turns. A prompt from another session (a cross-session message) or a background-task notification isn't a human response, and any agent time inside a gap is taken out of it. A wait inside a turn stays human time even while that session's subagent runs.
+  - **Idle:** everything else, such as when no session or agent was working on the task, or the part of a gap beyond the cap.
 
   When several sessions work on one task at once, their time is merged, with agent time counted ahead of human time, so the three always add up to the total. `metrics` shows a time-split table, `metrics <task>` shows the breakdown by stage, and `--json` holds all of it. Tasks run before 1.6 have no turn data, so they show `-`.
 - **Agent:** red-gate refusals, `verify` failures by kind, all gate refusals per gate, guard blocks by rule, and subagent runs and time per agent type.
-- **Engineer:** approval wait (from the plan being ready to it being approved), median response time between turns, test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
+- **Engineer:** approval wait (from the plan being ready to it being approved), median response time between turns (from 1.8.1, the human part of each gap in a task's time, so other sessions' prompts, notifications and agent time don't count), test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
 
 **Engineer identity is opt-in, under a nickname.** By default events carry no engineer at all. An engineer opts in by running `telemetry opt-in --as "<nickname>"` themselves, in their own terminal. Agents can't run it. From then on, their events carry that nickname and nothing else about them. The nickname can be anything they like, and it's stored in their own git config (`lightharness.engineer`), for all their repos, or for one repo with `--repo`. `telemetry opt-out` stops it. Telemetry never uses the git user name or email, or the name given to `approve`. The audit trail still records that name, because it's part of the approval itself.
 
@@ -240,7 +242,7 @@ Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (t
 |---|---|
 | `LIGHT_HARNESS_OTLP_ENDPOINT` or `git config lightharness.otlpEndpoint` | Also send each event as an OTLP/HTTP log record to this collector (e.g. `http://localhost:4318`). Best effort, with a 2 s timeout. Hook events are sent from a detached process, so a slow collector never delays a turn |
 | `LIGHT_HARNESS_OTLP_HEADERS` or `git config lightharness.otlpHeaders` | Extra headers for the collector, `key=value,key2=value2` |
-| `LIGHT_HARNESS_HUMAN_GAP_CAP` or `git config lightharness.humanGapCap` | How much of a gap between turns counts as human time (the rest is idle), e.g. `2h`, `90m`, `600s` or `600`. Default `2h` |
+| `LIGHT_HARNESS_HUMAN_GAP_CAP` or `git config lightharness.humanGapCap` | How much of a gap between turns counts as human time, or as background agent time when a background-task notification ends it (the rest is idle), e.g. `2h`, `90m`, `600s` or `600`. Default `2h` |
 | `LIGHT_HARNESS_TELEMETRY=0` or `git config lightharness.telemetry false` | Record nothing |
 
 Telemetry never changes a gate's outcome. If an event can't be written or sent, the command carries on as if telemetry were off.

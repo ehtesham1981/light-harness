@@ -6,10 +6,13 @@ telemetry.py), from which `metrics` splits each task's time into agent, human an
 
 Hook events handled:
   SessionStart / SessionEnd          `session` events
-  SubagentStart / SubagentStop       `agent` events; the stop carries the run time (run_s)
-  UserPromptSubmit                   `turn` start; carries the human's response time since the
-                                     previous turn ended (gap_s, and response_s capped at the
-                                     human-gap cap, see telemetry.gap_cap)
+  SubagentStart / SubagentStop       `agent` events; the stop carries the run time (run_s, run_start)
+  UserPromptSubmit                   `turn` start; carries where the prompt came from (source:
+                                     human, notification or peer, see prompt_source) and the gap
+                                     since the previous turn ended (gap_s). A human prompt's gap is
+                                     the human's response time (response_s, capped at the human-gap
+                                     cap, see telemetry.gap_cap); a notification's is background
+                                     agent time (bg_s, same cap); a peer's is neither
   Stop / StopFailure                 `turn` stop; carries turn_s, wait_s (time inside the turn
                                      spent waiting on a human) and agent_s = turn_s - wait_s
   PermissionRequest                  opens a wait (a permission dialog is showing)
@@ -159,6 +162,21 @@ def plugin_version() -> str:
 
 
 # --- turn accounting --------------------------------------------------------------------------------
+NOTIFY_TAGS = ("<task-notification>",)                          # a background task or subagent finished
+PEER_TAGS = ("<cross-session-message", "<side-sessions-event>")  # another session's message
+
+
+def prompt_source(prompt) -> str:
+    """Who a prompt came from, by its opening wrapper: "notification" (the session's own background
+    work finished and re-invoked it), "peer" (another session) or "human"."""
+    p = prompt.lstrip() if isinstance(prompt, str) else ""
+    if p.startswith(NOTIFY_TAGS):
+        return "notification"
+    if p.startswith(PEER_TAGS):
+        return "peer"
+    return "human"
+
+
 def r3(x: float) -> float:
     return round(max(0.0, x), 3)
 
@@ -224,24 +242,30 @@ def apply(ev: str, st: dict, data: dict, now: float, task, stage, cap, iso) -> l
     elif ev in ("SubagentStart", "SubagentStop"):
         agents = st.setdefault("agents", {})
         aid = str(data.get("agent_id") or "")
-        run_s = None
+        run_s = run_start = None
         if ev == "SubagentStart":
             agents[aid] = now
         elif aid in agents:
-            run_s = r3(now - float(agents.pop(aid)))
+            t0 = float(agents.pop(aid))
+            run_s, run_start = r3(now - t0), iso(t0)
         st["last"] = max(now, float(st.get("last") or 0.0))
         out.append(("agent", "agent", dict(phase="start" if ev == "SubagentStart" else "stop",
                                            agent_type=data.get("agent_type"), agent_id=data.get("agent_id"),
-                                           run_s=run_s)))
+                                           run_s=run_s, run_start=run_start)))
     elif ev == "UserPromptSubmit":
         if st.get("turn") is not None:  # the previous turn was interrupted: no Stop came
             close_turn(max(float(st.get("last") or 0.0), float(st["turn"])), interrupted=True)
+        src = prompt_source(data.get("prompt"))
         gap = {}
         if st.get("stop") is not None:
             g = now - float(st["stop"])
-            gap = dict(gap_start=iso(float(st["stop"])), gap_s=r3(g), response_s=r3(min(g, cap)), capped=g > cap)
+            gap = dict(gap_start=iso(float(st["stop"])), gap_s=r3(g), capped=g > cap)
+            if src == "human":
+                gap["response_s"] = r3(min(g, cap))
+            elif src == "notification":  # background work ran until it re-invoked the session
+                gap["bg_s"] = r3(min(g, cap))
         st.update(turn=now, turn_wait=0.0, waits=[], last=now, task=task, stage=stage)
-        out.append(("turn", "human", dict(phase="start", stage=stage, **gap)))
+        out.append(("turn", "human" if src == "human" else "agent", dict(phase="start", stage=stage, source=src, **gap)))
     elif ev in ("Stop", "StopFailure"):
         if st.get("turn") is not None:  # else the turn began before the harness was installed
             waits_out(close_waits(st, None, now, 0.0, ending=True))
