@@ -1577,6 +1577,57 @@ def run_tests(cfg):
     return r.returncode, (r.stdout + r.stderr), results
 
 
+SUITE_GATES = ("redgate", "verify", "baseline", "review")
+
+
+def record_suite_run(gate: str, *, duration_s, result: str | None, cache: str | None = None,
+                     key: str | None = None, scope: str = "full", env_failures: int = 0) -> None:
+    """Append one suite-run record (`suite` event, for `metrics`). Best effort: never raises, prints
+    nothing, so recording can't change a gate's outcome. `scope` and `env_failures` are fixed for now and
+    exist for targeted runs and environment-failure detection (#12)."""
+    try:
+        emit("suite", gate=gate, scope=scope, duration_s=duration_s, cache=cache, result=result,
+             env_failures=env_failures, key=key)
+    except Exception:  # noqa: BLE001 - metrics must never break a gate
+        pass
+
+
+def suite_result(rc) -> str | None:
+    """A suite run's result from its exit code: "pass" (0), "fail", "interrupted" (negative: killed by a
+    signal on POSIX), None (no code)."""
+    if rc is None:
+        return None
+    return "pass" if rc == 0 else ("interrupted" if rc < 0 else "fail")
+
+
+@contextlib.contextmanager
+def suite_timer(gate: str, cache: str | None = None, key: str | None = None):
+    """Times its body with time.monotonic() (never negative, unlike the wall clock) and records one suite
+    run on exit; the body sets run["rc"]. Ctrl-C is recorded as `interrupted` with the time so far, then
+    re-raised; any other exception passes through unrecorded."""
+    run: dict = {}
+    t0 = time.monotonic()
+
+    def took():
+        return round(max(0.0, time.monotonic() - t0), 3)
+
+    try:
+        yield run
+    except KeyboardInterrupt:
+        record_suite_run(gate, duration_s=took(), result="interrupted", cache=cache, key=key)
+        raise
+    record_suite_run(gate, duration_s=took(), result=suite_result(run.get("rc")), cache=cache, key=key)
+
+
+def run_suite(cfg: dict, gate: str) -> tuple[int, str, dict]:
+    """run_tests(cfg) inside suite_timer(gate), for gates that run the test command alone (redgate,
+    baseline); returns run_tests's tuple unchanged."""
+    with suite_timer(gate) as run:
+        ret = run_tests(cfg)
+        run["rc"] = ret[0]
+    return ret
+
+
 def tail(s: str, n: int = 25) -> str:
     return "\n".join(s.strip().splitlines()[-n:])
 
@@ -1832,6 +1883,16 @@ def reuse_report(cfg: dict) -> str:
     return f"stale (changed: {', '.join(changed) or 'unknown'}), stored key {entry['key'][:SHORT_KEY]}"
 
 
+def verify_reuse_decision(key: str, fresh: bool) -> tuple[str, dict | None]:
+    """The single point where verify decides to reuse a stored passing run. Returns ("bypass", None)
+    when fresh; else ("hit", entry) if a stored run is reusable, ("miss", None) otherwise. Whatever rule
+    decides reuse (today load_reuse), its outcome comes through here, so `metrics` sees every decision."""
+    if fresh:
+        return "bypass", None
+    entry = load_reuse(key)
+    return ("hit", entry) if entry else ("miss", None)
+
+
 def verify(write: bool = True, fresh: bool = False) -> bool:
     cfg = load_config()
     text = contract()
@@ -1888,7 +1949,8 @@ def verify(write: bool = True, fresh: bool = False) -> bool:
         #    suite and the probes on exactly this code is reused for a while (see reuse_key).
         saved = probes()
         key = reuse_key(cfg, saved, rg_state, appr[1] if appr else "")
-        hit = None if fresh else load_reuse(key)
+        cache, hit = verify_reuse_decision(key, fresh)
+        gate = "review" if get_status(text) == "Review" else "verify"
         reused = ""
         if hit:
             with base_lock():
@@ -1898,9 +1960,12 @@ def verify(write: bool = True, fresh: bool = False) -> bool:
             LAST_RESULTS.update(results)
             probe_runs = [(p, 0, "") for p in saved]
             reused = f"; cached, key {key[:SHORT_KEY]}, passed {hit.get('label', '?')}; `verify --fresh` re-runs"
+            record_suite_run(gate, duration_s=0, result="pass", cache="hit", key=key)
         else:
-            rc, out, results = run_tests(cfg)
-            probe_runs = run_probes(saved)
+            with suite_timer(gate, cache, key) as run:
+                rc, out, results = run_tests(cfg)
+                probe_runs = run_probes(saved)
+                run["rc"] = rc
         TEL["reused"] = bool(hit)
         green = rc == 0
         if rc != 0:
@@ -2045,7 +2110,7 @@ def ensure_baseline():
     cfg = load_config()
     if baseline_tests() is not None or not test_files(cfg):
         return
-    rc, out, results = run_tests(cfg)
+    rc, out, results = run_suite(cfg, "baseline")
     if not results:
         print(f"⚠ Couldn't read per-test results from the existing suite (exit {rc}); no baseline "
               f"recorded. Existing tests that pass at the red gate will need --allow-passing.\n{tail(out, 10)}")
@@ -2656,7 +2721,7 @@ def cmd_redgate(args):
             + ", ".join(f"{b} [{specs[b]['kind']}]" for b in unswept)
             + ". Write the sweep from the §8.4 entry and tag it with `BR-n [sweep]` in its docstring or title.")
     preserve = [b for b, s in specs.items() if s["kind"] == "Preservation"]
-    rc, out, results = run_tests(cfg)
+    rc, out, results = run_suite(cfg, "redgate")
     if rc == 0:
         die("tests PASS before implementation — they don't prove anything yet. "
             "The test-author must write tests that fail against the stubs.")
