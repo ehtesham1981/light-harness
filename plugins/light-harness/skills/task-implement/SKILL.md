@@ -59,7 +59,7 @@ Run `light-harness verify --task <name>`. This checks:
 
 Fix every ✗ and re-run until it passes. For each ⚠, either fix it or explain it in §10.2 so the reviewer can judge it.
 
-A passing run of the suite and probes is reused for 30 minutes while the code, config, probes and gates stay exactly the same, so `/task-review` doesn't run them again for nothing. `verify` says when it reused a run, and `verify --fresh` always runs everything.
+A passing run of the suite and probes is reused for as long as the code, config, probes, gates, harness version and run environment stay exactly the same (however old it is), so `/task-review` doesn't run them again for nothing. `verify` says when it reused a run (`cached, key <12 hex>`), `status` shows whether the next `verify` would, and `verify --fresh` always runs everything.
 
 ### 6. Record and hand off
 Fill §10.2 Implementation Notes: what each step delivered, how to run the result, known limitations, and the explanation for any ⚠. Commit any remaining work on the task branch (the contract isn't part of the branch). Then report to the human: steps completed, test count, verification result, deviations, and "Next: `/light-harness:task-review`".

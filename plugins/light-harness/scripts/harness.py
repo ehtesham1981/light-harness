@@ -279,16 +279,18 @@ def git(*args: str, check: bool = True, cwd: Path | None = None, input: str | No
     return out
 
 
-def hash_paths(paths: list[str], *flags: str) -> dict[str, str]:
-    """Blob id of each working-tree file, as `git hash-object [flags]` computes it.
+def hash_paths(paths: list[str], *flags: str, cwd: Path | None = None) -> dict[str, str]:
+    """Blob id of each working-tree file (relative to cwd, default the checkout), as
+    `git hash-object [flags]` computes it.
     Paths go on stdin: one argument each overflows Windows's 32,767-character command line in a
     repo with a few hundred test files. --stdin-paths C-unquotes a line that starts with '"' and
     splits on newlines, so those rare names (impossible on Windows) go one at a time."""
     odd = {f for f in paths if f.startswith('"') or "\n" in f or "\r" in f}
     plain = [f for f in paths if f not in odd]
-    ids = dict(zip(plain, git("hash-object", *flags, "--stdin-paths",
+    at = ("-C", str(cwd)) if cwd else ()  # git -C, not a working folder: see raw_tree (long paths)
+    ids = dict(zip(plain, git(*at, "hash-object", *flags, "--stdin-paths",
                               input="".join(f + "\n" for f in plain)).split())) if plain else {}
-    ids.update((f, git("hash-object", *flags, "--", f).strip()) for f in odd)
+    ids.update((f, git(*at, "hash-object", *flags, "--", f).strip()) for f in odd)
     return ids
 
 
@@ -1597,9 +1599,11 @@ def _json_or_raw(s: str):
 # Reusing a passing verify run. Between the implementer's last `verify`, `set-status Review`, the
 # reviewer's `verify` and `verdict pass` the code usually doesn't change, yet each ran the whole suite
 # and every probe. Only the slow parts are reused (the suite's results and the probes' exit codes), only
-# from a run where all of them passed, only for VERIFY_REUSE_S, and only while everything that could
-# change their outcome is the same. Every other check in verify() runs each time.
-VERIFY_REUSE_S = 1800
+# from a run where all of them passed, and only while everything that could change their outcome is the
+# same (the key: see reuse_parts). How old the run is plays no part. Every other check in verify() runs
+# each time.
+SHORT_KEY = 12                         # hex chars of the key shown to users
+LAST_REUSE_PARTS = {}                  # key -> its per-part hashes, filled by reuse_key(), read by store_reuse()
 CACHE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".hypothesis", ".cache"}
 VOLATILE_ENV = {"PWD", "OLDPWD", "SHLVL", "_"}  # differ between shells without changing a run
 
@@ -1618,20 +1622,154 @@ def ignored_names(cfg: dict) -> list[str]:
     return sorted(out)
 
 
-def reuse_key(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> str:
-    """Everything a suite or probe run's outcome depends on that the harness can see: the code (tracked
-    and untracked files, as git would commit them), the ignored entries' names, the config, the saved
-    probes, the gate records, the base commit, the harness version, the interpreter and the environment the
-    suite and probes run with (a pass under a PYTHONPATH shim isn't reused by a run without it)."""
+def _long(p: Path) -> Path:
+    """On Windows, a path over 260 characters needs the \\\\?\\ form unless long paths are switched on."""
+    if os.name == "nt" and len(str(p)) >= 248 and not str(p).startswith("\\\\?\\"):
+        return Path("\\\\?\\" + os.path.abspath(p))
+    return p
+
+
+def _exec_bit(p: Path) -> bool:
+    try:
+        return bool(p.stat().st_mode & 0o111)
+    except OSError:
+        return False
+
+
+def _folder_files(top: Path, seen: set) -> list:
+    """Every file under a folder git doesn't look into (an uninitialised submodule's folder), by
+    relative name, raw bytes and exec bit; embedded repos inside it are read like any other."""
+    out = []
+    for dirpath, dirs, fnames in os.walk(top, followlinks=False):
+        d = Path(dirpath)
+        dirs.sort()
+        for sub in list(dirs):
+            if (d / sub).is_symlink():  # os.walk doesn't follow it: record the link and what's behind it
+                dirs.remove(sub)
+                real = os.path.realpath(d / sub)
+                rel = (d / sub).relative_to(top).as_posix()
+                if real in seen:
+                    out.append([rel, os.readlink(d / sub), "already read"])
+                else:
+                    seen.add(real)
+                    out.append([rel, os.readlink(d / sub), _folder_files(Path(real), seen)])
+            elif (d / sub / ".git").exists():
+                dirs.remove(sub)
+                out.append([(d / sub).relative_to(top).as_posix(), raw_tree(d / sub, seen)])
+        for f in sorted(fnames):
+            p = d / f
+            try:
+                data = hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError:
+                data = ""
+            out.append([p.relative_to(top).as_posix(), data, _exec_bit(p)])
+    return out
+
+
+def raw_tree(cwd: Path, seen: set | None = None) -> list:
+    """The working tree as it is on disk, which worktree_tree() can't see: git stores a file's content
+    after its line-ending filters (core.autocrlf, .gitattributes text/eol), matches names without case
+    where core.ignorecase is set, ignores the exec bit where core.filemode is false, and records an
+    embedded repo (or a submodule) only by its HEAD. So for every tracked and untracked (not ignored)
+    file: its name as the folder lists it, its raw bytes' blob id and its exec bit; for every embedded
+    repo, the same of its own working tree, however deep; and for a submodule folder without a repo
+    (not initialised), every file in it. A repo reached twice (through a link) is read once."""
+    seen = set() if seen is None else seen
+    real = os.path.realpath(cwd)
+    if real in seen:
+        return ["already read"]
+    seen.add(real)
+    # git runs from the checkout and is pointed at cwd with -C: Windows can't start a process in a
+    # working folder of 260+ characters, while git itself handles long paths (core.longpaths).
+    at = ("-C", str(cwd))
+    if subprocess.run(["git", *at, "rev-parse", "--git-dir"], cwd=ROOT, capture_output=True).returncode:
+        # git can't enter it (e.g. a Windows path too long for it): no key can vouch for its content,
+        # so this marker differs every time and the suite always runs instead of reusing a pass.
+        return ["unreadable", os.urandom(16).hex()]
+    names =[p for p in git(*at, "ls-files", "-z", "-c", "-o", "--exclude-standard").split("\0") if p]
+    gitlinks = {e.partition("\t")[2] for e in git(*at, "ls-files", "-z", "-s").split("\0")
+                if e.startswith("160000 ")}
+    listed: dict = {}
+
+    def on_disk(rel: str) -> str:
+        """Each part of the path as its folder lists it (a case-only rename of a file or a folder)."""
+        out = []
+        for part in rel.split("/"):
+            parent = "/".join(out)
+            if parent not in listed:
+                try:
+                    listed[parent] = os.listdir(cwd / parent) if parent else os.listdir(cwd)
+                except OSError:
+                    listed[parent] = []
+            here = listed[parent]
+            same = [] if part in here else sorted(n for n in here if n.lower() == part.lower())
+            out.append(same[0] if same else part)
+        return "/".join(out)
+
+    files, nested = [], []
+    for rel in sorted(set(p.rstrip("/") for p in names)):
+        plain = cwd / rel
+        full = _long(plain)  # for Python's own checks only: git can't take a \\?\ working folder
+        if full.is_symlink() and not full.is_file():
+            # a link to a folder, or a dangling one: an embedded repo's HEAD doesn't show it, so record
+            # where it points and, for a folder not read yet, what's behind it
+            real = os.path.realpath(full)
+            behind = "missing" if not os.path.isdir(real) else "already read" if real in seen else None
+            if behind is None and os.path.exists(os.path.join(real, ".git")):
+                behind = raw_tree(Path(real), seen)  # marks it read itself
+            elif behind is None:
+                seen.add(real)
+                behind = _folder_files(Path(real), seen)
+            nested.append([on_disk(rel), os.readlink(full), behind])
+        elif full.is_dir() and (full / ".git").exists():
+            nested.append([on_disk(rel), raw_tree(plain, seen)])
+        elif rel in gitlinks and full.is_dir() and not full.is_symlink():
+            nested.append([on_disk(rel), _folder_files(plain, seen)])
+        elif full.is_file():
+            files.append(rel)
+    ids = hash_paths(files, "--no-filters", cwd=cwd) if files else {}
+    return [[f, on_disk(f), ids.get(f, ""), _exec_bit(_long(cwd / f))] for f in files] + nested
+
+
+def scripts_hash() -> str:
+    """The harness's own code: every *.py and *.sh file directly in its scripts folder, by name and bytes.
+    While the harness is being worked on, its code changes without its version string changing."""
+    h = hashlib.sha256()
+    for f in sorted(PLUGIN_ROOT.joinpath("scripts").iterdir(), key=lambda p: p.name):
+        if f.is_file() and f.suffix in (".py", ".sh"):
+            h.update(json.dumps([f.name, hashlib.sha256(f.read_bytes()).hexdigest()]).encode(UTF8))
+    return h.hexdigest()
+
+
+def reuse_parts(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> dict:
+    """Everything a suite or probe run's outcome depends on that the harness can see, one hash per part,
+    in the order `status` names changed parts: the code (tracked and untracked files as in the working
+    tree, plus the ignored entries' names), the red-gate record (it holds the locked test ids), the saved
+    probes, the config, the harness version and code, the approval, the base commit, the interpreter and
+    the environment the suite and probes run with (a pass under a PYTHONPATH shim isn't reused by a run
+    without it). Only the hashes are kept, never the values (the environment may hold secrets)."""
     base = task_base_row()
     env = {k: v for k, v in clean_env().items() if k.upper() not in VOLATILE_ENV}
-    parts = {
-        "version": __version__, "python": sys.executable, "tree": worktree_tree(), "env": env,
-        "ignored": ignored_names(cfg), "config": CONFIG.read_text(encoding=UTF8) if CONFIG.exists() else "",
+    values = {
+        "tree": [worktree_tree(), raw_tree(ROOT), ignored_names(cfg)],
+        "tests": rg_state,
         "probes": [[p, state_file(state_ref(), p.get("file", ""))] for p in saved],
-        "redgate": rg_state, "approval": appr_state, "base": snap_of(base[1]) if base else "",
+        "config": CONFIG.read_text(encoding=UTF8) if CONFIG.exists() else "",
+        "version": [__version__, scripts_hash()],
+        "approval": appr_state,
+        "base": snap_of(base[1]) if base else "",
+        "python": sys.executable,
+        "env": env,
     }
-    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode(UTF8)).hexdigest()
+    return {k: hashlib.sha256(json.dumps(v, sort_keys=True).encode(UTF8)).hexdigest() for k, v in values.items()}
+
+
+def reuse_key(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> str:
+    """One hash over reuse_parts(); the parts are remembered so store_reuse() can save them with a pass."""
+    parts = reuse_parts(cfg, saved, rg_state, appr_state)
+    key = hashlib.sha256(json.dumps(parts, sort_keys=True).encode(UTF8)).hexdigest()
+    LAST_REUSE_PARTS[key] = parts
+    return key
 
 
 def reuse_file() -> Path:
@@ -1639,18 +1777,28 @@ def reuse_file() -> Path:
     return state_dir(create=True) / f"verify-cache-{task_slug() or 'task'}.json"
 
 
-def load_reuse(key: str):
+def stored_reuse():
+    """The stored entry if the cache file parses and has a valid shape, else None. It decides nothing:
+    load_reuse() decides, and reuse_report() uses this to say what changed."""
     try:
         c = json.loads(reuse_file().read_text(encoding=UTF8))
     except (OSError, ValueError):
         return None
-    if not isinstance(c, dict) or c.get("key") != key:
+    if not isinstance(c, dict) or not isinstance(c.get("key"), str):
         return None
     when, results = c.get("when"), c.get("results")
     if isinstance(when, bool) or not isinstance(when, (int, float)) or not isinstance(results, dict) \
             or not all(isinstance(k, str) and isinstance(v, str) for k, v in results.items()):
         return None
-    return c if 0 <= time.time() - when < VERIFY_REUSE_S else None
+    return c
+
+
+def load_reuse(key: str):
+    """The reuse decision: the stored entry if it is a pass stored under exactly this key, else None."""
+    c = stored_reuse()
+    if c is None or c.get("key") != key or c.get("result") != "pass":
+        return None
+    return c
 
 
 def drop_reuse():
@@ -1660,9 +1808,28 @@ def drop_reuse():
 def store_reuse(key: str, out: str, results: dict):
     f = reuse_file()
     tmp = f.with_name(f".{f.name}.{os.getpid()}")
-    tmp.write_text(json.dumps({"key": key, "when": time.time(), "label": now(), "out": tail(out, 40),
+    tmp.write_text(json.dumps({"key": key, "parts": LAST_REUSE_PARTS.get(key, {}), "result": "pass",
+                               "when": time.time(), "label": now(), "out": tail(out, 40),
                                "results": results}), encoding=UTF8)
     os.replace(tmp, f)
+
+
+def reuse_report(cfg: dict) -> str:
+    """What `status` says about a stored pass: whether the next verify would reuse it, and if not, which
+    parts of the key changed since it was stored."""
+    entry = stored_reuse()
+    rg_ok, _, rg_state = redgate_state()
+    if entry is None or not rg_ok:
+        return "no cached pass"
+    appr = latest("harness: plan-approved")
+    key = reuse_key(cfg, probes(), rg_state, appr[1] if appr else "")
+    hit = load_reuse(key)
+    if hit:
+        return f"cached, key {key[:SHORT_KEY]} (passed {hit.get('label', '?')})"
+    old = entry.get("parts") if isinstance(entry.get("parts"), dict) else {}
+    now_parts = LAST_REUSE_PARTS.get(key, {})
+    changed = [p for p in now_parts if old and old.get(p) != now_parts[p]]
+    return f"stale (changed: {', '.join(changed) or 'unknown'}), stored key {entry['key'][:SHORT_KEY]}"
 
 
 def verify(write: bool = True, fresh: bool = False) -> bool:
@@ -1730,7 +1897,7 @@ def verify(write: bool = True, fresh: bool = False) -> bool:
             LAST_RESULTS.clear()
             LAST_RESULTS.update(results)
             probe_runs = [(p, 0, "") for p in saved]
-            reused = f"; reused the passing run from {hit.get('label', '?')} on the same code, `verify --fresh` re-runs"
+            reused = f"; cached, key {key[:SHORT_KEY]}, passed {hit.get('label', '?')}; `verify --fresh` re-runs"
         else:
             rc, out, results = run_tests(cfg)
             probe_runs = run_probes(saved)
@@ -2363,8 +2530,13 @@ def cmd_status(args):
     if base:
         print(f"Base:      {snap_of(base[1])[:8]} {base[2].removeprefix('harness: ')}")
     swept = [f"{b} [{s['kind']}]" for b, s in rule_specs(text).items() if s["kind"] in SPACE_KINDS]
+    try:
+        cache = reuse_report(load_config())
+    except Exception as e:  # status must never fail on this line
+        cache = f"unknown ({e})"
     print(f"Status:    {st}\nPlan hash: {plan_hash(text)}\nApproval:  {'✓ ' if ok else '✗ '}{msg}\n"
-          f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nACs:       {', '.join(acs(text)) or 'none'}\n"
+          f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nVerify:    {cache}\n"
+          f"ACs:       {', '.join(acs(text)) or 'none'}\n"
           + (f"Sweeps:    {', '.join(swept)} (each needs an independent sweep; up to "
              f"{parallel_limit(load_config())} sweepers at once)\n" if swept else "")
           + f"Contract:  {CONTRACT}\nNext:      {nxt}")
