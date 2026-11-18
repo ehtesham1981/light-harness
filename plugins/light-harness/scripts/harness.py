@@ -1644,7 +1644,16 @@ def _folder_files(top: Path, seen: set) -> list:
         d = Path(dirpath)
         dirs.sort()
         for sub in list(dirs):
-            if (d / sub / ".git").exists():
+            if (d / sub).is_symlink():  # os.walk doesn't follow it: record the link and what's behind it
+                dirs.remove(sub)
+                real = os.path.realpath(d / sub)
+                rel = (d / sub).relative_to(top).as_posix()
+                if real in seen:
+                    out.append([rel, os.readlink(d / sub), "already read"])
+                else:
+                    seen.add(real)
+                    out.append([rel, os.readlink(d / sub), _folder_files(Path(real), seen)])
+            elif (d / sub / ".git").exists():
                 dirs.remove(sub)
                 out.append([(d / sub).relative_to(top).as_posix(), raw_tree(d / sub, seen)])
         for f in sorted(fnames):
