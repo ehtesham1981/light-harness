@@ -451,10 +451,25 @@ def same_class_reopened(rounds: list) -> int:
 
 def _suite_seconds(v) -> float:
     """A stored duration: v if it is an int/float (not bool), finite and >= 0, else 0.0. A bad value is
-    never subtracted or turned positive: it adds nothing (BR-8)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+    never subtracted or turned positive: it adds nothing (BR-8). That includes an integer too big for a
+    float, which a hand-edited or corrupted log line can hold."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
         return 0.0
-    return v
+    try:
+        f = float(v)
+    except OverflowError:
+        return 0.0
+    return f if math.isfinite(f) and f >= 0 else 0.0
+
+
+def _finite_sum(values) -> float:
+    """Sum of non-negative finite values that stays finite: a value that would push the total to
+    infinity adds nothing, like any other bad duration (BR-8)."""
+    total = 0.0
+    for x in values:
+        if math.isfinite(total + x):
+            total += x
+    return total
 
 
 def suite_figures(ev: list[dict]) -> dict:
@@ -467,7 +482,7 @@ def suite_figures(ev: list[dict]) -> dict:
     runs = [e for e in suites if e.get("cache") != "hit"]
     return {"suite_runs": len(runs), "cache_hits": hits, "cache_misses": misses,
             "cache_hit_rate": hits / (hits + misses) if hits + misses else None,
-            "suite_minutes": sum(_suite_seconds(e.get("duration_s")) for e in runs) / 60}
+            "suite_minutes": _finite_sum(_suite_seconds(e.get("duration_s")) for e in runs) / 60}
 
 
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
@@ -643,7 +658,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
     hits, misses = sum(t["cache_hits"] for t in vals), sum(t["cache_misses"] for t in vals)
     summary.update(suite_runs=sum(t["suite_runs"] for t in vals), cache_hits=hits, cache_misses=misses,
                    cache_hit_rate=hits / (hits + misses) if hits + misses else None,
-                   suite_minutes=sum(t["suite_minutes"] for t in vals))
+                   suite_minutes=_finite_sum(t["suite_minutes"] for t in vals))
     return {"summary": summary, "tasks": tasks, "engineers": eng_out}
 
 

@@ -235,7 +235,7 @@ Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (t
   - **cache hit rate:** hits ÷ (hits + misses), over every `verify` reuse decision, including the reviewer's. A `verify --fresh` or a `verdict pass` forces a run: it's recorded as `bypass`, counts as a run and in the minutes, and stays out of the hit rate. `—` means there were no reuse decisions yet. The summary pools all tasks' hits and misses.
   - **suite minutes:** the time those runs took, measured with a monotonic clock. A `verify` run's time includes its saved probes. A stored duration that is negative or not a number adds nothing.
 
-  A run interrupted with Ctrl-C is recorded as `interrupted` with the time so far. With telemetry off nothing is recorded, so these figures read 0.
+  A run interrupted with Ctrl-C is recorded as `interrupted` with the time so far. With telemetry off nothing is recorded, so these figures read 0. In `--json`, each task and the summary carry `suite_runs`, `cache_hits`, `cache_misses`, `cache_hit_rate` (a fraction, or `null` with no decisions) and `suite_minutes`.
 - **Agent:** red-gate refusals, `verify` failures by kind, all gate refusals per gate, guard blocks by rule, and subagent runs and time per agent type.
 - **Engineer:** approval wait (from the plan being ready to it being approved), median response time between turns (from 1.8.1, the human part of each gap in a task's time, so other sessions' prompts, notifications and agent time don't count), test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
 
