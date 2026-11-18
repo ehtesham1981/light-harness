@@ -1038,16 +1038,21 @@ ok  $H redgate $X
 printf 'def triple(x):\n    return 3 * x\n' > "$D/src/t.py"
 CF="$Q/.git/light-harness/verify-cache-speedy.json"
 
-echo "  verify: a passing run is reused while nothing changed"
-n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "reused" "$W/v.out" && [ -f "$CF" ]' "first verify didn't run the suite or store its result"
-n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $n ] && grep -q "Green gate: test suite passed.*reused" "$W/v.out"' "an unchanged tree re-ran the suite"
-check 'grep -q "reused" "$K"' "the verify block doesn't say the run was reused"
+echo "  verify: a passing run is reused while its key is unchanged, and status says so"
+check '$H status $X | grep -Eqx "Verify: +no cached pass"' "status doesn't say there is no cached pass before any verify"
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out" && [ -f "$CF" ]' "first verify didn't run the suite or store its result"
+check '"$PYBIN" -c "import json,sys; c=json.load(open(sys.argv[1])); assert c[\"result\"]==\"pass\" and len(c[\"parts\"])==9" "$CF"' "the stored pass lacks its result or its per-part hashes"
+KEY12="$("$PYBIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"][:12])' "$CF")"
+check '$H status $X | grep -Eqx "Verify: +cached, key $KEY12 \(passed .+\)"' "status doesn't show the cached pass and its key"
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $n ] && grep -q "Green gate: test suite passed (1 tests; cached, key $KEY12, passed .*; .verify --fresh. re-runs)" "$W/v.out"' "an unchanged tree re-ran the suite, or the output doesn't say cached, key"
+check 'grep -q "cached, key $KEY12" "$K"' "the verify block doesn't say the run was cached"
 check 'evq "any(e.get(\"command\")==\"verify\" and e.get(\"reused\") is True for e in E)"' "telemetry doesn't mark the reused verify"
 (cd "$D" && git add -A && git commit -qm "triple")
 n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "a commit of the same tree invalidated the stored run"
-n=$(runs); check '$H verify --fresh $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "reused" "$W/v.out"' "verify --fresh reused a run"
+n=$(runs); check '$H verify --fresh $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out"' "verify --fresh reused a run"
 check 'hookout "$Q" "$(bash_json "$Q" "light-harness verify --fresh --task speedy")" | grep -q "\"allow\""' "verify --fresh not pre-approved"
 printf 'def triple(x):\n    return x * 3\n' > "$D/src/t.py"
+check '$H status $X | grep -Eqx "Verify: +stale \(changed: tree\), stored key [0-9a-f]{12}"' "status doesn't say the stored pass is stale after a code change"
 n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a code change reused the stored run"
 echo "# note" > "$D/src/notes.py"
 n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a new untracked file reused the stored run"
@@ -1061,7 +1066,8 @@ ok  $H verify $X
 echo BROKEN > "$D/.env"                          # an ignored file's content: not in the key (documented)
 n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "an edit to an ignored file's content re-ran the suite (expected: reused)"
 nok $H verify --fresh $X
-n=$(runs); check '! $H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q reused "$W/v.out"' "a failing verify --fresh left the old passing run to be reused"
+n=$(runs); check '! $H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q cached "$W/v.out"' "a failing verify --fresh left the old passing run to be reused"
+check '$H status $X | grep -Eqx "Verify: +no cached pass"' "status shows a cached pass after a failing run"
 echo SECRET=1 > "$D/.env"
 ok  $H verify $X
 n=$(runs); check 'ST_EXTRA=1 $H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "a run under another environment reused the stored run"
@@ -1075,7 +1081,23 @@ n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "base-comm
 "$PYBIN" - "$CF" <<'EOF'
 import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["when"] -= 3600; json.dump(c, open(p, "w"))
 EOF
-n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "reused" "$W/v.out"' "an expired run was reused"
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $n ] && grep -q "cached, key" "$W/v.out"' "a run an hour old with an unchanged key wasn't reused (there is no age limit)"
+"$PYBIN" - "$CF" <<'EOF'
+import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["when"] -= 30 * 86400; json.dump(c, open(p, "w"))
+EOF
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $n ] && grep -q "cached, key" "$W/v.out"' "a run 30 days old with an unchanged key wasn't reused"
+"$PYBIN" - "$D/.light-harness/config.json" <<'EOF'
+import json, sys; p = sys.argv[1]; c = json.load(open(p)); json.dump(c, open(p, "w"), indent=4)
+EOF
+check '$H status $X | grep -Eqx "Verify: +stale \(changed: config\), stored key [0-9a-f]{12}"' "status doesn't name the config as changed"
+n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out"' "a config change reused the stored run"
+cp -R "$PLUGIN" "$W/plugin-copy"; H2="$PYBIN $W/plugin-copy/scripts/harness.py"
+n=$(runs); check '$H2 verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "the same harness code in another folder re-ran the suite"
+echo "# a local edit" >> "$W/plugin-copy/scripts/harness.py"
+check '[ "$($H2 version)" = "$($H version)" ]' "the harness copy reports another version"
+check '$H2 status $X | grep -Eqx "Verify: +stale \(changed: version\), stored key [0-9a-f]{12}"' "status doesn't name the harness version as changed"
+n=$(runs); check '$H2 verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out"' "a harness code change with the same version string reused the stored run"
+n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "going back to the original harness code reused the other code's run"
 printf 'def triple(x):\n    return 0\n' > "$D/src/t.py"
 n=$(runs); nok $H verify $X; nok $H verify $X
 check '[ "$(runs)" = $((n+2)) ]' "a failing run was stored and reused"
