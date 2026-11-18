@@ -227,7 +227,7 @@ def read_events(common) -> list[dict]:
     for line in p.read_text(encoding=UTF8, errors="replace").splitlines():
         try:
             e = json.loads(line)
-        except json.JSONDecodeError:
+        except ValueError:  # bad JSON, or an integer too long to convert (Python 3.11+ digit limit)
             continue
         if isinstance(e, dict) and e.get("event") and _epoch(e.get("ts")) is not None:
             e["_t"] = _epoch(e["ts"])
@@ -245,7 +245,7 @@ def drop_task(common, slug: str) -> int:
     for line in p.read_text(encoding=UTF8, errors="replace").splitlines():
         try:
             mine = json.loads(line).get("task") == slug
-        except (json.JSONDecodeError, AttributeError):
+        except (ValueError, AttributeError):
             mine = False
         n += mine
         if not mine:
