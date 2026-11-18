@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import re
 import statistics
@@ -226,7 +227,7 @@ def read_events(common) -> list[dict]:
     for line in p.read_text(encoding=UTF8, errors="replace").splitlines():
         try:
             e = json.loads(line)
-        except json.JSONDecodeError:
+        except ValueError:  # bad JSON, or an integer too long to convert (Python 3.11+ digit limit)
             continue
         if isinstance(e, dict) and e.get("event") and _epoch(e.get("ts")) is not None:
             e["_t"] = _epoch(e["ts"])
@@ -244,7 +245,7 @@ def drop_task(common, slug: str) -> int:
     for line in p.read_text(encoding=UTF8, errors="replace").splitlines():
         try:
             mine = json.loads(line).get("task") == slug
-        except (json.JSONDecodeError, AttributeError):
+        except (ValueError, AttributeError):
             mine = False
         n += mine
         if not mine:
@@ -448,6 +449,42 @@ def same_class_reopened(rounds: list) -> int:
     return count
 
 
+def _suite_seconds(v) -> float:
+    """A stored duration: v if it is an int/float (not bool), finite and >= 0, else 0.0. A bad value is
+    never subtracted or turned positive: it adds nothing (BR-8). That includes an integer too big for a
+    float, which a hand-edited or corrupted log line can hold."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0.0
+    try:
+        f = float(v)
+    except OverflowError:
+        return 0.0
+    return f if math.isfinite(f) and f >= 0 else 0.0
+
+
+def _finite_sum(values) -> float:
+    """Sum of non-negative finite values that stays finite: a value that would push the total to
+    infinity adds nothing, like any other bad duration (BR-8)."""
+    total = 0.0
+    for x in values:
+        if math.isfinite(total + x):
+            total += x
+    return total
+
+
+def suite_figures(ev: list[dict]) -> dict:
+    """Suite runs, cache hits/misses, cache hit rate and suite minutes from a task's `suite` events.
+    A record is a run unless its cache is "hit" (a reused verify starts no suite); only "hit" and "miss"
+    are reuse decisions, so `bypass` (verify --fresh, verdict pass) and unknown values stay out of the rate."""
+    suites = [e for e in ev if e.get("event") == "suite"]
+    hits = sum(e.get("cache") == "hit" for e in suites)
+    misses = sum(e.get("cache") == "miss" for e in suites)
+    runs = [e for e in suites if e.get("cache") != "hit"]
+    return {"suite_runs": len(runs), "cache_hits": hits, "cache_misses": misses,
+            "cache_hit_rate": hits / (hits + misses) if hits + misses else None,
+            "suite_minutes": _finite_sum(_suite_seconds(e.get("duration_s")) for e in runs) / 60}
+
+
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
          issue_rounds: dict | None = None) -> dict:
     """KPIs from the audit trails ({task: [(epoch, subject), ...]} oldest first, available for every
@@ -551,6 +588,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             "gates": {k: dict(v) for k, v in gates.items()},
             "sessions": len({e["session"] for e in ev if e.get("session")}),
             "events": len(ev),
+            **suite_figures(ev),
         }
 
     engineers = defaultdict(lambda: {"tasks": set(), "sessions": set(), "approvals": 0, "unlocks": 0,
@@ -617,6 +655,10 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         "events": len(events),
         "since": events[0]["ts"] if events else None,
     }
+    hits, misses = sum(t["cache_hits"] for t in vals), sum(t["cache_misses"] for t in vals)
+    summary.update(suite_runs=sum(t["suite_runs"] for t in vals), cache_hits=hits, cache_misses=misses,
+                   cache_hit_rate=hits / (hits + misses) if hits + misses else None,
+                   suite_minutes=_finite_sum(t["suite_minutes"] for t in vals))
     return {"summary": summary, "tasks": tasks, "engineers": eng_out}
 
 
@@ -644,6 +686,19 @@ def _pct(x):
 
 def _num(x):
     return "-" if x is None else (f"{x:.1f}".rstrip("0").rstrip(".") if isinstance(x, float) else str(x))
+
+
+def _rate(x) -> str:
+    """A cache hit rate: a whole percentage, or an em dash when there were no reuse decisions."""
+    return "—" if x is None else f"{x * 100:.0f}%"
+
+
+def _minutes(m) -> str:
+    return f"{m:.2f}".rstrip("0").rstrip(".")
+
+
+def _suite_line(x) -> str:
+    return f"{x['suite_runs']} · cache hit rate {_rate(x['cache_hit_rate'])} · suite minutes {_minutes(x['suite_minutes'])}"
 
 
 def _split_rows(x) -> list:
@@ -682,6 +737,7 @@ def render(data: dict, only: str | None = None) -> str:
                 *_split_rows(t["time_split"]),
                 ("Subagents", " · ".join(f"{k} {v['runs']}× {dur(v['seconds'])}" for k, v in t["subagents"].items()) or "-"),
                 ("Gates (ok/refused)", " · ".join(f"{k} {v['ok']}/{v['fail']}" for k, v in t["gates"].items()) or "-"),
+                ("Suite runs", _suite_line(t)),
                 ("Sessions / events", f"{t['sessions']} / {t['events']}")]
         out += [f"  {k:<22} {v}" for k, v in rows]
         return "\n".join(out)
@@ -694,6 +750,7 @@ def render(data: dict, only: str | None = None) -> str:
     out.append(f"  per task: red-gate refusals {_num(s['red_gate_fails_per_task'])} · verify failures "
                f"{_num(s['verify_fails_per_task'])} · guard blocks {_num(s['guard_blocks_per_task'])} · "
                f"test unlocks {_num(s['unlocks_per_task'])}")
+    out.append(f"  suite runs {_suite_line(s)}")
     if s["time_in_stage_s"]:
         out.append("  time in stage: " + " · ".join(f"{k} {dur(v)}" for k, v in s["time_in_stage_s"].items()))
     if s["time_split"]:
@@ -727,6 +784,11 @@ def render(data: dict, only: str | None = None) -> str:
                            f"{dur(x['human_s']):>10} "
                            f"{dur(x['idle_s']):>10} {_pct(x['agent_pct']):>8} {dur(x['response_s']):>10} "
                            f"{dur(x['in_turn_wait_s']):>10}")
+        out.append("")
+        out.append(f"{'Suite runs':<24} {'Runs':>6} {'Hit rate':>9} {'Minutes':>9}")
+        for slug, t in data["tasks"].items():
+            out.append(f"{slug[:24]:<24} {t['suite_runs']:>6} {_rate(t['cache_hit_rate']):>9} "
+                       f"{_minutes(t['suite_minutes']):>9}")
     out.append("")
     if data["engineers"]:
         out.append("Engineers (opted in, by nickname):")

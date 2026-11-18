@@ -455,6 +455,9 @@ git add -A; git commit -qm "existing code"
 ok  $H start-task delta
 T="$B/.tasks" flow delta
 check '$H log delta | grep -q "baseline (1 existing"' "baseline event missing"
+check 'EV="$B/.git/light-harness/telemetry/events.jsonl" evq "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"delta\"]==[(\"baseline\",None,\"pass\"),(\"redgate\",None,\"fail\"),(\"verify\",\"miss\",\"pass\"),(\"verify\",\"hit\",\"pass\"),(\"review\",\"bypass\",\"pass\")]"' "suite-run records for delta wrong (expected: baseline at Build, redgate fail, verify miss, set-status Review hit, verdict pass bypass) (#20)"
+check 'EV="$B/.git/light-harness/telemetry/events.jsonl" evq "all(e[\"scope\"]==\"full\" and e[\"env_failures\"]==0 and e[\"duration_s\"]>=0 and (e.get(\"cache\")==\"hit\")==(e[\"duration_s\"]==0) and (\"key\" in e)==(\"cache\" in e) for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"delta\")"' "delta's suite-run records lack scope / env_failures / duration / key (#20)"
+check '$H metrics delta --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); assert (k[\"suite_runs\"],k[\"cache_hits\"],k[\"cache_misses\"],k[\"cache_hit_rate\"])==(4,1,1,0.5) and k[\"suite_minutes\"]>0, k"' "metrics delta --json lacks the suite-run figures (#20)"
 ok  $H finish-task delta
 check 'grep -q "\"task\":\"delta\"" .git/light-harness/telemetry/events.jsonl && human "$H forget delta" FORGET && ! grep -q "\"task\":\"delta\"" .git/light-harness/telemetry/events.jsonl' "forget didn't drop the task's telemetry events"
 
@@ -1009,6 +1012,9 @@ ok  $H start-task speedy
 X="--task speedy"; D="$T/speedy"; K="$D/.light-harness/contract.md"; EV="$Q/.git/light-harness/telemetry/events.jsonl"
 export ST_COUNT="$W/runs.count" ST_DIR="$W/probes18"; : > "$ST_COUNT"; mkdir -p "$ST_DIR"
 runs() { wc -c < "$ST_COUNT" | tr -d ' '; }
+# nsuite: how many suite-run records the log holds; newsuite <count> <python expr over S, the records added since>
+nsuite() { "$PYBIN" -c 'import json,os,sys; p=sys.argv[1]; print(sum(json.loads(l).get("event")=="suite" for l in open(p,encoding="utf-8")) if os.path.exists(p) else 0)' "$EV"; }
+newsuite() { "$PYBIN" -c 'import json,sys; S=[e for e in (json.loads(l) for l in open(sys.argv[1],encoding="utf-8")) if e.get("event")=="suite"][int(sys.argv[2]):]; sys.exit(0 if eval(sys.argv[3]) else 1)' "$EV" "$1" "$2"; }
 edit "$K" "<one or two sentences: what outcome, for whom>" "Triple numbers" \
   "| EX-1 | <input> | <expected> | <happy path / edge / error> |" "| EX-1 | 2 | 6 | happy |" \
   "- AC-1: <Given … When … Then …>" "- AC-1: Given 2, then 6"
@@ -1034,22 +1040,29 @@ def test_ac1():
     assert triple(2) == 6
 EOF
 printf 'def triple(x):\n    raise NotImplementedError\n' > "$D/src/t.py"
+s=$(nsuite)
 ok  $H redgate $X
 printf 'def triple(x):\n    return 3 * x\n' > "$D/src/t.py"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"],e[\"scope\"],e[\"env_failures\"],e.get(\"task\")) for e in S]==[(\"redgate\",None,\"fail\",\"full\",0,\"speedy\")] and S[0][\"duration_s\"]>0 and \"key\" not in S[0]"' "redgate didn't append one suite-run record (#20)"
 CF="$Q/.git/light-harness/verify-cache-speedy.json"
 
 echo "  verify: a passing run is reused while its key is unchanged, and status says so"
 check '$H status $X | grep -Eqx "Verify: +no cached pass"' "status doesn't say there is no cached pass before any verify"
+s=$(nsuite)
 n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out" && [ -f "$CF" ]' "first verify didn't run the suite or store its result"
 check '"$PYBIN" -c "import json,sys; c=json.load(open(sys.argv[1])); assert c[\"result\"]==\"pass\" and len(c[\"parts\"])==9" "$CF"' "the stored pass lacks its result or its per-part hashes"
 KEY12="$("$PYBIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"][:12])' "$CF")"
 check '$H status $X | grep -Eqx "Verify: +cached, key $KEY12 \(passed .+\)"' "status doesn't show the cached pass and its key"
 n=$(runs); check '$H verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $n ] && grep -q "Green gate: test suite passed (1 tests; cached, key $KEY12, passed .*; .verify --fresh. re-runs)" "$W/v.out"' "an unchanged tree re-ran the suite, or the output doesn't say cached, key"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"verify\",\"miss\",\"pass\"),(\"verify\",\"hit\",\"pass\")] and S[0][\"duration_s\"]>0 and S[1][\"duration_s\"]==0 and S[0][\"key\"]==S[1][\"key\"] and len(S[0][\"key\"])==64"' "verify miss then reuse hit not recorded as one miss and one 0 s hit (#20)"
+check '$H metrics speedy --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); assert (k[\"suite_runs\"],k[\"cache_hits\"],k[\"cache_misses\"],k[\"cache_hit_rate\"])==(2,1,1,0.5) and k[\"suite_minutes\"]>0, k"' "metrics speedy --json: expected 2 runs, 1 hit, 1 miss, 50% (#20)"
 check 'grep -q "cached, key $KEY12" "$K"' "the verify block doesn't say the run was cached"
 check 'evq "any(e.get(\"command\")==\"verify\" and e.get(\"reused\") is True for e in E)"' "telemetry doesn't mark the reused verify"
 (cd "$D" && git add -A && git commit -qm "triple")
 n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $n ]' "a commit of the same tree invalidated the stored run"
+s=$(nsuite)
 n=$(runs); check '$H verify --fresh $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out"' "verify --fresh reused a run"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"verify\",\"bypass\",\"pass\")] and S[0][\"duration_s\"]>0"' "verify --fresh not recorded as one bypass run (#20)"
 check 'hookout "$Q" "$(bash_json "$Q" "light-harness verify --fresh --task speedy")" | grep -q "\"allow\""' "verify --fresh not pre-approved"
 printf 'def triple(x):\n    return x * 3\n' > "$D/src/t.py"
 check '$H status $X | grep -Eqx "Verify: +stale \(changed: tree\), stored key [0-9a-f]{12}"' "status doesn't say the stored pass is stale after a code change"
@@ -1099,8 +1112,10 @@ check '$H2 status $X | grep -Eqx "Verify: +stale \(changed: version\), stored ke
 n=$(runs); check '$H2 verify $X > "$W/v.out" 2>&1 && [ "$(runs)" = $((n+1)) ] && ! grep -q "cached" "$W/v.out"' "a harness code change with the same version string reused the stored run"
 n=$(runs); check '$H verify $X >/dev/null 2>&1 && [ "$(runs)" = $((n+1)) ]' "going back to the original harness code reused the other code's run"
 printf 'def triple(x):\n    return 0\n' > "$D/src/t.py"
+s=$(nsuite)
 n=$(runs); nok $H verify $X; nok $H verify $X
 check '[ "$(runs)" = $((n+2)) ]' "a failing run was stored and reused"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"verify\",\"miss\",\"fail\")]*2 and all(e[\"duration_s\"]>0 for e in S)"' "failing verify runs not recorded as two miss/fail runs (#20)"
 printf 'def triple(x):\n    return x * 3\n' > "$D/src/t.py"
 ok  $H verify $X
 mv "$D/.light-harness-base" "$Q/.git/light-harness/base-aside-speedy"   # as if a run was killed
@@ -1125,10 +1140,12 @@ check 'hookout "$Q" "$(bash_json "$Q" "light-harness baseline --task speedy --ou
 echo "  review: probes run in parallel, each with its own base export, under probe_timeout"
 ok  $H baseline $X src/m.py
 (cd "$D" && git add -A && git commit -qm "notes")
+s=$(nsuite)
 n=$(runs); ok $H set-status Review $X
 check '[ "$(runs)" = $n ]' "set-status Review re-ran the suite on unchanged code"
 n=$(runs); ok $H verify $X
 check '[ "$(runs)" = $n ]' "the reviewer's verify re-ran the suite right after set-status Review"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"duration_s\"]) for e in S]==[(\"verify\",\"hit\",0),(\"review\",\"hit\",0)]"' "set-status Review / the reviewer's verify not recorded as hits with gates verify / review (#20)"
 SEP="|----|----------|--------|------|-------|-------------|------------------|"
 edit "$K" "$SEP
 " "$SEP
@@ -1148,6 +1165,8 @@ EOF
 ok  $H probe add "$W/pr.py" --issue RV-1 $X
 n=$(runs); ok $H verify $X
 check '[ "$(runs)" = $((n+1)) ]' "a newly saved probe didn't invalidate the stored run"
+check 'newsuite "$((s+2))" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"review\",\"miss\",\"pass\")] and S[0][\"duration_s\"]>=1.9"' "the review verify's record doesn't cover the saved probe's time (#20)"
+s=$(nsuite)
 ok  $H probe add "$W/pr.py" --issue RV-2 $X
 check '$H probe run $X >/dev/null 2>&1 && "$PYBIN" - "$ST_DIR" <<EOF
 import sys, pathlib; d = pathlib.Path(sys.argv[1]); r = lambda n: float((d / n).read_text())
@@ -1156,6 +1175,7 @@ assert r(a + ".start") < r(b + ".end") and r(b + ".start") < r(a + ".end"), "pro
 assert (d / (a + ".base")).read_text() != (d / (b + ".base")).read_text(), "probes shared one base export"
 EOF' "probes didn't run in parallel with their own base exports"
 check '$H probe run $X | head -1 | grep -q "RV-1.1"' "probe results not in saved order"
+check 'newsuite "$s" "S==[]"' "probe run recorded a suite run (#20)"
 printf 'import time\ntime.sleep(10)\n' > "$W/slow.py"
 ok  $H probe add "$W/slow.py" --issue RV-3 $X
 check '! $H probe run $X > "$W/p.out" 2>&1 && grep -q "timed out after 6s" "$W/p.out"' "probe_timeout from the config not applied"
@@ -1164,14 +1184,20 @@ ok  $H verify $X
 printf 'print("difference")
 raise SystemExit(1)
 ' > "$W/bad.py"
+s=$(nsuite)
 ok  $H probe add "$W/bad.py" --issue RV-4 $X
 n=$(runs); nok $H verify $X; nok $H verify $X
 check '[ "$(runs)" = $((n+2)) ]' "a run with a failing probe was stored and reused"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"review\",\"miss\",\"pass\")]*2"' "a failing probe changed the record's result, or a run went unrecorded (#20)"
 check 'human "$H probe drop RV-4.1 --name \"Human Approver\" --reason done $X" ""' "drop failing probe"
 edit "$K" "| RV-1 | Low | Open" "| RV-1 | Low | Resolved" "| RV-2 | Low | Open" "| RV-2 | Low | Resolved" "| RV-3 | Low | Open" "| RV-3 | Low | Resolved" "| RV-4 | Low | Open" "| RV-4 | Low | Resolved" "- [ ] AC-1" "- [x] AC-1"
 ok  $H verify $X
+s=$(nsuite)
 n=$(runs); ok $H verdict pass $X
 check '[ "$(runs)" = $((n+1)) ] && git show refs/light-harness/tasks/speedy:baseline.json | grep -q "test_ac1"' "verdict pass reused a stored run instead of running fresh, or its baseline lost the passing tests"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"review\",\"bypass\",\"pass\")] and S[0][\"duration_s\"]>0"' "verdict pass not recorded as one review bypass run (#20)"
+check '$H metrics speedy --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); E=[json.loads(l) for l in open(sys.argv[1],encoding=\"utf-8\")]; S=[e for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"speedy\"]; h=sum(e.get(\"cache\")==\"hit\" for e in S); m=sum(e.get(\"cache\")==\"miss\" for e in S); assert (k[\"suite_runs\"],k[\"cache_hits\"],k[\"cache_misses\"])==(len(S)-h,h,m) and abs(k[\"cache_hit_rate\"]-h/(h+m))<1e-9 and h>=5, (k, h, m)" "$EV"' "metrics speedy --json figures don't match the suite-run records (#20)"
+check '$H metrics speedy | grep -qE "^  Suite runs +[0-9]+ · cache hit rate [0-9]+% · suite minutes [0-9.]+$" && $H metrics | grep -qE "^  suite runs [0-9]+ · cache hit rate [0-9]+% · suite minutes [0-9.]+$" && $H metrics | grep -qE "^Suite runs +Runs +Hit rate +Minutes$" && $H metrics | grep -qE "^speedy +[0-9]+ +[0-9]+% +[0-9.]+$"' "metrics text lacks the suite-run row, summary line or table (#20)"
 unset ST_COUNT ST_DIR
 
 echo; echo "Self-test: $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]
