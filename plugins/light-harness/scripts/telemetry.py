@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import re
 import statistics
@@ -449,13 +450,24 @@ def same_class_reopened(rounds: list) -> int:
 
 
 def _suite_seconds(v) -> float:
-    """A stored duration: v if it is an int/float (not bool), finite and >= 0, else 0.0."""
-    raise NotImplementedError
+    """A stored duration: v if it is an int/float (not bool), finite and >= 0, else 0.0. A bad value is
+    never subtracted or turned positive: it adds nothing (BR-8)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        return 0.0
+    return v
 
 
 def suite_figures(ev: list[dict]) -> dict:
-    """Suite runs, cache hits/misses, cache hit rate and suite minutes from a task's `suite` events."""
-    raise NotImplementedError
+    """Suite runs, cache hits/misses, cache hit rate and suite minutes from a task's `suite` events.
+    A record is a run unless its cache is "hit" (a reused verify starts no suite); only "hit" and "miss"
+    are reuse decisions, so `bypass` (verify --fresh, verdict pass) and unknown values stay out of the rate."""
+    suites = [e for e in ev if e.get("event") == "suite"]
+    hits = sum(e.get("cache") == "hit" for e in suites)
+    misses = sum(e.get("cache") == "miss" for e in suites)
+    runs = [e for e in suites if e.get("cache") != "hit"]
+    return {"suite_runs": len(runs), "cache_hits": hits, "cache_misses": misses,
+            "cache_hit_rate": hits / (hits + misses) if hits + misses else None,
+            "suite_minutes": sum(_suite_seconds(e.get("duration_s")) for e in runs) / 60}
 
 
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
@@ -561,6 +573,7 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             "gates": {k: dict(v) for k, v in gates.items()},
             "sessions": len({e["session"] for e in ev if e.get("session")}),
             "events": len(ev),
+            **suite_figures(ev),
         }
 
     engineers = defaultdict(lambda: {"tasks": set(), "sessions": set(), "approvals": 0, "unlocks": 0,
@@ -627,6 +640,10 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
         "events": len(events),
         "since": events[0]["ts"] if events else None,
     }
+    hits, misses = sum(t["cache_hits"] for t in vals), sum(t["cache_misses"] for t in vals)
+    summary.update(suite_runs=sum(t["suite_runs"] for t in vals), cache_hits=hits, cache_misses=misses,
+                   cache_hit_rate=hits / (hits + misses) if hits + misses else None,
+                   suite_minutes=sum(t["suite_minutes"] for t in vals))
     return {"summary": summary, "tasks": tasks, "engineers": eng_out}
 
 
@@ -654,6 +671,19 @@ def _pct(x):
 
 def _num(x):
     return "-" if x is None else (f"{x:.1f}".rstrip("0").rstrip(".") if isinstance(x, float) else str(x))
+
+
+def _rate(x) -> str:
+    """A cache hit rate: a whole percentage, or an em dash when there were no reuse decisions."""
+    return "—" if x is None else f"{x * 100:.0f}%"
+
+
+def _minutes(m) -> str:
+    return f"{m:.2f}".rstrip("0").rstrip(".")
+
+
+def _suite_line(x) -> str:
+    return f"{x['suite_runs']} · cache hit rate {_rate(x['cache_hit_rate'])} · suite minutes {_minutes(x['suite_minutes'])}"
 
 
 def _split_rows(x) -> list:
@@ -692,6 +722,7 @@ def render(data: dict, only: str | None = None) -> str:
                 *_split_rows(t["time_split"]),
                 ("Subagents", " · ".join(f"{k} {v['runs']}× {dur(v['seconds'])}" for k, v in t["subagents"].items()) or "-"),
                 ("Gates (ok/refused)", " · ".join(f"{k} {v['ok']}/{v['fail']}" for k, v in t["gates"].items()) or "-"),
+                ("Suite runs", _suite_line(t)),
                 ("Sessions / events", f"{t['sessions']} / {t['events']}")]
         out += [f"  {k:<22} {v}" for k, v in rows]
         return "\n".join(out)
@@ -704,6 +735,7 @@ def render(data: dict, only: str | None = None) -> str:
     out.append(f"  per task: red-gate refusals {_num(s['red_gate_fails_per_task'])} · verify failures "
                f"{_num(s['verify_fails_per_task'])} · guard blocks {_num(s['guard_blocks_per_task'])} · "
                f"test unlocks {_num(s['unlocks_per_task'])}")
+    out.append(f"  suite runs {_suite_line(s)}")
     if s["time_in_stage_s"]:
         out.append("  time in stage: " + " · ".join(f"{k} {dur(v)}" for k, v in s["time_in_stage_s"].items()))
     if s["time_split"]:
@@ -737,6 +769,11 @@ def render(data: dict, only: str | None = None) -> str:
                            f"{dur(x['human_s']):>10} "
                            f"{dur(x['idle_s']):>10} {_pct(x['agent_pct']):>8} {dur(x['response_s']):>10} "
                            f"{dur(x['in_turn_wait_s']):>10}")
+        out.append("")
+        out.append(f"{'Suite runs':<24} {'Runs':>6} {'Hit rate':>9} {'Minutes':>9}")
+        for slug, t in data["tasks"].items():
+            out.append(f"{slug[:24]:<24} {t['suite_runs']:>6} {_rate(t['cache_hit_rate']):>9} "
+                       f"{_minutes(t['suite_minutes']):>9}")
     out.append("")
     if data["engineers"]:
         out.append("Engineers (opted in, by nickname):")
