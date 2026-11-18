@@ -1620,6 +1620,45 @@ def ignored_names(cfg: dict) -> list[str]:
     return sorted(out)
 
 
+def raw_tree(cwd: Path, depth: int = 0) -> list:
+    """The working tree as it is on disk, which worktree_tree() can't see: git stores a file's content
+    after its line-ending filters (core.autocrlf, .gitattributes text/eol), matches names without case
+    where core.ignorecase is set, and records an embedded repo only by its HEAD. So for every tracked
+    and untracked (not ignored) file: its name as the folder lists it, and its raw bytes' blob id; and
+    for every embedded repo, the same of its own working tree."""
+    names = [p for p in git("ls-files", "-z", "-c", "-o", "--exclude-standard", cwd=cwd).split("\0") if p]
+    listed: dict = {}
+
+    def on_disk(rel: str) -> str:
+        """Each part of the path as its folder lists it (a case-only rename of a file or a folder)."""
+        out = []
+        for part in rel.split("/"):
+            parent = "/".join(out)
+            if parent not in listed:
+                try:
+                    listed[parent] = os.listdir(cwd / parent) if parent else os.listdir(cwd)
+                except OSError:
+                    listed[parent] = []
+            here = listed[parent]
+            same = [] if part in here else sorted(n for n in here if n.lower() == part.lower())
+            out.append(same[0] if same else part)
+        return "/".join(out)
+
+    files, nested = [], []
+    for rel in sorted(set(p.rstrip("/") for p in names)):
+        full = cwd / rel
+        if full.is_dir() and (full / ".git").exists():
+            nested.append([on_disk(rel), raw_tree(full, depth + 1) if depth < 3 else "too deep"])
+        elif full.is_file():
+            files.append(rel)
+    odd = {f for f in files if f.startswith('"') or "\n" in f or "\r" in f}
+    plain = [f for f in files if f not in odd]
+    ids = dict(zip(plain, git("hash-object", "--no-filters", "--stdin-paths", cwd=cwd,
+                              input="".join(f + "\n" for f in plain)).split())) if plain else {}
+    ids.update((f, git("hash-object", "--no-filters", "--", f, cwd=cwd).strip()) for f in odd)
+    return [[f, on_disk(f), ids.get(f, "")] for f in files] + nested
+
+
 def scripts_hash() -> str:
     """The harness's own code: every *.py and *.sh file directly in its scripts folder, by name and bytes.
     While the harness is being worked on, its code changes without its version string changing."""
@@ -1640,7 +1679,7 @@ def reuse_parts(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) ->
     base = task_base_row()
     env = {k: v for k, v in clean_env().items() if k.upper() not in VOLATILE_ENV}
     values = {
-        "tree": [worktree_tree(), ignored_names(cfg)],
+        "tree": [worktree_tree(), raw_tree(ROOT), ignored_names(cfg)],
         "tests": rg_state,
         "probes": [[p, state_file(state_ref(), p.get("file", ""))] for p in saved],
         "config": CONFIG.read_text(encoding=UTF8) if CONFIG.exists() else "",
