@@ -279,16 +279,17 @@ def git(*args: str, check: bool = True, cwd: Path | None = None, input: str | No
     return out
 
 
-def hash_paths(paths: list[str], *flags: str) -> dict[str, str]:
-    """Blob id of each working-tree file, as `git hash-object [flags]` computes it.
+def hash_paths(paths: list[str], *flags: str, cwd: Path | None = None) -> dict[str, str]:
+    """Blob id of each working-tree file (relative to cwd, default the checkout), as
+    `git hash-object [flags]` computes it.
     Paths go on stdin: one argument each overflows Windows's 32,767-character command line in a
     repo with a few hundred test files. --stdin-paths C-unquotes a line that starts with '"' and
     splits on newlines, so those rare names (impossible on Windows) go one at a time."""
     odd = {f for f in paths if f.startswith('"') or "\n" in f or "\r" in f}
     plain = [f for f in paths if f not in odd]
-    ids = dict(zip(plain, git("hash-object", *flags, "--stdin-paths",
+    ids = dict(zip(plain, git("hash-object", *flags, "--stdin-paths", cwd=cwd,
                               input="".join(f + "\n" for f in plain)).split())) if plain else {}
-    ids.update((f, git("hash-object", *flags, "--", f).strip()) for f in odd)
+    ids.update((f, git("hash-object", *flags, "--", f, cwd=cwd).strip()) for f in odd)
     return ids
 
 
@@ -1620,13 +1621,57 @@ def ignored_names(cfg: dict) -> list[str]:
     return sorted(out)
 
 
-def raw_tree(cwd: Path, depth: int = 0) -> list:
+def _long(p: Path) -> Path:
+    """On Windows, a path over 260 characters needs the \\\\?\\ form unless long paths are switched on."""
+    if os.name == "nt" and len(str(p)) >= 248 and not str(p).startswith("\\\\?\\"):
+        return Path("\\\\?\\" + os.path.abspath(p))
+    return p
+
+
+def _exec_bit(p: Path) -> bool:
+    try:
+        return bool(p.stat().st_mode & 0o111)
+    except OSError:
+        return False
+
+
+def _folder_files(top: Path, seen: set) -> list:
+    """Every file under a folder git doesn't look into (an uninitialised submodule's folder), by
+    relative name, raw bytes and exec bit; embedded repos inside it are read like any other."""
+    out = []
+    for dirpath, dirs, fnames in os.walk(top, followlinks=False):
+        d = Path(dirpath)
+        dirs.sort()
+        for sub in list(dirs):
+            if (d / sub / ".git").exists():
+                dirs.remove(sub)
+                out.append([(d / sub).relative_to(top).as_posix(), raw_tree(d / sub, seen)])
+        for f in sorted(fnames):
+            p = d / f
+            try:
+                data = hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError:
+                data = ""
+            out.append([p.relative_to(top).as_posix(), data, _exec_bit(p)])
+    return out
+
+
+def raw_tree(cwd: Path, seen: set | None = None) -> list:
     """The working tree as it is on disk, which worktree_tree() can't see: git stores a file's content
     after its line-ending filters (core.autocrlf, .gitattributes text/eol), matches names without case
-    where core.ignorecase is set, and records an embedded repo only by its HEAD. So for every tracked
-    and untracked (not ignored) file: its name as the folder lists it, and its raw bytes' blob id; and
-    for every embedded repo, the same of its own working tree."""
+    where core.ignorecase is set, ignores the exec bit where core.filemode is false, and records an
+    embedded repo (or a submodule) only by its HEAD. So for every tracked and untracked (not ignored)
+    file: its name as the folder lists it, its raw bytes' blob id and its exec bit; for every embedded
+    repo, the same of its own working tree, however deep; and for a submodule folder without a repo
+    (not initialised), every file in it. A repo reached twice (through a link) is read once."""
+    seen = set() if seen is None else seen
+    real = os.path.realpath(cwd)
+    if real in seen:
+        return ["already read"]
+    seen.add(real)
     names = [p for p in git("ls-files", "-z", "-c", "-o", "--exclude-standard", cwd=cwd).split("\0") if p]
+    gitlinks = {e.partition("\t")[2] for e in git("ls-files", "-z", "-s", cwd=cwd).split("\0")
+                if e.startswith("160000 ")}
     listed: dict = {}
 
     def on_disk(rel: str) -> str:
@@ -1646,17 +1691,15 @@ def raw_tree(cwd: Path, depth: int = 0) -> list:
 
     files, nested = [], []
     for rel in sorted(set(p.rstrip("/") for p in names)):
-        full = cwd / rel
+        full = _long(cwd / rel)
         if full.is_dir() and (full / ".git").exists():
-            nested.append([on_disk(rel), raw_tree(full, depth + 1) if depth < 3 else "too deep"])
+            nested.append([on_disk(rel), raw_tree(full, seen)])
+        elif rel in gitlinks and full.is_dir() and not full.is_symlink():
+            nested.append([on_disk(rel), _folder_files(full, seen)])
         elif full.is_file():
             files.append(rel)
-    odd = {f for f in files if f.startswith('"') or "\n" in f or "\r" in f}
-    plain = [f for f in files if f not in odd]
-    ids = dict(zip(plain, git("hash-object", "--no-filters", "--stdin-paths", cwd=cwd,
-                              input="".join(f + "\n" for f in plain)).split())) if plain else {}
-    ids.update((f, git("hash-object", "--no-filters", "--", f, cwd=cwd).strip()) for f in odd)
-    return [[f, on_disk(f), ids.get(f, "")] for f in files] + nested
+    ids = hash_paths(files, "--no-filters", cwd=cwd) if files else {}
+    return [[f, on_disk(f), ids.get(f, ""), _exec_bit(_long(cwd / f))] for f in files] + nested
 
 
 def scripts_hash() -> str:
