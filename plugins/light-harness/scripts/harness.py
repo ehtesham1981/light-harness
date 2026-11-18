@@ -1597,9 +1597,11 @@ def _json_or_raw(s: str):
 # Reusing a passing verify run. Between the implementer's last `verify`, `set-status Review`, the
 # reviewer's `verify` and `verdict pass` the code usually doesn't change, yet each ran the whole suite
 # and every probe. Only the slow parts are reused (the suite's results and the probes' exit codes), only
-# from a run where all of them passed, only for VERIFY_REUSE_S, and only while everything that could
-# change their outcome is the same. Every other check in verify() runs each time.
-VERIFY_REUSE_S = 1800
+# from a run where all of them passed, and only while everything that could change their outcome is the
+# same (the key: see reuse_parts). How old the run is plays no part. Every other check in verify() runs
+# each time.
+SHORT_KEY = 12                         # hex chars of the key shown to users
+LAST_REUSE_PARTS = {}                  # key -> its per-part hashes, filled by reuse_key(), read by store_reuse()
 CACHE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".hypothesis", ".cache"}
 VOLATILE_ENV = {"PWD", "OLDPWD", "SHLVL", "_"}  # differ between shells without changing a run
 
@@ -1618,20 +1620,45 @@ def ignored_names(cfg: dict) -> list[str]:
     return sorted(out)
 
 
-def reuse_key(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> str:
-    """Everything a suite or probe run's outcome depends on that the harness can see: the code (tracked
-    and untracked files, as git would commit them), the ignored entries' names, the config, the saved
-    probes, the gate records, the base commit, the harness version, the interpreter and the environment the
-    suite and probes run with (a pass under a PYTHONPATH shim isn't reused by a run without it)."""
+def scripts_hash() -> str:
+    """The harness's own code: every *.py and *.sh file directly in its scripts folder, by name and bytes.
+    While the harness is being worked on, its code changes without its version string changing."""
+    h = hashlib.sha256()
+    for f in sorted(PLUGIN_ROOT.joinpath("scripts").iterdir(), key=lambda p: p.name):
+        if f.is_file() and f.suffix in (".py", ".sh"):
+            h.update(json.dumps([f.name, hashlib.sha256(f.read_bytes()).hexdigest()]).encode(UTF8))
+    return h.hexdigest()
+
+
+def reuse_parts(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> dict:
+    """Everything a suite or probe run's outcome depends on that the harness can see, one hash per part,
+    in the order `status` names changed parts: the code (tracked and untracked files as in the working
+    tree, plus the ignored entries' names), the red-gate record (it holds the locked test ids), the saved
+    probes, the config, the harness version and code, the approval, the base commit, the interpreter and
+    the environment the suite and probes run with (a pass under a PYTHONPATH shim isn't reused by a run
+    without it). Only the hashes are kept, never the values (the environment may hold secrets)."""
     base = task_base_row()
     env = {k: v for k, v in clean_env().items() if k.upper() not in VOLATILE_ENV}
-    parts = {
-        "version": __version__, "python": sys.executable, "tree": worktree_tree(), "env": env,
-        "ignored": ignored_names(cfg), "config": CONFIG.read_text(encoding=UTF8) if CONFIG.exists() else "",
+    values = {
+        "tree": [worktree_tree(), ignored_names(cfg)],
+        "tests": rg_state,
         "probes": [[p, state_file(state_ref(), p.get("file", ""))] for p in saved],
-        "redgate": rg_state, "approval": appr_state, "base": snap_of(base[1]) if base else "",
+        "config": CONFIG.read_text(encoding=UTF8) if CONFIG.exists() else "",
+        "version": [__version__, scripts_hash()],
+        "approval": appr_state,
+        "base": snap_of(base[1]) if base else "",
+        "python": sys.executable,
+        "env": env,
     }
-    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode(UTF8)).hexdigest()
+    return {k: hashlib.sha256(json.dumps(v, sort_keys=True).encode(UTF8)).hexdigest() for k, v in values.items()}
+
+
+def reuse_key(cfg: dict, saved: list[dict], rg_state: str, appr_state: str) -> str:
+    """One hash over reuse_parts(); the parts are remembered so store_reuse() can save them with a pass."""
+    parts = reuse_parts(cfg, saved, rg_state, appr_state)
+    key = hashlib.sha256(json.dumps(parts, sort_keys=True).encode(UTF8)).hexdigest()
+    LAST_REUSE_PARTS[key] = parts
+    return key
 
 
 def reuse_file() -> Path:
@@ -1639,18 +1666,28 @@ def reuse_file() -> Path:
     return state_dir(create=True) / f"verify-cache-{task_slug() or 'task'}.json"
 
 
-def load_reuse(key: str):
+def stored_reuse():
+    """The stored entry if the cache file parses and has a valid shape, else None. It decides nothing:
+    load_reuse() decides, and reuse_report() uses this to say what changed."""
     try:
         c = json.loads(reuse_file().read_text(encoding=UTF8))
     except (OSError, ValueError):
         return None
-    if not isinstance(c, dict) or c.get("key") != key:
+    if not isinstance(c, dict) or not isinstance(c.get("key"), str):
         return None
     when, results = c.get("when"), c.get("results")
     if isinstance(when, bool) or not isinstance(when, (int, float)) or not isinstance(results, dict) \
             or not all(isinstance(k, str) and isinstance(v, str) for k, v in results.items()):
         return None
-    return c if 0 <= time.time() - when < VERIFY_REUSE_S else None
+    return c
+
+
+def load_reuse(key: str):
+    """The reuse decision: the stored entry if it is a pass stored under exactly this key, else None."""
+    c = stored_reuse()
+    if c is None or c.get("key") != key or c.get("result") != "pass":
+        return None
+    return c
 
 
 def drop_reuse():
@@ -1660,9 +1697,28 @@ def drop_reuse():
 def store_reuse(key: str, out: str, results: dict):
     f = reuse_file()
     tmp = f.with_name(f".{f.name}.{os.getpid()}")
-    tmp.write_text(json.dumps({"key": key, "when": time.time(), "label": now(), "out": tail(out, 40),
+    tmp.write_text(json.dumps({"key": key, "parts": LAST_REUSE_PARTS.get(key, {}), "result": "pass",
+                               "when": time.time(), "label": now(), "out": tail(out, 40),
                                "results": results}), encoding=UTF8)
     os.replace(tmp, f)
+
+
+def reuse_report(cfg: dict) -> str:
+    """What `status` says about a stored pass: whether the next verify would reuse it, and if not, which
+    parts of the key changed since it was stored."""
+    entry = stored_reuse()
+    rg_ok, _, rg_state = redgate_state()
+    if entry is None or not rg_ok:
+        return "no cached pass"
+    appr = latest("harness: plan-approved")
+    key = reuse_key(cfg, probes(), rg_state, appr[1] if appr else "")
+    hit = load_reuse(key)
+    if hit:
+        return f"cached, key {key[:SHORT_KEY]} (passed {hit.get('label', '?')})"
+    old = entry.get("parts") if isinstance(entry.get("parts"), dict) else {}
+    now_parts = LAST_REUSE_PARTS.get(key, {})
+    changed = [p for p in now_parts if old and old.get(p) != now_parts[p]]
+    return f"stale (changed: {', '.join(changed) or 'unknown'}), stored key {entry['key'][:SHORT_KEY]}"
 
 
 def verify(write: bool = True, fresh: bool = False) -> bool:
@@ -1730,7 +1786,7 @@ def verify(write: bool = True, fresh: bool = False) -> bool:
             LAST_RESULTS.clear()
             LAST_RESULTS.update(results)
             probe_runs = [(p, 0, "") for p in saved]
-            reused = f"; reused the passing run from {hit.get('label', '?')} on the same code, `verify --fresh` re-runs"
+            reused = f"; cached, key {key[:SHORT_KEY]}, passed {hit.get('label', '?')}; `verify --fresh` re-runs"
         else:
             rc, out, results = run_tests(cfg)
             probe_runs = run_probes(saved)
@@ -2363,8 +2419,13 @@ def cmd_status(args):
     if base:
         print(f"Base:      {snap_of(base[1])[:8]} {base[2].removeprefix('harness: ')}")
     swept = [f"{b} [{s['kind']}]" for b, s in rule_specs(text).items() if s["kind"] in SPACE_KINDS]
+    try:
+        cache = reuse_report(load_config())
+    except Exception as e:  # status must never fail on this line
+        cache = f"unknown ({e})"
     print(f"Status:    {st}\nPlan hash: {plan_hash(text)}\nApproval:  {'✓ ' if ok else '✗ '}{msg}\n"
-          f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nACs:       {', '.join(acs(text)) or 'none'}\n"
+          f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nVerify:    {cache}\n"
+          f"ACs:       {', '.join(acs(text)) or 'none'}\n"
           + (f"Sweeps:    {', '.join(swept)} (each needs an independent sweep; up to "
              f"{parallel_limit(load_config())} sweepers at once)\n" if swept else "")
           + f"Contract:  {CONTRACT}\nNext:      {nxt}")
