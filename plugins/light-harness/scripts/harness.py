@@ -1718,8 +1718,12 @@ def store_reuse(key: str, out: str, results: dict):
 
 def verify_reuse_decision(key: str, fresh: bool) -> tuple[str, dict | None]:
     """The single point where verify decides to reuse a stored passing run. Returns ("bypass", None)
-    when fresh; else ("hit", entry) if a stored run is reusable, ("miss", None) otherwise."""
-    raise NotImplementedError
+    when fresh; else ("hit", entry) if a stored run is reusable, ("miss", None) otherwise. Whatever rule
+    decides reuse (today load_reuse), its outcome comes through here, so `metrics` sees every decision."""
+    if fresh:
+        return "bypass", None
+    entry = load_reuse(key)
+    return ("hit", entry) if entry else ("miss", None)
 
 
 def verify(write: bool = True, fresh: bool = False) -> bool:
@@ -1778,7 +1782,8 @@ def verify(write: bool = True, fresh: bool = False) -> bool:
         #    suite and the probes on exactly this code is reused for a while (see reuse_key).
         saved = probes()
         key = reuse_key(cfg, saved, rg_state, appr[1] if appr else "")
-        hit = None if fresh else load_reuse(key)
+        cache, hit = verify_reuse_decision(key, fresh)
+        gate = "review" if get_status(text) == "Review" else "verify"
         reused = ""
         if hit:
             with base_lock():
@@ -1788,9 +1793,12 @@ def verify(write: bool = True, fresh: bool = False) -> bool:
             LAST_RESULTS.update(results)
             probe_runs = [(p, 0, "") for p in saved]
             reused = f"; reused the passing run from {hit.get('label', '?')} on the same code, `verify --fresh` re-runs"
+            record_suite_run(gate, duration_s=0, result="pass", cache="hit", key=key)
         else:
-            rc, out, results = run_tests(cfg)
-            probe_runs = run_probes(saved)
+            with suite_timer(gate, cache, key) as run:
+                rc, out, results = run_tests(cfg)
+                probe_runs = run_probes(saved)
+                run["rc"] = rc
         TEL["reused"] = bool(hit)
         green = rc == 0
         if rc != 0:
