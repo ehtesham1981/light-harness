@@ -448,6 +448,16 @@ def same_class_reopened(rounds: list) -> int:
     return count
 
 
+def _suite_seconds(v) -> float:
+    """A stored duration: v if it is an int/float (not bool), finite and >= 0, else 0.0."""
+    raise NotImplementedError
+
+
+def suite_figures(ev: list[dict]) -> dict:
+    """Suite runs, cache hits/misses, cache hit rate and suite minutes from a task's `suite` events."""
+    raise NotImplementedError
+
+
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
          issue_rounds: dict | None = None) -> dict:
     """KPIs from the audit trails ({task: [(epoch, subject), ...]} oldest first, available for every

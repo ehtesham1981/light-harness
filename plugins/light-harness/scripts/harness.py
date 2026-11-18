@@ -1575,6 +1575,30 @@ def run_tests(cfg):
     return r.returncode, (r.stdout + r.stderr), results
 
 
+SUITE_GATES = ("redgate", "verify", "baseline", "review")
+
+
+def record_suite_run(gate: str, *, duration_s, result: str | None, cache: str | None = None,
+                     key: str | None = None, scope: str = "full", env_failures: int = 0) -> None:
+    """Append one suite-run record (best effort: never raises, prints nothing)."""
+    raise NotImplementedError
+
+
+def suite_result(rc) -> str | None:
+    """A suite run's result from its exit code: "pass" (0), "fail", "interrupted" (negative), None (no code)."""
+    raise NotImplementedError
+
+
+def suite_timer(gate: str, cache: str | None = None, key: str | None = None):
+    """Context manager timing its body with time.monotonic() and recording one suite run on exit."""
+    raise NotImplementedError
+
+
+def run_suite(cfg: dict, gate: str) -> tuple[int, str, dict]:
+    """run_tests(cfg) inside suite_timer(gate); returns run_tests's tuple unchanged."""
+    raise NotImplementedError
+
+
 def tail(s: str, n: int = 25) -> str:
     return "\n".join(s.strip().splitlines()[-n:])
 
@@ -1663,6 +1687,12 @@ def store_reuse(key: str, out: str, results: dict):
     tmp.write_text(json.dumps({"key": key, "when": time.time(), "label": now(), "out": tail(out, 40),
                                "results": results}), encoding=UTF8)
     os.replace(tmp, f)
+
+
+def verify_reuse_decision(key: str, fresh: bool) -> tuple[str, dict | None]:
+    """The single point where verify decides to reuse a stored passing run. Returns ("bypass", None)
+    when fresh; else ("hit", entry) if a stored run is reusable, ("miss", None) otherwise."""
+    raise NotImplementedError
 
 
 def verify(write: bool = True, fresh: bool = False) -> bool:
