@@ -1710,7 +1710,18 @@ def raw_tree(cwd: Path, seen: set | None = None) -> list:
     for rel in sorted(set(p.rstrip("/") for p in names)):
         plain = cwd / rel
         full = _long(plain)  # for Python's own checks only: git can't take a \\?\ working folder
-        if full.is_dir() and (full / ".git").exists():
+        if full.is_symlink() and not full.is_file():
+            # a link to a folder, or a dangling one: an embedded repo's HEAD doesn't show it, so record
+            # where it points and, for a folder not read yet, what's behind it
+            real = os.path.realpath(full)
+            behind = "missing" if not os.path.isdir(real) else "already read" if real in seen else None
+            if behind is None and os.path.exists(os.path.join(real, ".git")):
+                behind = raw_tree(Path(real), seen)  # marks it read itself
+            elif behind is None:
+                seen.add(real)
+                behind = _folder_files(Path(real), seen)
+            nested.append([on_disk(rel), os.readlink(full), behind])
+        elif full.is_dir() and (full / ".git").exists():
             nested.append([on_disk(rel), raw_tree(plain, seen)])
         elif rel in gitlinks and full.is_dir() and not full.is_symlink():
             nested.append([on_disk(rel), _folder_files(plain, seen)])
