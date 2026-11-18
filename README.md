@@ -214,6 +214,7 @@ The harness records what happens to each task as local events. `light-harness me
 | `session` | session start and end in a harness repo | `phase`, `source` / `reason` |
 | `turn` | a main-agent turn starts (UserPromptSubmit) or ends (Stop/StopFailure, or the next prompt or session end after an interrupt) | `phase`, `stage`. Start: `gap_s` (time since the session's previous turn ended), `response_s` (that gap up to the human-gap cap), `capped`, `gap_start`. Stop: `turn_start`, `turn_s`, `wait_s` (time in the turn spent waiting on a human), `agent_s` (`turn_s` − `wait_s`), `interrupted` |
 | `wait` | the agent waited on a human inside a turn: a permission dialog (PermissionRequest until the tool starts) or an `AskUserQuestion` until it's answered | `kind` (`permission` or `question`), `tool`, `wait_start`, `wait_s` |
+| `suite` | each test-suite run the harness starts (`redgate`, the baseline run on entering Build, `verify`, and `verify` while the task is in Review), and each `verify` that reuses a stored passing run instead | `gate` (`redgate`, `baseline`, `verify` or `review`), `scope` (`full` for now), `duration_s`, `cache` (`hit`, `miss` or `bypass`; none for `redgate` and `baseline`), `result` (`pass`, `fail` or `interrupted`), `env_failures` (`0` for now), `key` (the verify reuse key) |
 
 Some gate events also carry durations already worked out, so an OTel dashboard can sum or average them directly: a successful `approve` has `wait_s` (from the plan being put up for approval), and a `verdict` has `review_round`, with `lead_time_s` and `first_pass` on the final pass.
 
@@ -229,6 +230,12 @@ Every event also carries `ts`, `harness` (version), `repo`, `task`, `session` (t
   - **Idle:** everything else, such as when no session or agent was working on the task, or the part of a gap beyond the cap.
 
   When several sessions work on one task at once, their time is merged, with agent time counted ahead of human time, so the three always add up to the total. `metrics` shows a time-split table, `metrics <task>` shows the breakdown by stage, and `--json` holds all of it. Tasks run before 1.6 have no turn data, so they show `-`.
+- **Suite runs** (from 1.9): how much test-suite running a task cost, from its `suite` events. `metrics` shows them per task, in the summary across tasks, and in a `Suite runs` table:
+  - **suite runs:** runs that actually started the suite. A `verify` that reuses a stored passing run (a cache **hit**) starts nothing, so it adds no run and no minutes.
+  - **cache hit rate:** hits ÷ (hits + misses), over every `verify` reuse decision, including the reviewer's. A `verify --fresh` or a `verdict pass` forces a run: it's recorded as `bypass`, counts as a run and in the minutes, and stays out of the hit rate. `—` means there were no reuse decisions yet. The summary pools all tasks' hits and misses.
+  - **suite minutes:** the time those runs took, measured with a monotonic clock. A `verify` run's time includes its saved probes. A stored duration that is negative or not a number adds nothing.
+
+  A run interrupted with Ctrl-C is recorded as `interrupted` with the time so far. With telemetry off nothing is recorded, so these figures read 0.
 - **Agent:** red-gate refusals, `verify` failures by kind, all gate refusals per gate, guard blocks by rule, and subagent runs and time per agent type.
 - **Engineer:** approval wait (from the plan being ready to it being approved), median response time between turns (from 1.8.1, the human part of each gap in a task's time, so other sessions' prompts, notifications and agent time don't count), test unlocks, prompts (guard asks that stopped for the human) and tasks and sessions. These are **per engineer only for engineers who opted in**. Otherwise they appear only in aggregate.
 

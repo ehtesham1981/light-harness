@@ -14,6 +14,6 @@ Review speed (1.8):
 - `verify` reuses a passing run of the suite and probes on the same code for 30 minutes. `verify --fresh` re-runs, and `verdict pass` always does.
 - Saved probes run in parallel under `probe_timeout`.
 - `baseline --out <dir>` (a new or empty folder) gives each sweeper its own base copies.
-CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics`, including each task's time split into agent, human and idle time (engineer KPIs are opt-in, under a nickname).
+CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics`, including each task's time split into agent, human and idle time, and its test-suite cost (suite runs, cache hit rate, suite minutes) (engineer KPIs are opt-in, under a nickname).
 
 Full documentation: see the repository README.
