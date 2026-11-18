@@ -287,9 +287,10 @@ def hash_paths(paths: list[str], *flags: str, cwd: Path | None = None) -> dict[s
     splits on newlines, so those rare names (impossible on Windows) go one at a time."""
     odd = {f for f in paths if f.startswith('"') or "\n" in f or "\r" in f}
     plain = [f for f in paths if f not in odd]
-    ids = dict(zip(plain, git("hash-object", *flags, "--stdin-paths", cwd=cwd,
+    at = ("-C", str(cwd)) if cwd else ()  # git -C, not a working folder: see raw_tree (long paths)
+    ids = dict(zip(plain, git(*at, "hash-object", *flags, "--stdin-paths",
                               input="".join(f + "\n" for f in plain)).split())) if plain else {}
-    ids.update((f, git("hash-object", *flags, "--", f, cwd=cwd).strip()) for f in odd)
+    ids.update((f, git(*at, "hash-object", *flags, "--", f).strip()) for f in odd)
     return ids
 
 
@@ -1669,8 +1670,15 @@ def raw_tree(cwd: Path, seen: set | None = None) -> list:
     if real in seen:
         return ["already read"]
     seen.add(real)
-    names = [p for p in git("ls-files", "-z", "-c", "-o", "--exclude-standard", cwd=cwd).split("\0") if p]
-    gitlinks = {e.partition("\t")[2] for e in git("ls-files", "-z", "-s", cwd=cwd).split("\0")
+    # git runs from the checkout and is pointed at cwd with -C: Windows can't start a process in a
+    # working folder of 260+ characters, while git itself handles long paths (core.longpaths).
+    at = ("-C", str(cwd))
+    if subprocess.run(["git", *at, "rev-parse", "--git-dir"], cwd=ROOT, capture_output=True).returncode:
+        # git can't enter it (e.g. a Windows path too long for it): no key can vouch for its content,
+        # so this marker differs every time and the suite always runs instead of reusing a pass.
+        return ["unreadable", os.urandom(16).hex()]
+    names =[p for p in git(*at, "ls-files", "-z", "-c", "-o", "--exclude-standard").split("\0") if p]
+    gitlinks = {e.partition("\t")[2] for e in git(*at, "ls-files", "-z", "-s").split("\0")
                 if e.startswith("160000 ")}
     listed: dict = {}
 
@@ -1691,11 +1699,12 @@ def raw_tree(cwd: Path, seen: set | None = None) -> list:
 
     files, nested = [], []
     for rel in sorted(set(p.rstrip("/") for p in names)):
-        full = _long(cwd / rel)
+        plain = cwd / rel
+        full = _long(plain)  # for Python's own checks only: git can't take a \\?\ working folder
         if full.is_dir() and (full / ".git").exists():
-            nested.append([on_disk(rel), raw_tree(full, seen)])
+            nested.append([on_disk(rel), raw_tree(plain, seen)])
         elif rel in gitlinks and full.is_dir() and not full.is_symlink():
-            nested.append([on_disk(rel), _folder_files(full, seen)])
+            nested.append([on_disk(rel), _folder_files(plain, seen)])
         elif full.is_file():
             files.append(rel)
     ids = hash_paths(files, "--no-filters", cwd=cwd) if files else {}
