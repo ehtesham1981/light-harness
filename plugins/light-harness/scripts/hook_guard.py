@@ -274,11 +274,75 @@ def writes_by_redirect(mask: str) -> bool:
 
 SED_OPTS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-z",
             "--null-data", "-u", "--unbuffered", "--posix", "--debug", "--sandbox"}
-_RE = r"/(?:[^/\\\n]|\\.)*/"
-_ADDR = rf"(?:\d+~\d+|\d+|\$|{_RE}[IM]*)"
-_SED_CMD = (rf"\s*(?:{_ADDR}(?:\s*,\s*{_ADDR})?)?\s*!?\s*"
-            rf"(?:[pP=lgGhHxdDnN{{}}]|[qQ]\s*\d*|s{_RE}(?:[^/\\\n]|\\.)*/[gpiImM0-9]*)\s*")
-SED_SCRIPT = re.compile(rf"(?:{_SED_CMD}[;\n]?)+")
+
+
+def _sed_delimited(s: str, i: int) -> int:
+    """Index just past the `/`-delimited text starting at s[i] == "/", or -1. Backslash escapes a char."""
+    if i >= len(s) or s[i] != "/":
+        return -1
+    i += 1
+    while i < len(s) and s[i] != "/":
+        if s[i] == "\n":
+            return -1
+        i += 2 if s[i] == "\\" else 1
+    return i + 1 if i < len(s) else -1
+
+
+def _sed_address(s: str, i: int) -> int:
+    """Index past one address (N, N~M, $, /re/[IM]) at s[i], or i when there is none, or -1 if malformed."""
+    if i < len(s) and s[i] == "$":
+        return i + 1
+    if i < len(s) and s[i] == "/":
+        j = _sed_delimited(s, i)
+        while 0 <= j < len(s) and s[j] in "IM":
+            j += 1
+        return j
+    m = re.match(r"\d+(?:~\d+)?", s[i:])
+    return i + m.end() if m else i
+
+
+def sed_script_reads(s: str) -> bool:
+    """A sed script made only of addresses and the p P = l q Q d D n N g G h H x { } and s/re/repl/[gpiImM0-9]
+    commands (no w, W, e, r, R, y, and no other delimiter). A single left-to-right scan, so its cost is linear
+    in the script's length whatever the input."""
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] in " \t\n;":
+            i += 1
+            continue
+        i = _sed_address(s, i)
+        if i < 0:
+            return False
+        while i < n and s[i] in " \t":
+            i += 1
+        if i < n and s[i] == ",":
+            j = _sed_address(s, i + 1)
+            if j <= i + 1:
+                return False
+            i = j
+        while i < n and s[i] in " \t!":
+            i += 1
+        if i >= n:
+            return False
+        c = s[i]
+        if c in "pP=lgGhHxdDnN{}":
+            i += 1
+        elif c in "qQ":
+            i += 1
+            while i < n and (s[i] in " \t" or s[i].isdigit()):
+                i += 1
+        elif c == "s":
+            i = _sed_delimited(s, i + 1)
+            if i < 0:
+                return False
+            i = _sed_delimited(s, i - 1)   # the replacement shares the middle `/`
+            if i < 0:
+                return False
+            while i < n and s[i] in "gpiImM0123456789":
+                i += 1
+        else:
+            return False
+    return True
 
 
 def sed_reads(args: list) -> bool:
@@ -312,10 +376,18 @@ def sed_reads(args: list) -> bool:
         if not operands:
             return False
         scripts.append(operands[0])
-    return all(SED_SCRIPT.fullmatch(s) for s in scripts)
+    return all(sed_script_reads(s) for s in scripts)
 
 
-AWK_WRITES = re.compile(r"\b(?:system|getline)\b|@\s*(?:include|load)\b|\|&|\bprintf?\b[^;}\n]*[>|]")
+def awk_program_writes(prog: str) -> bool:
+    """True unless the awk program provably can't write or run anything. awk can only write a file through
+    `>`/`>>`/`|` after print or printf, and only run a command through a pipe, system() or (gawk) an
+    indirect `@f()` call or `@include`/`@load`. So any `|` other than `||`, any `@`, system, getline, or any
+    `>` after the first print/printf counts as a write. Comparisons such as `NR>5` before any print pass."""
+    if "@" in prog or "|" in prog.replace("||", "") or re.search(r"\b(?:system|getline)\b", prog):
+        return True
+    m = re.search(r"\bprintf?\b", prog)
+    return bool(m) and ">" in prog[m.end():]
 
 
 def awk_reads(args: list) -> bool:
@@ -337,21 +409,53 @@ def awk_reads(args: list) -> bool:
                   or a in ("--posix", "-S", "--sandbox")):
             return False
         i += 1
-    return program is not None and not AWK_WRITES.search(program)
+    return program is not None and not awk_program_writes(program)
 
 
 def git_reads(args: list) -> bool:
-    """git [--no-pager] diff|log|show with no option that writes a file or runs a program: --output and
-    --ext-diff, including git's abbreviations of them."""
+    """git [--no-pager] diff|log|show with no option that writes a file or runs a program: nothing starting
+    `--ou` or `--ext` (BR-3), nor git's shorter abbreviations of --output and --ext-diff (`--o`, `--e`, `--ex`)."""
     if args[:1] == ["--no-pager"]:
         args = args[1:]
     if not args or args[0] not in ("diff", "log", "show"):
         return False
     for a in args[1:]:
         opt = a.split("=", 1)[0]
-        if len(opt) > 2 and ("--output".startswith(opt) or "--ext-diff".startswith(opt)):
+        if opt.startswith(("--ou", "--ext")) or (len(opt) > 2 and ("--output".startswith(opt)
+                                                                  or "--ext-diff".startswith(opt))):
             return False
     return True
+
+
+def expands(seg: str) -> bool:
+    """True when bash would expand part of the segment before the command sees it: `$` outside single
+    quotes (parameters, also inside double quotes), or an unquoted `{`, `*`, `?` or `[` (braces, globs).
+    The words shlex returns are then not the words the command gets, so an option can hide in them."""
+    parsed = unquoted_mask(seg)
+    if parsed is None:
+        return True
+    text, mask = parsed
+    state, i = "", 0
+    while i < len(text):
+        c = text[i]
+        if state == "'":
+            state = "" if c == "'" else state
+        elif c == "\\":
+            i += 1                      # an escaped character, `\$` included, is literal
+        elif c == "'" and not state:
+            state = "'"
+        elif c == '"':
+            state = "" if state == '"' else '"'
+        elif c == "$":
+            return True
+        i += 1
+    return bool(re.search(r"[{*?\[]", mask))
+
+
+# A command can be made to mean something else before it runs: a function or alias of the same name, a
+# hashed path, a case pattern (where `|` isn't a pipe), or a changed PATH.
+SHADOWING = re.compile(r"\w\s*\(\s*\)|(?:^|[;&|(\n])\s*(?:(?:function|alias|hash|enable|case|builtin)(?=\s|$)"
+                       r"|(?:export\s+)?PATH\+?=)")
 
 
 def live_read(seg: str, mask: str) -> bool:
@@ -363,7 +467,7 @@ def live_read(seg: str, mask: str) -> bool:
     if words[0] in READ_ONLY:
         return True
     check = {"sed": sed_reads, "awk": awk_reads, "gawk": awk_reads, "git": git_reads}.get(words[0])
-    if check is None:
+    if check is None or expands(seg):
         return False
     try:
         args = shlex.split(seg)[1:]
@@ -396,6 +500,8 @@ def live_rules(cmd: str):
             if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
                 block(why, "harness-files")
         return
+    if SHADOWING.search(unquoted_mask(cmd)[1]):   # a read-only word may not be the command it names
+        block(why, "harness-files")
     for seg, mask in segs:
         if names_live(seg) and not live_read(seg, mask):
             block(why, "harness-files")
