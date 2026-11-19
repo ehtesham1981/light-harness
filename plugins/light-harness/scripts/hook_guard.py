@@ -251,7 +251,22 @@ def plain_command(cmd: str) -> bool:
     are the words the command gets."""
     parsed = unquoted_mask(cmd)
     return (parsed is not None and parsed[0] == cmd and not dollar_outside_single_quotes(cmd)
-            and not NOT_PLAIN.search(parsed[1]) and "\\" not in re.sub(r"'[^']*'", "", cmd))
+            and not NOT_PLAIN.search(parsed[1]) and not backslash_outside_single_quotes(cmd))
+
+
+def backslash_outside_single_quotes(cmd: str) -> bool:
+    """True when a backslash appears outside single quotes (unquoted or inside double quotes)."""
+    state = ""
+    for c in cmd:
+        if state == "'":
+            state = "" if c == "'" else state
+        elif c == "\\":
+            return True
+        elif c == "'" and not state:
+            state = "'"
+        elif c == '"':
+            state = "" if state == '"' else '"'
+    return False
 
 
 def dollar_outside_single_quotes(cmd: str) -> bool:
