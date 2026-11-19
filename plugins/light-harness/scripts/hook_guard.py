@@ -481,14 +481,18 @@ def expands(seg: str) -> bool:
 
 
 # Digits are a file descriptor only when they start a word: `-F2>x` is the word `-F2` plus `>x` (RV-8).
-REDIRECT_WORD = re.compile(r"(?:(?<![^\s;&|<>])\d+)?(?:&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*[^\s;&|<>]*")
+# Nor before `&>`: `2&>x` is the word `2` plus `&>x`, since bash has no `N&>` form (RV-8).
+REDIRECT_WORD = re.compile(r"(?:(?<![^\s;&|<>])(\d+)(?=[<>]))?(?:&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*[^\s;&|<>]*")
 
 
 def glued_redirect(mask: str) -> bool:
     """True when a redirection touches the word before it (`-F0>&2`, `"-F"2</dev/null`, `x>/dev/null`).
     Whether bash then reads the digits as a descriptor or as part of the word is exactly where the words
-    it passes and the words judged here can differ (RV-8), so a sed/awk/git segment with one is not a read."""
-    return any(m.start() > 0 and not mask[m.start() - 1].isspace() for m in REDIRECT_WORD.finditer(mask))
+    it passes and the words judged here can differ (RV-8), so a sed/awk/git segment with one is not a read.
+    So is one with a descriptor of more than one digit: a number too large for a descriptor is an ordinary
+    word to bash (`2147483648>x`), and no read needs a descriptor above 9."""
+    return any((m.start() > 0 and not mask[m.start() - 1].isspace()) or len(m.group(1) or "") > 1
+               for m in REDIRECT_WORD.finditer(mask))
 
 
 def command_words(seg: str, mask: str) -> list:
