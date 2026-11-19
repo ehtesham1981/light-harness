@@ -449,7 +449,20 @@ def expands(seg: str) -> bool:
         elif c == "$":
             return True
         i += 1
-    return bool(re.search(r"[{*?\[]", mask))
+    return bool(re.search(r"[{*?\[(]", mask))   # `(` also catches extglob @( +( !( (RV-10)
+
+
+REDIRECT_WORD = re.compile(r"\d*(?:&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*[^\s;&|<>]*")
+
+
+def command_words(seg: str, mask: str) -> list:
+    """The words the command itself receives: bash removes redirections (`>/dev/null`, `2>&1`, `<<<x`, and
+    the word after a spaced operator) wherever they stand before it runs the command, so they are removed
+    here too before splitting (RV-8). Raises ValueError for quoting shlex can't follow."""
+    chars = list(seg)
+    for m in REDIRECT_WORD.finditer(mask):
+        chars[m.start():m.end()] = " " * (m.end() - m.start())
+    return shlex.split("".join(chars))
 
 
 # Commands that can run beside a sed/awk/git read without changing what that read runs: they can't define
@@ -480,7 +493,7 @@ def live_read(seg: str, mask: str) -> bool:
     if check is None or expands(seg):
         return False
     try:
-        args = shlex.split(seg)[1:]
+        args = command_words(seg, mask)[1:]
     except ValueError:
         return False
     return check(args)
@@ -504,8 +517,8 @@ def live_rules(cmd: str):
     if SUBSTITUTION.search(cmd):
         block(why, "harness-files")
     segs = live_segments(cmd)
-    if segs is None:   # quoting this parser can't follow: judge it as the base guard did
-        for seg in re.split(BASE_SPLIT, cmd):
+    if segs is None:   # quoting this parser can't follow: judge it as the base guard did, plus BR-7's lone `&`
+        for seg in re.split(BASE_SPLIT + r"|(?<![&<>|])&(?![&>])", cmd):
             words = seg.split()
             if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
                 block(why, "harness-files")
