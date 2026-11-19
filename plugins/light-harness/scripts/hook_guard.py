@@ -17,9 +17,11 @@ File edits (Edit, Write, MultiEdit, NotebookEdit):
   4. Implementation files can only change in Build or Rework.
   5. While tasks are in progress, the main checkout isn't edited (work happens in .tasks/<name>/).
 Reads: .env files are not read.
-Bash: human-only harness commands, history rewrites, branch/worktree surgery, tampering with the
-  audit trail or the telemetry settings, and `rm -rf` are blocked; network and push commands ask;
-  read-only and harness commands run without a prompt.
+Bash: writes to the task's .light-harness/ files (reads with cat, grep, head and the other read-only
+  commands pass, quoting and /dev/null redirects honoured; sed, awk and git on them stay blocked: use
+  the Read tool or `light-harness show`), human-only harness commands, history rewrites, branch/worktree surgery,
+  tampering with the audit trail or the telemetry settings, and `rm -rf` are blocked; network and push
+  commands ask; read-only and harness commands run without a prompt.
 Every block and ask is also a `guard` telemetry event (rule id, tool, task, session, agent type).
 """
 import json
@@ -192,16 +194,136 @@ def base_writes(cmd: str):
                   "`light-harness baseline` writes it; read or run it, never change it.", "harness-files")
 
 
+BASE_SPLIT = r"&&|\|\||[;|\n]"
+# Unquoted separators: && || |& | ; newline, and a lone & (not part of &&, &>, >&, <&, |&, or 2>&1)
+LIVE_SPLIT = re.compile(r"&&|\|\||\|&|(?<!>)\||[;\n]|(?<![&<>|])&(?![&>])")
+SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
+
+
+def unquoted_mask(cmd: str):
+    """(text, mask) for `cmd` as bash reads its quoting. `text` is `cmd` with line continuations (an
+    unescaped backslash-newline outside single quotes) removed. `mask` is `text` with every quoted or
+    backslash-escaped character replaced by `_` (same length), so separators and redirects are looked for
+    in unquoted text only. None when the quoting is beyond this parser: unbalanced quotes, a trailing
+    backslash."""
+    text, out, state, i = [], [], "", 0
+    while i < len(cmd):
+        c = cmd[i]
+        nxt = cmd[i + 1] if i + 1 < len(cmd) else ""
+        if state == "'":
+            state = "" if c == "'" else state
+            text.append(c)
+            out.append("_")
+        elif c == "\\":
+            if not nxt:
+                return None
+            if nxt != "\n":
+                text.append(c + nxt)
+                out.append("__")
+            i += 1
+        elif state == '"':
+            state = "" if c == '"' else state
+            text.append(c)
+            out.append("_")
+        elif c in "'\"":
+            state = c
+            text.append(c)
+            out.append("_")
+        else:
+            text.append(c)
+            out.append(c)
+        i += 1
+    return None if state else ("".join(text), "".join(out))
+
+
+PLAIN_CHARS = re.compile(r"[\t\n\x20-\x7e]*")
+
+
+def live_segments(cmd: str) -> list:
+    """The command's (segment, mask) pairs, split only on unquoted separators (BR-1, BR-7). None, so the
+    command is judged exactly as the base guard judged it (plus BR-7), when it has quoting or syntax this
+    parser doesn't follow: characters other than printable ASCII, tab and newline; `$'…'`, `$"…"` or `${…}`
+    anywhere, before or after joining line continuations (RV-13); unbalanced quotes; a heredoc; or an
+    unquoted `#`, which starts a comment after `)` too (RV-14)."""
+    joined = cmd.replace("\\\n", "")
+    if not PLAIN_CHARS.fullmatch(cmd) or re.search(r"\$['\"{]", cmd) or re.search(r"\$['\"{]", joined):
+        return None
+    parsed = unquoted_mask(cmd)
+    if parsed is None:
+        return None
+    cmd, mask = parsed
+    if re.search(r"(?<!<)<<(?!<)|#", mask):
+        return None
+    segs, start = [], 0
+    for m in LIVE_SPLIT.finditer(mask):
+        segs.append((cmd[start:m.start()], mask[start:m.start()]))
+        start = m.end()
+    segs.append((cmd[start:], mask[start:]))
+    return segs
+
+
+def writes_by_redirect(mask: str) -> bool:
+    """True when the segment's unquoted text redirects output anywhere but /dev/null. Duplicating or
+    closing a file descriptor (2>&1, >&2, 3>&-) isn't a write (BR-2)."""
+    if "<>" in mask:
+        return True
+    for m in re.finditer(r"(?:\d*|&)(>>|>\||>&|>)", mask):
+        rest = mask[m.end():]
+        if m.group(1) == ">|":
+            return True
+        if m.group(1) == ">&":   # a descriptor (2>&1, >&-) or, as bash's `>&word`, /dev/null
+            # one digit only: bash writes `>&99999999999` to a file of that name, as it would `&>word`
+            if not re.match(r"\s*(\d|-|/dev/null)(?=$|[\s;&|)])", rest):
+                return True
+        elif not re.match(r"\s*/dev/null(?=$|[\s;&|)])", rest):
+            return True
+    return False
+
+
+def live_read(seg: str, mask: str) -> bool:
+    """A segment naming .light-harness/ is a read (BR-2, BR-3): a read-only command word (judged raw, as
+    before) and no write redirect. sed, awk, gawk and git stay blocked, as at base (Q-9)."""
+    words = seg.split()
+    return bool(words) and not writes_by_redirect(mask) and words[0] in READ_ONLY
+
+
+def names_live(text: str) -> bool:
+    return f"{H.LIVE}/" in text or f"{H.LIVE}\\" in text
+
+
+def live_rules(cmd: str):
+    """Block Bash commands that change the task's contract or config; reads pass (issue #23)."""
+    if not names_live(cmd):
+        return
+    task = CTX.get("task")
+    if not task:
+        m = re.search(r"\.tasks[/\\]([^/\\\s'\"]+)[/\\]" + re.escape(H.LIVE), cmd)
+        task = m.group(1) if m else "<name>"
+    why = (f"{H.LIVE}/ holds the task's contract and config. Read the contract with the Read tool or "
+           f"`light-harness show --task {task}`. Edit contract.md with the Edit tool, and change status "
+           "with `light-harness set-status`.")
+    if SUBSTITUTION.search(cmd) or SUBSTITUTION.search(cmd.replace("\\\n", "")):   # also across a continuation
+        block(why, "harness-files")
+    segs = live_segments(cmd)
+    if segs is None:
+        # Not a plain command: the base guard's judgement, and BR-7's lone `&` as a further split. Both
+        # splits must pass, so the lone-`&` split can only add blocks (RV-11).
+        for split in (BASE_SPLIT, BASE_SPLIT + r"|(?<![&<>|])&(?![&>])"):
+            for seg in re.split(split, cmd):
+                words = seg.split()
+                if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
+                    block(why, "harness-files")
+        return
+    for seg, mask in segs:
+        if names_live(seg) and not live_read(seg, mask):
+            block(why, "harness-files")
+
+
 def bash_rules(cmd: str):
     for pat, why, needs, rule in BLOCK_BASH:
         if re.search(pat, cmd) and (needs is None or re.search(needs, cmd)):
             block(why, rule)
-    for seg in re.split(r"&&|\|\||[;|\n]", cmd):
-        if f"{H.LIVE}/" in seg or f"{H.LIVE}\\" in seg:
-            words = seg.split()
-            if ">" in seg or not words or words[0] not in READ_ONLY:
-                block(f"{H.LIVE}/ holds the task's contract and config. Edit contract.md with the Edit tool, "
-                      "and change status with `light-harness set-status`.", "harness-files")
+    live_rules(cmd)
     base_writes(cmd)
     if re.search(ASK_BASH, cmd):
         decide("ask", "network access and pushes need the human's OK during a task.", "network")
