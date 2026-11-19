@@ -261,6 +261,319 @@ def test_br7_lone_ampersand_between_reads_allowed():
         assert out in NOT_BLOCKED, f"{cmd!r} gave {out}: {msg}"
 
 
+# --- AC-2, RV-4: the write-hole classes review found, each generated over its dimensions ------------
+# Each class test builds a deterministic cross product, asserts every command is blocked with harness-files
+# and the BR-5 message, and reports how many differ out of how many. Each also checks controls: the same
+# template with a harmless value instead of the hole is NOT blocked, so blocking every sed/awk/git command
+# can't pass these tests.
+
+CFG = ".light-harness/config.json"
+
+
+def blocked_failures(cmds, task="t") -> list:
+    """The commands among `cmds` that are not blocked with harness-files and the BR-5 message."""
+    bad = []
+    for cmd in cmds:
+        out, msg = GS.judge(hook_guard, cmd, task)
+        if out != ["block", "harness-files"] or msg != message(task):
+            bad.append(f"{cmd!r} gave {out}")
+    return bad
+
+
+def allowed_failures(cmds) -> list:
+    bad = []
+    for cmd in cmds:
+        out, msg = GS.judge(hook_guard, cmd)
+        if out not in NOT_BLOCKED:
+            bad.append(f"{cmd!r} gave {out}: {msg}")
+    return bad
+
+
+def report(kind, bad, total) -> str:
+    return f"{len(bad)} of {total} {kind}; first 10:\n" + "\n".join(bad[:10])
+
+
+# RV-1 / RV-10: shell expansion becomes an option. Per tool: (command name, script or subcommand, the option
+# that writes or runs, a harmless option of the same shape, operands after the target position).
+EXPANSION_TOOLS = [
+    ("sed", "s/a/b/", "-i", "-n"),
+    ("awk", "'{print}'", "-iinplace", "-F:"),
+    ("gawk", "'{print}'", "-iinplace", "-F:"),
+    ("git", "diff", "--output=" + C, "--stat"),
+    ("git", "log", "--output=x", "-p"),
+    ("git", "show", "--ext-diff", "--stat"),
+]
+
+
+def expansion_forms(opt: str, alt: str) -> list:
+    """Words bash expands (braces, parameters, globs, extglob, ANSI-C/locale quotes) that can become `opt`."""
+    return [
+        "{%s,%s}" % (opt, alt), "{%s,%s}" % (alt, opt), "{,%s}" % opt, "{%s,}" % opt,
+        "$X", '"$X"', "${X}", '"${X}"', "$1", '"$@"', "${X:-%s}" % opt, "$X$Y",
+        "*", opt[:-1] + "?", "[" + opt[0] + "]" + opt[1:], opt[:2] + "*",
+        "@(%s)" % opt, "+(%s)" % opt, "?(%s)" % opt, "*(%s)" % opt, "!(zz)",
+        "$'%s'" % opt, '$"%s"' % opt,
+    ]
+
+
+def expansion_commands(word_of) -> list:
+    """(position, command): each word placed before the script/subcommand (0), after it (1), after the file (2)."""
+    cmds = []
+    for name, script, opt, alt in EXPANSION_TOOLS:
+        for w in word_of(opt, alt):
+            for target in (C, CFG):
+                file_part = f"-- {target}" if name == "git" else target
+                cmds.append((0, f"{name} {w} {script} {file_part}"))
+                cmds.append((1, f"{name} {script} {w} {file_part}"))
+                cmds.append((2, f"{name} {script} {file_part} {w}"))
+    return cmds
+
+
+def test_ac2_rv1_rv10_expansion_class():
+    """AC-2 BR-3 BR-4 RV-1 RV-10 RV-4: a word bash expands (brace `{…,…}`, `$X`, `"$X"`, `${X}`, `$1`, `"$@"`,
+    globs `* ? [`, extglob `@( +( ?( *( !(`, `$'…'`, `$"…"`) can become -i / -iinplace / --output / --ext-diff at
+    run time. Generated: 23 forms x sed, awk, gawk, git diff/log/show x 3 positions (before the script or
+    subcommand, after it, after the file) x 2 targets = 828 commands, all blocked. Controls: the same
+    templates with the plain harmless option (`-n`, `-F:`, `--stat`, `-p`) pass, except git with an option
+    before the subcommand, which BR-3 doesn't allow (30)."""
+    cmds = [c for _, c in expansion_commands(expansion_forms)]
+    assert len(cmds) == 23 * 6 * 3 * 2 == 828
+    bad = blocked_failures(cmds)
+    print(f"RV-1/RV-10: {len(bad)} of {len(cmds)} not blocked")
+    assert not bad, report("expansion commands not blocked", bad, len(cmds))
+    controls = [c for pos, c in expansion_commands(lambda opt, alt: [alt]) if not (pos == 0 and c.startswith("git"))]
+    assert len(controls) == 6 * 3 * 2 - 3 * 2 == 30
+    bad = allowed_failures(controls)
+    assert not bad, report("controls blocked", bad, len(controls))
+
+
+# RV-2: awk programs that write or run
+AWK_PAYLOADS = ['"}"', '";"', '"a}b;c"', '$0 "}"', '"{"', '"x" \\\n', '"a",\n"b"', '"#"']
+AWK_SINKS = ['> FILENAME', '>> "f"', '> "' + C + '"', '>"f"', '| "sh"', '|"sh"', '|& "sh"']
+AWK_WRAPPERS = ["{%s}", "BEGIN{%s}", "NR>0{x=1; %s}", "END{if (NR) %s}"]
+AWK_EXEC = ['"sh" | getline', '"sh" | getline x', 'getline x < "f"', '"sh" |& getline', 'system("x")',
+            'system ("x")', 'r = system("x")', 'f="system"; @f("x")', 'f="sys" "tem"; @f("x")',
+            'f=sprintf("%s","system"); @f("x")']
+AWK_DIRECTIVES = ['@include "inplace"; {print}', '@load "rwarray"; {print}', '@include "x"\n{print}']
+
+
+def awk_statements(sink: bool) -> list:
+    out = []
+    for verb in ("print", "printf"):
+        for paren in (False, True):
+            for p in AWK_PAYLOADS:
+                head = f"{verb}({p})" if paren else f"{verb} {p}"
+                if sink:
+                    out += [f"{head} {s}" for s in AWK_SINKS]
+                else:
+                    out.append(head)
+    return out
+
+
+def awk_commands(statements) -> list:
+    cmds = []
+    for tool in ("awk", "gawk"):
+        for wrap in AWK_WRAPPERS:
+            for st in statements:
+                for suffix in ("", " 2>/dev/null"):
+                    cmds.append(f"{tool} '{wrap % st}' {C}{suffix}")
+    return cmds
+
+
+def test_ac2_rv2_awk_program_class():
+    """AC-2 BR-3 BR-4 RV-2 RV-4: an awk/gawk program that writes or runs, wherever the print ends. Generated:
+    awk, gawk x 4 rule wrappers (`{…}`, `BEGIN{…}`, after `x=1;`, inside `if`) x {print, printf} x {plain,
+    parenthesised} x 8 payloads holding `}` `;` `{` `#`, a continuation or a newline after a comma x 7 sinks
+    (`>`, `>>`, `>` the contract, unspaced `>`, `|`, unspaced `|`, `|&`) x 2 suffixes (none, `2>/dev/null`)
+    = 3,584 commands; plus 10 getline / `|&` getline / system() (3 spellings) / gawk `@f()` (built 3 ways)
+    statements x the same wrappers, tools and suffixes = 160, and `@include`/`@load` directives (12): 3,756
+    commands, all blocked. Controls: the same 32 print statements with no sink (x 16 = 512) pass."""
+    cmds = awk_commands(awk_statements(sink=True))
+    cmds += awk_commands(AWK_EXEC)
+    cmds += [f"{tool} '{d}' {C}{sfx}" for tool in ("awk", "gawk") for d in AWK_DIRECTIVES for sfx in ("", " 2>/dev/null")]
+    assert len(cmds) == 2 * 4 * 2 * 2 * 8 * 7 * 2 + 2 * 4 * 10 * 2 + 2 * 3 * 2 == 3756
+    bad = blocked_failures(cmds)
+    print(f"RV-2: {len(bad)} of {len(cmds)} not blocked")
+    assert not bad, report("awk programs not blocked", bad, len(cmds))
+    controls = awk_commands(awk_statements(sink=False))
+    assert len(controls) == 2 * 4 * 2 * 2 * 8 * 2 == 512
+    bad = allowed_failures(controls)
+    assert not bad, report("controls blocked", bad, len(controls))
+
+
+# RV-3: a long or padded sed program must be judged quickly (a timed-out hook fails open)
+SED_PADDINGS = ["\n", "\n\n\n", " \n ", ";\n\n", "  ;  ", "\n \t\n"]
+SED_UNITS = ["p", "/AC/p", "1,5p", "s/a/b/g"]
+SED_LAST_WRITES = ["w " + C, "e touch x", "s/a/b/w x", "1r x", "W x"]
+TIMING_CHILD = r"""
+import json, sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+import hook_guard, guard_scenarios as GS
+res = []
+for cmd in json.loads(sys.stdin.read()):
+    t = time.perf_counter()
+    out, msg = GS.judge(hook_guard, cmd)
+    res.append([out, msg, time.perf_counter() - t])
+print(json.dumps(res))
+"""
+TIMING_SCRIPTS = SCRIPTS   # the guard under test, judged in a child process so a hang can't stall the suite
+
+
+def judge_timed(cmds, limit=60):
+    """(returncode, stdout, stderr) of judging `cmds` in a child process; returncode None when it timed out."""
+    import json
+    import subprocess
+    try:
+        p = subprocess.run([sys.executable, "-c", TIMING_CHILD, str(TIMING_SCRIPTS), str(HERE)],
+                           input=json.dumps(cmds), capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return None, "", f"timed out after {limit} s"
+    return p.returncode, p.stdout, p.stderr
+
+
+def sed_programs(lasts):
+    """Padded sed programs of 50 and 500 commands (every padding x unit) and of 5,000 `p` commands."""
+    out = []
+    for k, units in ((50, SED_UNITS), (500, SED_UNITS), (5000, ["p"])):
+        for pad in SED_PADDINGS:
+            for unit in units:
+                for last in lasts:
+                    out.append(f"sed -n '{pad.join([unit] * k)}{pad}{last}' {C}")
+    return out
+
+
+def test_ac2_rv3_long_padded_sed_judged_quickly():
+    """AC-2 BR-3 RV-3 RV-4 R-6: a sed program of 50 or 500 commands (4 command units) or 5,000 `p` commands,
+    padded 6 ways (blank lines, spaces around newlines, `;` with padding), ending in a write or exec command
+    (w, e, s///w, r, W): (2 x 6 x 4 + 6) x 5 = 270 commands, each blocked in well under a second (limit 1 s
+    each, judged in a child process with a 60 s cap, so a hang fails instead of stalling). The same programs
+    ending in `$p` (54) are reads: not blocked, and as quick."""
+    import json
+    writes = sed_programs(SED_LAST_WRITES)
+    reads = sed_programs(["$p"])
+    assert (len(writes), len(reads)) == ((2 * 6 * 4 + 6) * 5, 2 * 6 * 4 + 6) == (270, 54)
+    rc, out, err = judge_timed(writes + reads)
+    assert rc == 0, f"judging long sed programs did not finish: {err[-2000:]}"
+    res = json.loads(out)
+    slow = [f"{len(c)} chars ending {c[-40:]!r}: {t:.2f}s" for c, (_, _, t) in zip(writes + reads, res) if t >= 1.0]
+    print(f"RV-3: slowest judgement {max(t for _, _, t in res):.3f} s of {len(res)}")
+    assert not slow, report("judgements took 1 s or more", slow, len(res))
+    bad = [f"{c[-50:]!r} gave {o}" for c, (o, m, _) in zip(writes, res[:len(writes)])
+           if o != ["block", "harness-files"] or m != message("t")]
+    assert not bad, report("padded sed writes not blocked", bad, len(writes))
+    bad = [f"{c[-50:]!r} gave {o}" for c, (o, _, _) in zip(reads, res[len(writes):]) if o not in NOT_BLOCKED]
+    assert not bad, report("padded sed reads blocked", bad, len(reads))
+
+
+# RV-7: another segment changes what the command word runs. {W} is the read's command word.
+REDEFINERS = [
+    "{W}(){{ :; }}", "{W} () {{ :; }}", "{W}() ( : )", "function {W} {{ :; }}", "function {W}() {{ :; }}",
+    "{W}(){{ command {W} -i \"$@\"; }}", "eval '{W}(){{ :; }}'", "eval \"{W}(){{ :; }}\"", "eval \"$DEFS\"",
+    "source d.sh", ". d.sh", ". ./d.sh", "alias {W}=frob", "alias {W}='frob -i'", "hash -p ./x {W}",
+    "PATH=.:$PATH", "PATH=.", "PATH+=:.", "export PATH=.", "export \"PATH=.\"", "export 'PATH'=.",
+    "declare -x PATH=.", "typeset -x PATH=.", "declare PATH=.", "readonly PATH=.",
+]
+RV7_READS = [("sed", "sed -n p {T}"), ("awk", "awk '/AC/' {T}"), ("gawk", "gawk -F: '{{print $1}}' {T}"),
+             ("git", "git diff -- {T}"), ("git", "git log -p -- {T}")]
+RV7_SEPARATORS = ["; ", "\n", " && "]
+
+
+def test_ac2_rv7_command_word_redefined_class():
+    """AC-2 BR-4 RV-7 RV-4: a segment before a sed/awk/gawk/git read that redefines what its command word runs
+    (function definitions in 5 spellings, eval, source/`.`, alias, hash -p, PATH via assignment, `+=`,
+    export, declare/typeset -x, readonly, quoted forms). Generated: 25 definers x 5 reads (sed, awk, gawk,
+    git diff, git log) x 3 separators (`;`, newline, `&&`) x 2 targets = 750 commands, all blocked. Controls:
+    each read alone, and after `cd x &&` or `echo x;`, passes."""
+    cmds = []
+    for d in REDEFINERS:
+        for w, read in RV7_READS:
+            for sep in RV7_SEPARATORS:
+                for target in (C, CFG):
+                    cmds.append(d.format(W=w) + sep + read.format(T=target))
+    assert len(cmds) == 25 * 5 * 3 * 2 == 750
+    bad = blocked_failures(cmds)
+    print(f"RV-7: {len(bad)} of {len(cmds)} not blocked")
+    assert not bad, report("redefined command words not blocked", bad, len(cmds))
+    controls = [pre + read.format(T=t) for pre in ("", "cd x && ", "echo x; ") for _, read in RV7_READS
+                for t in (C, CFG)]
+    bad = allowed_failures(controls)
+    assert not bad, report("controls blocked", bad, len(controls))
+
+
+# RV-8: a redirection word stands where the allow-list expects the program or an option's value
+REDIRECT_WORDS = [">/dev/null", "2>/dev/null", "&>/dev/null", ">>/dev/null", "2>&1", ">&2", "1>&2", "</dev/null",
+                  "< /dev/null", "<<<x", "<<< 'a b'", "0<&-", "3>&-", "2> /dev/null", ">&/dev/null", "<x",
+                  "> /dev/null"]
+AWK_HIDDEN = ["'{print \"X\" > FILENAME}'", "'BEGIN{system(\"touch zz\")}'", "'{print | \"sh\"}'"]
+AWK_HIDDEN_READ = "'/AC/'"
+
+
+def awk_redirect_commands(r, prog):
+    return [f"{tool} {pos.format(R=r, P=prog)} {C}" for tool in ("awk", "gawk") for pos in (
+        "{R} {P}", "-F {R} : {P}", "-v {R} a=1 {P}", "--field-separator {R} : {P}", "--assign {R} a=1 {P}",
+        "-F: {R} {P}", "-- {R} {P}")]
+
+
+def test_ac2_rv8_redirection_word_class():
+    """AC-2 BR-2 BR-3 RV-8 RV-4: bash removes redirection words before the command runs, so one standing where
+    the allow-list expects the awk program or an option's value hides the real program. Generated: 17
+    redirection words (/dev/null forms, fd dups and closes, `<`, `<<<`, spaced forms) x [awk, gawk x 7
+    positions (before the program; as the -F, -v, --field-separator, --assign value; after -F:; after --) x
+    3 write/exec programs; sed x 4 positions x 2 write programs; git diff/log/show x 3 positions] = 17 x 59 =
+    1,003 commands, all blocked. Controls: the 238 awk/gawk templates with a read program pass."""
+    cmds = []
+    for r in REDIRECT_WORDS:
+        for prog in AWK_HIDDEN:
+            cmds += awk_redirect_commands(r, prog)
+        for prog in ("'w " + C + "'", "'1e touch x'"):
+            cmds += [f"sed -n {r} {prog} {C}", f"sed -e {r} {prog} {C}", f"sed --expression {r} {prog} {C}",
+                     f"sed -n -- {r} {prog} {C}"]
+        for sub in ("diff", "log", "show"):
+            cmds += [f"git {sub} {r} --output=x -- {C}", f"git {r} {sub} --output=x -- {C}",
+                     f"git {sub} -- {C} {r} --ext-diff"]
+    assert len(cmds) == 17 * (2 * 7 * 3 + 4 * 2 + 3 * 3) == 1003
+    bad = blocked_failures(cmds)
+    print(f"RV-8: {len(bad)} of {len(cmds)} not blocked")
+    assert not bad, report("redirection-word commands not blocked", bad, len(cmds))
+    controls = [c for r in REDIRECT_WORDS for c in awk_redirect_commands(r, AWK_HIDDEN_READ)]
+    assert len(controls) == 17 * 14 == 238
+    bad = allowed_failures(controls)
+    assert not bad, report("controls blocked", bad, len(controls))
+
+
+# RV-9: a lone `&` and a write, in a command whose quoting sends the guard down its fallback path
+FALLBACK_TRIGGERS = ["; echo $'x'", "; echo $\"x\"", "; echo ${HOME}", "; echo ${x:-y}", " # it's",
+                     "\ncat <<EOF\nit's\nEOF", " '"]
+AMP_HEADS = ["cat {T}", "grep -n AC {T}", "sed -n p {T}", "echo x", "ls"]
+AMP_WRITES = ["sed -i s/a/b/ {T}", "tee {T}", "cp x {T}", "rm {T}", "python3 -c \"open('{T}','w')\"",
+              "awk -i inplace '{{print}}' {T}", "echo x > {T}"]
+
+
+def test_ac2_rv9_fallback_lone_ampersand_class():
+    """AC-2 BR-7 RV-9 RV-4 R-1: BR-7's lone `&` separates segments on the fallback path too. Generated: 5 heads
+    (cat, grep, sed reads, echo, ls) x 7 writes after the `&` (sed -i, tee, cp, rm, python -c, awk -i
+    inplace, `>`) x 2 spacings (` & `, `&`) x 7 fallback triggers (`$'…'`, `$"…"`, `${HOME}`, `${x:-y}`, a `#`
+    comment with an apostrophe, a heredoc, an unbalanced quote) = 490 commands, all blocked. Controls: the
+    READ_ONLY heads with a READ_ONLY read after the `&` (2 x 2 x 5 triggers that leave the quoting balanced)
+    pass."""
+    cmds = []
+    for head in AMP_HEADS:
+        for w in AMP_WRITES:
+            for amp in (" & ", "&"):
+                for trig in FALLBACK_TRIGGERS:
+                    cmds.append(head.format(T=C) + amp + w.format(T=C) + trig)
+    assert len(cmds) == 5 * 7 * 2 * 7 == 490
+    bad = blocked_failures(cmds)
+    print(f"RV-9: {len(bad)} of {len(cmds)} not blocked")
+    assert not bad, report("lone-& writes not blocked", bad, len(cmds))
+    controls = [head.format(T=C) + " & grep x " + CFG + trig for head in AMP_HEADS[:2]
+                for trig in FALLBACK_TRIGGERS[:5]]
+    controls += [c.replace(" & ", "&") for c in controls]
+    assert len(controls) == 20
+    bad = allowed_failures(controls)
+    assert not bad, report("controls blocked", bad, len(controls))
+
+
 # --- AC-5: the end-to-end self-test carries every example ----------------------------------------
 
 SELFTEST = HERE / "selftest.sh"
