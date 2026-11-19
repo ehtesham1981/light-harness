@@ -304,7 +304,8 @@ def writes_by_redirect(mask: str) -> bool:
         if m.group(1) == ">|":
             return True
         if m.group(1) == ">&":   # a descriptor (2>&1, >&-) or, as bash's `>&word`, /dev/null
-            if not re.match(r"\s*(\d+|-|/dev/null)(?=$|[\s;&|)])", rest):
+            # one digit only: bash writes `>&99999999999` to a file of that name, as it would `&>word`
+            if not re.match(r"\s*(\d|-|/dev/null)(?=$|[\s;&|)])", rest):
                 return True
         elif not re.match(r"\s*/dev/null(?=$|[\s;&|)])", rest):
             return True
