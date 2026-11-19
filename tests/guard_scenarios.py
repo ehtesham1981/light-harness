@@ -120,7 +120,6 @@ SHAPE_PREFIXES = PREFIXES + [
     "eval x; ",
     ". ./d.sh; ",
 ]
-HARMLESS_PREFIXES = {"", "cd x && "}
 
 # Shapes: (id, command name, args before the target, args after the target, read?). `read?` is the spec-level
 # judgement per BR-1..BR-3 (and RV-1..RV-10): True when the command, as bash runs it, is a read on the
@@ -247,26 +246,21 @@ def commands_sha256(scs) -> str:
 
 
 def is_listed_read(sc: dict) -> bool:
-    """BR-6 allowed change: a read shape per BR-1..BR-3 that may change from blocked to not blocked.
+    """BR-6 allowed change: a READ_ONLY read shape per BR-1..BR-3 that may change from blocked to not blocked.
 
-    True when the prefix isn't `FOO=1`; the word is a READ_ONLY member, git diff/log/show (any flag),
-    sed with no flag or `-n`, or awk/gawk with no flag; and the suffix is none, `| head`, `2>/dev/null`,
-    `>/dev/null 2>&1`, `; echo` or `"a|b"`.
+    True when the prefix isn't `FOO=1`; the word is a READ_ONLY member; and the suffix is none, `| head`,
+    `2>/dev/null`, `>/dev/null 2>&1`, `; echo` or `"a|b"`.
 
     In the shapes part: the prefix isn't `FOO=1`, the suffix is one of those, and the shape is a read per
-    BR-1..BR-3 (its `read` flag); a sed/awk/gawk/git read also needs a harmless prefix (none or `cd x &&`),
-    since one beside a segment that could redefine the command word may stay blocked, as at base (RV-7)."""
+    BR-1..BR-3 (its `read` flag) whose command is a READ_ONLY member. sed, awk, gawk and git are never listed
+    reads (Q-9): their outcome must equal the base exactly."""
     if sc["prefix"] == "FOO=1 ":
         return False
     if sc["suffix"] not in READ_SUFFIXES:
         return False
     if sc.get("part") == "shapes":
-        if not sc["read"]:
-            return False
-        return sc["name"] in READ_ONLY_WORDS or sc["prefix"] in HARMLESS_PREFIXES
-    w, f = sc["word"], sc["flag"]
-    return (w in READ_ONLY_WORDS or w in ("git diff", "git log", "git show")
-            or (w == "sed" and f in ("", "-n")) or (w in ("awk", "gawk") and f == ""))
+        return bool(sc["read"]) and sc["name"] in READ_ONLY_WORDS
+    return sc["word"] in READ_ONLY_WORDS
 
 
 def is_listed_block(sc: dict) -> bool:

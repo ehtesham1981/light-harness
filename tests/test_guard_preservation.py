@@ -84,21 +84,31 @@ def test_ac4_br6_sweep_matches_base():
 
 
 def test_ac4_br6_sweep_has_listed_reads():
-    """AC-4 BR-6 [sweep]: (the sweep exercises the allowed change) the allowed change is real in this input space; many listed reads were blocked at base
-    (so the sweep exercises the new read path, not only unchanged outcomes)."""
+    """AC-4 BR-6 [sweep]: (the sweep exercises the allowed change) the allowed change is real in this input space; many listed READ_ONLY reads were
+    blocked at base (so the sweep exercises the new read path, not only unchanged outcomes), and no sed, awk,
+    gawk or git command is a listed read (Q-9: they must equal the base exactly)."""
     g = golden()
     scs = GS.scenarios()
     changed = [sc["cmd"] for i, sc in enumerate(scs)
                if GS.is_listed_read(sc) and g["outcomes"][i] == "b:harness-files"]
     assert len(changed) > 500
-    assert "sed '1,5p' .light-harness/contract.md" in changed
-    assert "cd x && git log -i inplace -- .light-harness/config.json | head" in changed
-    # The shapes part has listed reads too, so it checks the read path with varied arguments, not only blocks
+    assert "grep .light-harness/contract.md 2>/dev/null" in changed
+    assert "cd x && cat -n .light-harness/config.json >/dev/null 2>&1" in changed
+    # Q-9: sed/awk/gawk/git are never listed reads, in either part
+    listed = [sc for sc in scs if GS.is_listed_read(sc)]
+    tools = [sc["cmd"] for sc in listed
+             if sc["word"].split()[0] in ("sed", "awk", "gawk", "git") or sc.get("name") in ("sed", "awk", "gawk", "git")]
+    assert not tools, f"{len(tools)} sed/awk/gawk/git listed reads; first 5: {tools[:5]}"
+    assert not GS.is_listed_read({"cmd": "", "part": "flags", "prefix": "", "word": "sed", "flag": "-n",
+                                  "target": ".light-harness/contract.md", "suffix": ""})
+    assert not GS.is_listed_read({"cmd": "", "part": "flags", "prefix": "", "word": "git diff", "flag": "",
+                                  "target": ".light-harness/contract.md", "suffix": ""})
+    # The shapes part has listed reads too, so it checks the read path beside RV-7 prefixes, not only blocks
     shape_cmds = {sc["cmd"] for sc in scs[GS.FLAG_COUNT:]}
     shape_reads = [c for c in changed if c in shape_cmds]
-    assert len(shape_reads) > 300
-    assert "sed -n >/dev/null p .light-harness/contract.md" in shape_reads
-    assert "cd x && gawk -v n=2 'NR>n' .light-harness/config.json 2>/dev/null" in shape_reads
+    assert len(shape_reads) >= 80
+    assert "grep -n AC .light-harness/contract.md 2>/dev/null" in shape_reads
+    assert "cd x && cat -- .light-harness/config.json >/dev/null 2>&1" in shape_reads
     # ...and BR-7 lone-& writes the base allowed, which must now block
     newly_blocked = [sc["cmd"] for i, sc in enumerate(scs) if GS.is_listed_block(sc) and g["outcomes"][i] == "p"]
     assert len(newly_blocked) > 100

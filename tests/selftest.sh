@@ -90,7 +90,8 @@ check '[ "$(hook "$M" "$(file_json Edit "$M" "$C" "Status: Draft")")" = 2 ]' "gu
 check '[ "$(hook "$M" "$(file_json Write "$M" "$T/alpha/.light-harness/junit.xml")")" = 2 ]' "guard allowed editing harness files"
 check '[ "$(hook "$M" "$(file_json Write "$M" "$M/.git/light-harness/config.json")")" = 2 ]' "guard allowed editing .git/light-harness"
 check '[ "$(hook "$M" "$(file_json Read "$M" "$T/alpha/.env")")" = 2 ] && [ "$(hook "$M" "$(file_json Read "$M" "$T/alpha/.env.example")")" = 0 ]' "guard .env read rules"
-# Blocked (exit 2). AC-5: includes the issue #23 writes EX-9..EX-16 and the BR-7 $(…) / lone-& holes
+# Blocked (exit 2). AC-5: includes the issue #23 sed/awk/git reads EX-4..EX-8 (blocked as at base, Q-9), the
+# writes EX-9..EX-16 and the BR-7 $(…) / lone-& holes
 for c in "light-harness approve --task alpha --name X" "python3 /p/scripts/harness.py unlock-tests --name X --reason y" \
          "git checkout main" "git -C .tasks/alpha reset --hard" "git commit --amend -m x" "git branch -D task/alpha" \
          "git push --force origin x" "git update-ref -d refs/light-harness/tasks/alpha" "rm -rf src" \
@@ -108,16 +109,17 @@ for c in "light-harness approve --task alpha --name X" "python3 /p/scripts/harne
          "awk '{print > \".tasks/alpha/.light-harness/contract.md\"}' .tasks/alpha/.light-harness/contract.md" \
          "sed -n p .tasks/alpha/.light-harness/contract.md > out.txt" \
          "grep \"\$(sed -i s/a/b/ .tasks/alpha/.light-harness/contract.md)\" .tasks/alpha/.light-harness/contract.md" \
-         "cat .tasks/alpha/.light-harness/contract.md & sed -i s/a/b/ .tasks/alpha/.light-harness/contract.md"; do
-  check '[ "$(hook "$M" "$(bash_json "$M" "$c")")" = 2 ]' "guard allowed: $c"
-done
-# Not blocked (exit 0). AC-5: includes the issue #23 reads EX-1..EX-8 of the task's contract
-for c in "git diff src/checkout.py" "cat .tasks/alpha/.light-harness/contract.md" "git log --oneline" \
-         "grep -n \"AC-1\" .tasks/alpha/.light-harness/contract.md" "grep -nE \"AC-1|AC-2\" .tasks/alpha/.light-harness/contract.md" \
-         "grep -n AC .tasks/alpha/.light-harness/contract.md 2>/dev/null" "sed -n '/8.1/,/8.2/p' .tasks/alpha/.light-harness/contract.md" \
+         "cat .tasks/alpha/.light-harness/contract.md & sed -i s/a/b/ .tasks/alpha/.light-harness/contract.md" \
+         "sed -n '/8.1/,/8.2/p' .tasks/alpha/.light-harness/contract.md" \
          "awk '/8.1/' .tasks/alpha/.light-harness/contract.md" "git diff -- .tasks/alpha/.light-harness/contract.md" \
          "git log -p -- .tasks/alpha/.light-harness/contract.md" "git show HEAD:.tasks/alpha/.light-harness/contract.md" \
          "sed -n 1,20p .tasks/alpha/.light-harness/contract.md 2>&1 | head"; do
+  check '[ "$(hook "$M" "$(bash_json "$M" "$c")")" = 2 ]' "guard allowed: $c"
+done
+# Not blocked (exit 0). AC-5: includes the issue #23 reads EX-1..EX-3 of the task's contract
+for c in "git diff src/checkout.py" "cat .tasks/alpha/.light-harness/contract.md" "git log --oneline" \
+         "grep -n \"AC-1\" .tasks/alpha/.light-harness/contract.md" "grep -nE \"AC-1|AC-2\" .tasks/alpha/.light-harness/contract.md" \
+         "grep -n AC .tasks/alpha/.light-harness/contract.md 2>/dev/null"; do
   check '[ "$(hook "$M" "$(bash_json "$M" "$c")")" = 0 ]' "guard blocked: $c"
 done
 check 'hookout "$M" "$(bash_json "$M" "light-harness status --task alpha")" | grep -q "\"allow\""' "harness command not pre-approved"

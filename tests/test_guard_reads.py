@@ -1,7 +1,7 @@
-"""The guard's Bash `.light-harness/` rule (issue #23): read-only commands on the task's contract and config
-are allowed, every write stays blocked, and the block message points at the Read tool and
-`light-harness show`. AC-1, AC-2, AC-3; BR-1, BR-2, BR-3, BR-4, BR-5, BR-7; EX-1..EX-16; R-1, R-2, R-4, R-6;
-Q-2, Q-3, Q-4, Q-5.
+"""The guard's Bash `.light-harness/` rule (issue #23): READ_ONLY commands on the task's contract and config
+are allowed, sed/awk/gawk/git on them stay blocked as at base (Q-9), every write stays blocked, and the block
+message points at the Read tool and `light-harness show`. AC-1, AC-2, AC-3, AC-5; BR-1, BR-2, BR-3, BR-4,
+BR-5, BR-7; EX-1..EX-16; R-1, R-2, R-4, R-6; Q-2, Q-3, Q-4, Q-5, Q-9.
 
 `bash_rules` is run in-process with `block`/`decide` patched to raise (tests/guard_scenarios.py)."""
 from __future__ import annotations
@@ -45,6 +45,20 @@ EXAMPLE_READS = [
     ("EX-1", 'grep -n "AC-1" .light-harness/contract.md'),
     ("EX-2", 'grep -nE "AC-1|AC-2" .light-harness/contract.md'),
     ("EX-3", "grep -n AC .light-harness/contract.md 2>/dev/null"),
+]
+
+
+@pytest.mark.parametrize("ex,cmd", EXAMPLE_READS, ids=[e for e, _ in EXAMPLE_READS])
+def test_ac1_reads_allowed(ex, cmd):
+    """AC-1 (EX-1..EX-3; BR-1, BR-2, BR-3): each example read is not blocked, and neither is the same read
+    with its errors sent to /dev/null (BR-2 holds for every read)."""
+    for c in (cmd, cmd + " 2>/dev/null"):
+        out, msg = GS.judge(hook_guard, c)
+        assert out in NOT_BLOCKED, f"{ex}: {c!r} gave {out}: {msg}"
+
+
+# Q-9: sed, awk, gawk and git reads of .light-harness/ stay blocked, as at base (AC-2)
+EXAMPLE_BLOCKED_READS = [
     ("EX-4", "sed -n '/8.1/,/8.2/p' .light-harness/contract.md"),
     ("EX-5", "awk '/8.1/' .light-harness/contract.md"),
     ("EX-6", "git diff -- .light-harness/contract.md"),
@@ -54,23 +68,26 @@ EXAMPLE_READS = [
 ]
 
 
-@pytest.mark.parametrize("ex,cmd", EXAMPLE_READS, ids=[e for e, _ in EXAMPLE_READS])
-def test_ac1_reads_allowed(ex, cmd):
-    """AC-1 (EX-1..EX-8; BR-1, BR-2, BR-3): each example read is not blocked, and neither is the same read
-    with its errors sent to /dev/null (BR-2 holds for every read)."""
+@pytest.mark.parametrize("ex,cmd", EXAMPLE_BLOCKED_READS, ids=[e for e, _ in EXAMPLE_BLOCKED_READS])
+def test_ac2_sed_awk_git_reads_blocked(ex, cmd):
+    """AC-2 (EX-4..EX-8; BR-3, BR-5; Q-9): each sed/awk/git read of the contract is blocked with rule
+    harness-files and the BR-5 message pointing at the Read tool / `light-harness show`, and so is the same
+    command with its errors sent to /dev/null."""
     for c in (cmd, cmd + " 2>/dev/null"):
-        out, msg = GS.judge(hook_guard, c)
-        assert out in NOT_BLOCKED, f"{ex}: {c!r} gave {out}: {msg}"
+        assert_blocked(c)
 
 
-def test_ac1_git_reads_preapproved():
-    """AC-1 EX-6 EX-7: `git diff|log -- .light-harness/…` now pass harness-files and so match the existing
-    SAFE_SEGMENT `git (status|diff|log|show|add)` pre-approval (§7.1), exactly as for any other file."""
-    assert GS.outcome(hook_guard, "git diff -- .light-harness/contract.md") == ["allow"]
-    assert GS.outcome(hook_guard, "git log -p -- .light-harness/contract.md") == ["allow"]
-    assert GS.outcome(hook_guard, "git show HEAD:.light-harness/config.json") == ["allow"]
-    # A redirect or pipe in the command still keeps the prompt (unchanged prompt-skip rule)
-    assert GS.outcome(hook_guard, "git diff -- .light-harness/contract.md 2>/dev/null") == ["pass"]
+@pytest.mark.parametrize("task", ["t", "omega-3"])
+def test_ac2_git_reads_blocked_before_preapproval(task):
+    """AC-2 EX-6 EX-7 BR-3 (Q-9): `git diff|log|show` naming .light-harness/ are blocked by harness-files
+    before the SAFE_SEGMENT `git (status|diff|log|show|add)` pre-approval, as at base; the message names the
+    CTX task."""
+    for cmd in ("git diff -- .light-harness/contract.md", "git log -p -- .light-harness/contract.md",
+                "git show HEAD:.light-harness/config.json", "git diff -- .light-harness/contract.md 2>/dev/null"):
+        assert_blocked(cmd, task)
+    # The same git reads of a plain file keep the SAFE_SEGMENT pre-approval (control: not a blanket git block)
+    assert GS.outcome(hook_guard, "git diff -- src/a.py", task) == ["allow"]
+    assert GS.outcome(hook_guard, "git log -p -- src/a.py", task) == ["allow"]
 
 
 READ_VARIANTS = [
@@ -87,6 +104,22 @@ READ_VARIANTS = [
     ("BR-2 1>&2", "grep AC .light-harness/contract.md 1>&2"),
     ("BR-2 >/dev/null 2>&1", "grep -q AC .light-harness/contract.md >/dev/null 2>&1"),
     ("BR-2 2>/dev/null then pipe", "grep -c AC .light-harness/contract.md 2>/dev/null | head -1"),
+    ("Q-3 quoted >", "grep '>' .light-harness/contract.md"),
+    ("Q-3 escaped pipe", "grep a\\|b .light-harness/contract.md"),
+    ("R-4 Windows path", "cat .light-harness\\contract.md 2>/dev/null"),
+    ("task folder path", "grep -n AC .tasks/alpha/.light-harness/contract.md"),
+]
+
+
+@pytest.mark.parametrize("why,cmd", READ_VARIANTS, ids=[w for w, _ in READ_VARIANTS])
+def test_ac1_read_variants_allowed(why, cmd):
+    """AC-1 BR-1 BR-2 BR-3 (Q-3): quote-aware segments and /dev/null and fd-dup redirects on READ_ONLY reads
+    are not blocked by harness-files."""
+    out, msg = GS.judge(hook_guard, cmd)
+    assert out in NOT_BLOCKED, f"{why}: {cmd!r} gave {out}: {msg}"
+
+
+BLOCKED_READ_VARIANTS = [
     ("BR-3 sed -n -e p", "sed -n -e p .light-harness/contract.md"),
     ("BR-3 sed -E -n range", "sed -E -n '/a/,/b/p' .light-harness/contract.md"),
     ("BR-3 sed --quiet $p", "sed --quiet '$p' .light-harness/contract.md"),
@@ -100,19 +133,22 @@ READ_VARIANTS = [
     ("BR-3 git --no-pager log", "git --no-pager log -p -- .light-harness/contract.md"),
     ("BR-3 git show HEAD:", "git show HEAD:.light-harness/contract.md | head -50"),
     ("BR-3 git diff stat", "git diff --stat HEAD~1 -- .light-harness/config.json"),
-    ("Q-3 quoted >", "grep '>' .light-harness/contract.md"),
-    ("Q-3 escaped pipe", "grep a\\|b .light-harness/contract.md"),
-    ("R-4 Windows path", "cat .light-harness\\contract.md 2>/dev/null"),
-    ("task folder path", "sed -n '/8.1/,/8.2/p' .tasks/alpha/.light-harness/contract.md"),
 ]
 
 
-@pytest.mark.parametrize("why,cmd", READ_VARIANTS, ids=[w for w, _ in READ_VARIANTS])
-def test_ac1_read_variants_allowed(why, cmd):
-    """AC-1 BR-1 BR-2 BR-3 (Q-3): quote-aware segments, /dev/null and fd-dup redirects, and the sed, awk and
-    git read shapes are not blocked by harness-files."""
-    out, msg = GS.judge(hook_guard, cmd)
-    assert out in NOT_BLOCKED, f"{why}: {cmd!r} gave {out}: {msg}"
+@pytest.mark.parametrize("why,cmd", BLOCKED_READ_VARIANTS, ids=[w for w, _ in BLOCKED_READ_VARIANTS])
+def test_ac2_sed_awk_git_read_variants_blocked(why, cmd):
+    """AC-2 BR-3 BR-5 (Q-9): the sed, awk, gawk and git read shapes the first plan allowed stay blocked, as at
+    base, with rule harness-files and the BR-5 message."""
+    assert_blocked(cmd)
+
+
+def test_ac2_sed_read_in_task_folder_blocked():
+    """AC-2 BR-3 BR-5 (Q-9, Q-5): a sed read of a task folder's contract is blocked, and with no CTX task the
+    BR-5 message names the task from the `.tasks/<name>/` path."""
+    out, msg = GS.judge(hook_guard, "sed -n '/8.1/,/8.2/p' .tasks/alpha/.light-harness/contract.md", None)
+    assert out == ["block", "harness-files"]
+    assert msg == message("alpha")
 
 
 # --- AC-2: writes stay blocked -------------------------------------------------------------------
@@ -252,22 +288,31 @@ def test_ac2_br7_substitution_and_lone_ampersand_blocked(why, cmd):
 
 
 def test_br7_lone_ampersand_between_reads_allowed():
-    """BR-7 BR-1 AC-1: a lone `&` is a separator, not a write; two reads either side of it stay allowed, and
-    `&&`, `&>/dev/null` and `2>&1` are not mistaken for a lone `&`."""
+    """BR-7 BR-1 AC-1: a lone `&` is a separator, not a write; two READ_ONLY reads either side of it stay
+    allowed, and `&&`, `&>/dev/null` and `2>&1` are not mistaken for a lone `&`. AC-2 BR-3 (Q-9): sed/awk
+    reads either side of a lone `&` are blocked with the BR-5 message, as at base."""
     for cmd in ("cat .light-harness/contract.md & grep x .light-harness/config.json 2>/dev/null",
-                "sed -n 1p .light-harness/contract.md & awk '/x/' .light-harness/config.json",
-                "sed -n 1p .light-harness/contract.md &>/dev/null && grep x .light-harness/contract.md 2>&1"):
+                "head -1 .light-harness/contract.md & grep '/x/' .light-harness/config.json",
+                "cat -n .light-harness/contract.md &>/dev/null && grep x .light-harness/contract.md 2>&1"):
         out, msg = GS.judge(hook_guard, cmd)
         assert out in NOT_BLOCKED, f"{cmd!r} gave {out}: {msg}"
+    for cmd in ("sed -n 1p .light-harness/contract.md & awk '/x/' .light-harness/config.json",
+                "sed -n 1p .light-harness/contract.md &>/dev/null && grep x .light-harness/contract.md 2>&1",
+                "cat .light-harness/contract.md & awk '/x/' .light-harness/config.json"):
+        assert_blocked(cmd)
 
 
 # --- AC-2, RV-4: the write-hole classes review found, each generated over its dimensions ------------
 # Each class test builds a deterministic cross product, asserts every command is blocked with harness-files
-# and the BR-5 message, and reports how many differ out of how many. Each also checks controls: the same
-# template with a harmless value instead of the hole is NOT blocked, so blocking every sed/awk/git command
-# can't pass these tests.
+# and the BR-5 message, and reports how many differ out of how many. Each also checks controls (Q-9): the same
+# template with a harmless value instead of the hole is still blocked, because sed/awk/gawk/git on
+# .light-harness/ stay blocked as at base; and READ_ONLY reads of the same targets are NOT blocked, so blocking
+# every command that names .light-harness/ can't pass these tests.
 
 CFG = ".light-harness/config.json"
+# READ_ONLY reads of both targets, with and without a /dev/null redirect: must never be blocked (Q-9 controls)
+READ_ONLY_CONTROLS = [f"{r} {t}{s}" for r in ("grep -n print", "head -50") for t in (C, CFG)
+                      for s in ("", " 2>/dev/null")]
 
 
 def blocked_failures(cmds, task="t") -> list:
@@ -333,18 +378,21 @@ def test_ac2_rv1_rv10_expansion_class():
     """AC-2 BR-3 BR-4 RV-1 RV-10 RV-4: a word bash expands (brace `{…,…}`, `$X`, `"$X"`, `${X}`, `$1`, `"$@"`,
     globs `* ? [`, extglob `@( +( ?( *( !(`, `$'…'`, `$"…"`) can become -i / -iinplace / --output / --ext-diff at
     run time. Generated: 23 forms x sed, awk, gawk, git diff/log/show x 3 positions (before the script or
-    subcommand, after it, after the file) x 2 targets = 828 commands, all blocked. Controls: the same
-    templates with the plain harmless option (`-n`, `-F:`, `--stat`, `-p`) pass, except git with an option
-    before the subcommand, which BR-3 doesn't allow (30)."""
+    subcommand, after it, after the file) x 2 targets = 828 commands, all blocked. Controls (Q-9): the same
+    templates with the plain harmless option (`-n`, `-F:`, `--stat`, `-p`) are blocked too, as at base (36);
+    READ_ONLY reads `cat -n <target>` and `grep -n AC <target>`, with and without ` 2>/dev/null`, pass (8)."""
     cmds = [c for _, c in expansion_commands(expansion_forms)]
     assert len(cmds) == 23 * 6 * 3 * 2 == 828
     bad = blocked_failures(cmds)
     print(f"RV-1/RV-10: {len(bad)} of {len(cmds)} not blocked")
     assert not bad, report("expansion commands not blocked", bad, len(cmds))
-    controls = [c for pos, c in expansion_commands(lambda opt, alt: [alt]) if not (pos == 0 and c.startswith("git"))]
-    assert len(controls) == 6 * 3 * 2 - 3 * 2 == 30
-    bad = allowed_failures(controls)
-    assert not bad, report("controls blocked", bad, len(controls))
+    controls = [c for _, c in expansion_commands(lambda opt, alt: [alt])]
+    assert len(controls) == 6 * 3 * 2 == 36
+    bad = blocked_failures(controls)
+    assert not bad, report("sed/awk/git controls not blocked", bad, len(controls))
+    reads = [f"{r} {t}{s}" for r in ("cat -n", "grep -n AC") for t in (C, CFG) for s in ("", " 2>/dev/null")]
+    bad = allowed_failures(reads)
+    assert not bad, report("READ_ONLY controls blocked", bad, len(reads))
 
 
 # RV-2: awk programs that write or run
@@ -387,7 +435,9 @@ def test_ac2_rv2_awk_program_class():
     (`>`, `>>`, `>` the contract, unspaced `>`, `|`, unspaced `|`, `|&`) x 2 suffixes (none, `2>/dev/null`)
     = 3,584 commands; plus 10 getline / `|&` getline / system() (3 spellings) / gawk `@f()` (built 3 ways)
     statements x the same wrappers, tools and suffixes = 160, and `@include`/`@load` directives (12): 3,756
-    commands, all blocked. Controls: the same 32 print statements with no sink (x 16 = 512) pass."""
+    commands, all blocked. Controls (Q-9): the same 32 print statements with no sink (x 16 = 512) are blocked
+    too, as at base; READ_ONLY reads `grep -n print <target>` and `head -50 <target>`, with and without
+    ` 2>/dev/null`, pass (8)."""
     cmds = awk_commands(awk_statements(sink=True))
     cmds += awk_commands(AWK_EXEC)
     cmds += [f"{tool} '{d}' {C}{sfx}" for tool in ("awk", "gawk") for d in AWK_DIRECTIVES for sfx in ("", " 2>/dev/null")]
@@ -397,8 +447,12 @@ def test_ac2_rv2_awk_program_class():
     assert not bad, report("awk programs not blocked", bad, len(cmds))
     controls = awk_commands(awk_statements(sink=False))
     assert len(controls) == 2 * 4 * 2 * 2 * 8 * 2 == 512
-    bad = allowed_failures(controls)
-    assert not bad, report("controls blocked", bad, len(controls))
+    bad = blocked_failures(controls)
+    print(f"RV-2 controls: {len(bad)} of {len(controls)} awk reads not blocked")
+    assert not bad, report("awk read controls not blocked", bad, len(controls))
+    reads = READ_ONLY_CONTROLS
+    bad = allowed_failures(reads)
+    assert not bad, report("READ_ONLY controls blocked", bad, len(reads))
 
 
 # RV-3: a long or padded sed program must be judged quickly (a timed-out hook fails open)
@@ -447,7 +501,8 @@ def test_ac2_rv3_long_padded_sed_judged_quickly():
     padded 6 ways (blank lines, spaces around newlines, `;` with padding), ending in a write or exec command
     (w, e, s///w, r, W): (2 x 6 x 4 + 6) x 5 = 270 commands, each blocked in well under a second (limit 1 s
     each, judged in a child process with a 60 s cap, so a hang fails instead of stalling). The same programs
-    ending in `$p` (54) are reads: not blocked, and as quick."""
+    ending in `$p` (54) are blocked too (Q-9: sed on .light-harness/ stays blocked, as at base), and as quick;
+    READ_ONLY reads `grep -n print <target>` / `head -50 <target>`, with and without ` 2>/dev/null`, pass."""
     import json
     writes = sed_programs(SED_LAST_WRITES)
     reads = sed_programs(["$p"])
@@ -461,8 +516,11 @@ def test_ac2_rv3_long_padded_sed_judged_quickly():
     bad = [f"{c[-50:]!r} gave {o}" for c, (o, m, _) in zip(writes, res[:len(writes)])
            if o != ["block", "harness-files"] or m != message("t")]
     assert not bad, report("padded sed writes not blocked", bad, len(writes))
-    bad = [f"{c[-50:]!r} gave {o}" for c, (o, _, _) in zip(reads, res[len(writes):]) if o not in NOT_BLOCKED]
-    assert not bad, report("padded sed reads blocked", bad, len(reads))
+    bad = [f"{c[-50:]!r} gave {o}" for c, (o, m, _) in zip(reads, res[len(writes):])
+           if o != ["block", "harness-files"] or m != message("t")]
+    assert not bad, report("padded sed reads not blocked", bad, len(reads))
+    bad = allowed_failures(READ_ONLY_CONTROLS)
+    assert not bad, report("READ_ONLY controls blocked", bad, len(READ_ONLY_CONTROLS))
 
 
 # RV-7: another segment changes what the command word runs. {W} is the read's command word.
@@ -482,8 +540,9 @@ def test_ac2_rv7_command_word_redefined_class():
     """AC-2 BR-4 RV-7 RV-4: a segment before a sed/awk/gawk/git read that redefines what its command word runs
     (function definitions in 5 spellings, eval, source/`.`, alias, hash -p, PATH via assignment, `+=`,
     export, declare/typeset -x, readonly, quoted forms). Generated: 25 definers x 5 reads (sed, awk, gawk,
-    git diff, git log) x 3 separators (`;`, newline, `&&`) x 2 targets = 750 commands, all blocked. Controls:
-    each read alone, and after `cd x &&` or `echo x;`, passes."""
+    git diff, git log) x 3 separators (`;`, newline, `&&`) x 2 targets = 750 commands, all blocked. Controls
+    (Q-9): each sed/awk/git read alone, and after `cd x &&` or `echo x;`, is blocked too, as at base (30);
+    `cat` and `grep -n AC` reads of the same targets alone and after `cd x &&` or `echo x;` pass (12)."""
     cmds = []
     for d in REDEFINERS:
         for w, read in RV7_READS:
@@ -496,8 +555,14 @@ def test_ac2_rv7_command_word_redefined_class():
     assert not bad, report("redefined command words not blocked", bad, len(cmds))
     controls = [pre + read.format(T=t) for pre in ("", "cd x && ", "echo x; ") for _, read in RV7_READS
                 for t in (C, CFG)]
-    bad = allowed_failures(controls)
-    assert not bad, report("controls blocked", bad, len(controls))
+    assert len(controls) == 30
+    bad = blocked_failures(controls)
+    assert not bad, report("sed/awk/git read controls not blocked", bad, len(controls))
+    reads = [pre + read.format(T=t) for pre in ("", "cd x && ", "echo x; ") for read in ("cat {T}", "grep -n AC {T}")
+             for t in (C, CFG)]
+    assert len(reads) == 12
+    bad = allowed_failures(reads)
+    assert not bad, report("READ_ONLY controls blocked", bad, len(reads))
 
 
 # RV-8: a redirection word stands where the allow-list expects the program or an option's value
@@ -520,7 +585,9 @@ def test_ac2_rv8_redirection_word_class():
     redirection words (/dev/null forms, fd dups and closes, `<`, `<<<`, spaced forms) x [awk, gawk x 7
     positions (before the program; as the -F, -v, --field-separator, --assign value; after -F:; after --) x
     3 write/exec programs; sed x 4 positions x 2 write programs; git diff/log/show x 3 positions] = 17 x 59 =
-    1,003 commands, all blocked. Controls: the 238 awk/gawk templates with a read program pass."""
+    1,003 commands, all blocked. Controls (Q-9): the 238 awk/gawk templates with a read program are blocked
+    too, as at base; `cat <word> <contract>` and `grep -n AC <word> <contract>` for all 17 words (34 READ_ONLY
+    reads whose redirections are BR-2 non-writes) pass."""
     cmds = []
     for r in REDIRECT_WORDS:
         for prog in AWK_HIDDEN:
@@ -537,8 +604,13 @@ def test_ac2_rv8_redirection_word_class():
     assert not bad, report("redirection-word commands not blocked", bad, len(cmds))
     controls = [c for r in REDIRECT_WORDS for c in awk_redirect_commands(r, AWK_HIDDEN_READ)]
     assert len(controls) == 17 * 14 == 238
-    bad = allowed_failures(controls)
-    assert not bad, report("controls blocked", bad, len(controls))
+    bad = blocked_failures(controls)
+    print(f"RV-8 controls: {len(bad)} of {len(controls)} awk reads not blocked")
+    assert not bad, report("awk read controls not blocked", bad, len(controls))
+    reads = [f"{head} {r} {C}" for r in REDIRECT_WORDS for head in ("cat", "grep -n AC")]
+    assert len(reads) == 34
+    bad = allowed_failures(reads)
+    assert not bad, report("READ_ONLY controls blocked", bad, len(reads))
 
 
 # RV-9: a lone `&` and a write, in a command whose quoting sends the guard down its fallback path
@@ -597,26 +669,28 @@ def in_task(cmd: str) -> str:
 
 
 def test_ac5_selftest_carries_every_example():
-    """AC-5 (Q-6): tests/selftest.sh runs every EX-1..EX-8 read in its `= 0` (not blocked) guard loop and every
-    EX-9..EX-16 write, with each listed variant, in its `= 2` (blocked) loop, end to end through guard.sh with
-    `.tasks/alpha/` paths; and each of those commands gets the same verdict from `bash_rules` in-process (the
-    main checkout has no CTX task, so the BR-5 message names `alpha` from the path)."""
+    """AC-5 (Q-6, Q-9): tests/selftest.sh runs every EX-1..EX-3 read in its `= 0` (not blocked) guard loop, and
+    every EX-4..EX-8 sed/awk/git read and every EX-9..EX-16 write, with each listed variant, in its `= 2`
+    (blocked) loop, end to end through guard.sh with `.tasks/alpha/` paths; none sits in the wrong loop; and
+    each of those commands gets the same verdict from `bash_rules` in-process (the main checkout has no CTX
+    task, so the BR-5 message names `alpha` from the path)."""
     raw = SELFTEST.read_bytes()
     assert b"\r" not in raw, "tests/selftest.sh must stay LF"
     loops = selftest_guard_loops()
     assert set(loops) == {"0", "2"}, sorted(loops)
+    blocked = EXAMPLE_BLOCKED_READS + EXAMPLE_WRITES
     missing = [f"{ex} (allow loop): {in_task(c)}" for ex, c in EXAMPLE_READS if in_task(c) not in loops["0"]]
-    missing += [f"{ex} (block loop): {in_task(c)}" for ex, c in EXAMPLE_WRITES if in_task(c) not in loops["2"]]
+    missing += [f"{ex} (block loop): {in_task(c)}" for ex, c in blocked if in_task(c) not in loops["2"]]
     assert not missing, "selftest.sh guard loops lack:\n" + "\n".join(missing)
     misplaced = [c for ex, c in EXAMPLE_READS if in_task(c) in loops["2"]]
-    misplaced += [c for ex, c in EXAMPLE_WRITES if in_task(c) in loops["0"]]
+    misplaced += [c for ex, c in blocked if in_task(c) in loops["0"]]
     assert not misplaced, misplaced
     wrong = []
     for ex, c in EXAMPLE_READS:
         out, msg = GS.judge(hook_guard, in_task(c), None)
         if out not in NOT_BLOCKED:
             wrong.append(f"{ex}: {in_task(c)!r} gave {out}: {msg}")
-    for ex, c in EXAMPLE_WRITES:
+    for ex, c in blocked:
         out, msg = GS.judge(hook_guard, in_task(c), None)
         if out != ["block", "harness-files"] or msg != message("alpha"):
             wrong.append(f"{ex}: {in_task(c)!r} gave {out}: {msg}")
