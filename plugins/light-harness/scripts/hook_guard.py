@@ -17,7 +17,8 @@ File edits (Edit, Write, MultiEdit, NotebookEdit):
   4. Implementation files can only change in Build or Rework.
   5. While tasks are in progress, the main checkout isn't edited (work happens in .tasks/<name>/).
 Reads: .env files are not read.
-Bash: human-only harness commands, history rewrites, branch/worktree surgery, tampering with the
+Bash: writes to the task's .light-harness/ files (reads with grep, sed -n, awk, git diff|log|show
+  and the like pass; quoting is honoured), human-only harness commands, history rewrites, branch/worktree surgery, tampering with the
   audit trail or the telemetry settings, and `rm -rf` are blocked; network and push commands ask;
   read-only and harness commands run without a prompt.
 Every block and ask is also a `guard` telemetry event (rule id, tool, task, session, agent type).
@@ -25,6 +26,7 @@ Every block and ask is also a `guard` telemetry event (rule id, tool, task, sess
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -192,16 +194,205 @@ def base_writes(cmd: str):
                   "`light-harness baseline` writes it; read or run it, never change it.", "harness-files")
 
 
+BASE_SPLIT = r"&&|\|\||[;|\n]"
+# Unquoted separators: && || |& | ; newline, and a lone & (not part of &&, &>, >&, <&, |&, or 2>&1)
+LIVE_SPLIT = re.compile(r"&&|\|\||\|&|(?<!>)\||[;\n]|(?<![&<>|])&(?![&>])")
+SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
+
+
+def unquoted_mask(cmd: str):
+    """`cmd` with every quoted or backslash-escaped character replaced by `_` (same length), so separators
+    and redirects can be found in the unquoted text only. None when the quoting can't be followed."""
+    out, state, i = [], "", 0
+    while i < len(cmd):
+        c = cmd[i]
+        if state == "'":
+            state = "" if c == "'" else state
+            out.append("_")
+        elif c == "\\":
+            if i + 1 == len(cmd):
+                return None
+            out.append("__")
+            i += 1
+        elif state == '"':
+            state = "" if c == '"' else state
+            out.append("_")
+        elif c in "'\"":
+            state = c
+            out.append("_")
+        else:
+            out.append(c)
+        i += 1
+    return None if state else "".join(out)
+
+
+def live_segments(cmd: str) -> list:
+    """The command's segments, split only on unquoted separators (BR-1, BR-7). None when the quoting is
+    beyond this parser (ANSI-C or locale quotes, ${…}, heredocs, comments, unbalanced quotes): the caller
+    then judges the command as the base guard did."""
+    cmd = cmd.replace("\\\n", "")
+    mask = unquoted_mask(cmd)
+    if mask is None or re.search(r"\$['\"{]", cmd) or re.search(r"<<(?!<)|(?:^|[\s;&|(])#", mask):
+        return None
+    segs, start = [], 0
+    for m in LIVE_SPLIT.finditer(mask):
+        segs.append((cmd[start:m.start()], mask[start:m.start()]))
+        start = m.end()
+    segs.append((cmd[start:], mask[start:]))
+    return segs
+
+
+def writes_by_redirect(mask: str) -> bool:
+    """True when the segment's unquoted text redirects output anywhere but /dev/null. Duplicating or
+    closing a file descriptor (2>&1, >&2, 3>&-) isn't a write (BR-2)."""
+    if "<>" in mask:
+        return True
+    for m in re.finditer(r"(?:\d*|&)(>>|>\||>&|>)", mask):
+        rest = mask[m.end():]
+        if m.group(1) == ">|":
+            return True
+        if m.group(1) == ">&":
+            if not re.match(r"\s*(\d+|-)(?=$|[\s;&|)])", rest):
+                return True
+        elif not re.match(r"\s*/dev/null(?=$|[\s;&|)])", rest):
+            return True
+    return False
+
+
+SED_OPTS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-z",
+            "--null-data", "-u", "--unbuffered", "--posix", "--debug", "--sandbox"}
+_RE = r"/(?:[^/\\\n]|\\.)*/"
+_ADDR = rf"(?:\d+~\d+|\d+|\$|{_RE}[IM]*)"
+_SED_CMD = (rf"\s*(?:{_ADDR}(?:\s*,\s*{_ADDR})?)?\s*!?\s*"
+            rf"(?:[pP=lgGhHxdDnN{{}}]|[qQ]\s*\d*|s{_RE}(?:[^/\\\n]|\\.)*/[gpiImM0-9]*)\s*")
+SED_SCRIPT = re.compile(rf"(?:{_SED_CMD}[;\n]?)+")
+
+
+def sed_reads(args: list) -> bool:
+    """sed that only prints: every option on the read allow-list (no -i in any form, no -f) and every script
+    made of addresses and the p P = l q Q d D n N g G h H x { } s///[gpiImM0-9] commands (no w, W, e, r, R)."""
+    scripts, operands, i = [], [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            operands += args[i + 1:]
+            break
+        if a == "-e" or a == "--expression":
+            if i + 1 == len(args):
+                return False
+            scripts.append(args[i + 1])
+            i += 1
+        elif a.startswith("--expression="):
+            scripts.append(a.split("=", 1)[1])
+        elif a.startswith("-e") and not a.startswith("--"):
+            scripts.append(a[2:])
+        elif a.startswith("--"):
+            if a not in SED_OPTS:
+                return False
+        elif a.startswith("-") and len(a) > 1:
+            if not set(a[1:]) <= set("nErszu"):
+                return False
+        else:
+            operands.append(a)
+        i += 1
+    if not scripts:
+        if not operands:
+            return False
+        scripts.append(operands[0])
+    return all(SED_SCRIPT.fullmatch(s) for s in scripts)
+
+
+AWK_WRITES = re.compile(r"\b(?:system|getline)\b|@\s*(?:include|load)\b|\|&|\bprintf?\b[^;}\n]*[>|]")
+
+
+def awk_reads(args: list) -> bool:
+    """awk/gawk that only prints: options on the allow-list (-F, -v, --field-separator, --assign, --posix,
+    -S/--sandbox; no -i, -f, -l, -E) and a program with no system, getline, @include/@load, |&, or
+    print/printf redirected to a file or a command."""
+    program, i = None, 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            program = args[i + 1] if i + 1 < len(args) else None
+            break
+        if not a.startswith("-") or a == "-":
+            program = a
+            break
+        if a in ("-F", "-v", "--field-separator", "--assign"):
+            i += 1
+        elif not (a.startswith(("-F", "-v", "--field-separator=", "--assign="))
+                  or a in ("--posix", "-S", "--sandbox")):
+            return False
+        i += 1
+    return program is not None and not AWK_WRITES.search(program)
+
+
+def git_reads(args: list) -> bool:
+    """git [--no-pager] diff|log|show with no option that writes a file or runs a program: --output and
+    --ext-diff, including git's abbreviations of them."""
+    if args[:1] == ["--no-pager"]:
+        args = args[1:]
+    if not args or args[0] not in ("diff", "log", "show"):
+        return False
+    for a in args[1:]:
+        opt = a.split("=", 1)[0]
+        if len(opt) > 2 and ("--output".startswith(opt) or "--ext-diff".startswith(opt)):
+            return False
+    return True
+
+
+def live_read(seg: str, mask: str) -> bool:
+    """A segment naming .light-harness/ is a read (BR-2, BR-3): no write redirect, and a read-only command
+    word (judged raw, as before), or sed, awk/gawk or git in a read-only form."""
+    words = seg.split()
+    if not words or writes_by_redirect(mask):
+        return False
+    if words[0] in READ_ONLY:
+        return True
+    check = {"sed": sed_reads, "awk": awk_reads, "gawk": awk_reads, "git": git_reads}.get(words[0])
+    if check is None:
+        return False
+    try:
+        args = shlex.split(seg)[1:]
+    except ValueError:
+        return False
+    return check(args)
+
+
+def names_live(text: str) -> bool:
+    return f"{H.LIVE}/" in text or f"{H.LIVE}\\" in text
+
+
+def live_rules(cmd: str):
+    """Block Bash commands that change the task's contract or config; reads pass (issue #23)."""
+    if not names_live(cmd):
+        return
+    task = CTX.get("task")
+    if not task:
+        m = re.search(r"\.tasks[/\\]([^/\\\s'\"]+)[/\\]" + re.escape(H.LIVE), cmd)
+        task = m.group(1) if m else "<name>"
+    why = (f"{H.LIVE}/ holds the task's contract and config. Read the contract with the Read tool or "
+           f"`light-harness show --task {task}`. Edit contract.md with the Edit tool, and change status "
+           "with `light-harness set-status`.")
+    if SUBSTITUTION.search(cmd):
+        block(why, "harness-files")
+    segs = live_segments(cmd)
+    if segs is None:   # quoting this parser can't follow: judge it as the base guard did
+        for seg in re.split(BASE_SPLIT, cmd):
+            words = seg.split()
+            if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
+                block(why, "harness-files")
+        return
+    for seg, mask in segs:
+        if names_live(seg) and not live_read(seg, mask):
+            block(why, "harness-files")
+
+
 def bash_rules(cmd: str):
     for pat, why, needs, rule in BLOCK_BASH:
         if re.search(pat, cmd) and (needs is None or re.search(needs, cmd)):
             block(why, rule)
-    for seg in re.split(r"&&|\|\||[;|\n]", cmd):
-        if f"{H.LIVE}/" in seg or f"{H.LIVE}\\" in seg:
-            words = seg.split()
-            if ">" in seg or not words or words[0] not in READ_ONLY:
-                block(f"{H.LIVE}/ holds the task's contract and config. Edit contract.md with the Edit tool, "
-                      "and change status with `light-harness set-status`.", "harness-files")
+    live_rules(cmd)
     base_writes(cmd)
     if re.search(ASK_BASH, cmd):
         decide("ask", "network access and pushes need the human's OK during a task.", "network")
