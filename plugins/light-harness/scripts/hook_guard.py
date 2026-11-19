@@ -26,7 +26,6 @@ Every block and ask is also a `guard` telemetry event (rule id, tool, task, sess
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -237,55 +236,6 @@ def unquoted_mask(cmd: str):
 
 
 PLAIN_CHARS = re.compile(r"[\t\n\x20-\x7e]*")
-# Unquoted characters that bring in shell syntax the sed/awk/git read check doesn't model: grouping and
-# function definitions ( ) { }, history/negation/extglob !, globs * ? [, and backticks.
-NOT_PLAIN = re.compile(r"[(){}!*?\[`]")
-
-
-def plain_command(cmd: str) -> bool:
-    """A command simple enough for sed, awk and git reads (new in this task; the base blocked them all): no
-    line continuation outside single quotes, no `$` outside single quotes, and none of the NOT_PLAIN
-    characters unquoted anywhere. Nothing in it can define a function, expand a word into an option or
-    group commands (RV-1, RV-7, RV-10). Nor a backslash outside single quotes, where bash and shlex can
-    disagree on what it escapes (`"\\$p"` is `$p` to bash, `\\$p` to shlex: RV-15), so the words judged
-    are the words the command gets."""
-    parsed = unquoted_mask(cmd)
-    return (parsed is not None and parsed[0] == cmd and not dollar_outside_single_quotes(cmd)
-            and not NOT_PLAIN.search(parsed[1]) and not backslash_outside_single_quotes(cmd))
-
-
-def backslash_outside_single_quotes(cmd: str) -> bool:
-    """True when a backslash appears outside single quotes (unquoted or inside double quotes)."""
-    state = ""
-    for c in cmd:
-        if state == "'":
-            state = "" if c == "'" else state
-        elif c == "\\":
-            return True
-        elif c == "'" and not state:
-            state = "'"
-        elif c == '"':
-            state = "" if state == '"' else '"'
-    return False
-
-
-def dollar_outside_single_quotes(cmd: str) -> bool:
-    """True when `$` appears anywhere bash could expand it: outside single quotes, double quotes included."""
-    state, i = "", 0
-    while i < len(cmd):
-        c = cmd[i]
-        if state == "'":
-            state = "" if c == "'" else state
-        elif c == "\\":
-            i += 1
-        elif c == "'" and not state:
-            state = "'"
-        elif c == '"':
-            state = "" if state == '"' else '"'
-        elif c == "$":
-            return True
-        i += 1
-    return False
 
 
 def live_segments(cmd: str) -> list:
@@ -329,239 +279,11 @@ def writes_by_redirect(mask: str) -> bool:
     return False
 
 
-SED_OPTS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-z",
-            "--null-data", "-u", "--unbuffered", "--posix", "--debug", "--sandbox"}
-
-
-def _sed_delimited(s: str, i: int) -> int:
-    """Index just past the `/`-delimited text starting at s[i] == "/", or -1. Backslash escapes a char."""
-    if i >= len(s) or s[i] != "/":
-        return -1
-    i += 1
-    while i < len(s) and s[i] != "/":
-        if s[i] == "\n":
-            return -1
-        i += 2 if s[i] == "\\" else 1
-    return i + 1 if i < len(s) else -1
-
-
-def _sed_address(s: str, i: int) -> int:
-    """Index past one address (N, N~M, $, /re/[IM]) at s[i], or i when there is none, or -1 if malformed."""
-    if i < len(s) and s[i] == "$":
-        return i + 1
-    if i < len(s) and s[i] == "/":
-        j = _sed_delimited(s, i)
-        while 0 <= j < len(s) and s[j] in "IM":
-            j += 1
-        return j
-    m = re.match(r"\d+(?:~\d+)?", s[i:])
-    return i + m.end() if m else i
-
-
-def sed_script_reads(s: str) -> bool:
-    """A sed script made only of addresses and the p P = l q Q d D n N g G h H x { } and s/re/repl/[gpiImM0-9]
-    commands (no w, W, e, r, R, y, and no other delimiter). A single left-to-right scan, so its cost is linear
-    in the script's length whatever the input."""
-    i, n = 0, len(s)
-    while i < n:
-        if s[i] in " \t\n;":
-            i += 1
-            continue
-        i = _sed_address(s, i)
-        if i < 0:
-            return False
-        while i < n and s[i] in " \t":
-            i += 1
-        if i < n and s[i] == ",":
-            j = _sed_address(s, i + 1)
-            if j <= i + 1:
-                return False
-            i = j
-        while i < n and s[i] in " \t!":
-            i += 1
-        if i >= n:
-            return False
-        c = s[i]
-        if c in "pP=lgGhHxdDnN{}":
-            i += 1
-        elif c in "qQ":
-            i += 1
-            while i < n and (s[i] in " \t" or s[i].isdigit()):
-                i += 1
-        elif c == "s":
-            i = _sed_delimited(s, i + 1)
-            if i < 0:
-                return False
-            i = _sed_delimited(s, i - 1)   # the replacement shares the middle `/`
-            if i < 0:
-                return False
-            while i < n and s[i] in "gpiImM0123456789":
-                i += 1
-        else:
-            return False
-    return True
-
-
-def sed_reads(args: list) -> bool:
-    """sed that only prints: every option on the read allow-list (no -i in any form, no -f) and every script
-    made of addresses and the p P = l q Q d D n N g G h H x { } s///[gpiImM0-9] commands (no w, W, e, r, R)."""
-    scripts, operands, i = [], [], 0
-    while i < len(args):
-        a = args[i]
-        if a == "--":
-            operands += args[i + 1:]
-            break
-        if a == "-e" or a == "--expression":
-            if i + 1 == len(args):
-                return False
-            scripts.append(args[i + 1])
-            i += 1
-        elif a.startswith("--expression="):
-            scripts.append(a.split("=", 1)[1])
-        elif a.startswith("-e") and not a.startswith("--"):
-            scripts.append(a[2:])
-        elif a.startswith("--"):
-            if a not in SED_OPTS:
-                return False
-        elif a.startswith("-") and len(a) > 1:
-            if not set(a[1:]) <= set("nErszu"):
-                return False
-        else:
-            operands.append(a)
-        i += 1
-    if not scripts:
-        if not operands:
-            return False
-        scripts.append(operands[0])
-    return all(sed_script_reads(s) for s in scripts)
-
-
-def awk_program_writes(prog: str) -> bool:
-    """True unless the awk program provably can't write or run anything. awk can only write a file through
-    `>`/`>>`/`|` after print or printf, and only run a command through a pipe, system() or (gawk) an
-    indirect `@f()` call or `@include`/`@load`. So any `|` other than `||`, any `@`, system, getline, or any
-    `>` after the first print/printf counts as a write. Comparisons such as `NR>5` before any print pass.
-    The names are matched as plain substrings, not words: awk ends a number at the first letter, so
-    `x=1system("…")` calls system() although `1system` has no word boundary (RV-16)."""
-    if "@" in prog or "|" in prog.replace("||", "") or "system" in prog or "getline" in prog:
-        return True
-    i = prog.find("print")
-    return i >= 0 and ">" in prog[i:]
-
-
-def awk_reads(args: list) -> bool:
-    """awk/gawk that only prints: options on the allow-list (-F, -v, --field-separator, --assign, --posix,
-    -S/--sandbox; no -i, -f, -l, -E) and a program with no system, getline, @include/@load, |&, or
-    print/printf redirected to a file or a command."""
-    program, i = None, 0
-    while i < len(args):
-        a = args[i]
-        if a == "--":
-            program = args[i + 1] if i + 1 < len(args) else None
-            break
-        if not a.startswith("-") or a == "-":
-            program = a
-            break
-        if a in ("-F", "-v", "--field-separator", "--assign"):
-            i += 1
-        elif not (a.startswith(("-F", "-v", "--field-separator=", "--assign="))
-                  or a in ("--posix", "-S", "--sandbox")):
-            return False
-        i += 1
-    return program is not None and not awk_program_writes(program)
-
-
-def git_reads(args: list) -> bool:
-    """git [--no-pager] diff|log|show with no option that writes a file or runs a program: nothing starting
-    `--ou` or `--ext` (BR-3), nor git's shorter abbreviations of --output and --ext-diff (`--o`, `--e`, `--ex`)."""
-    if args[:1] == ["--no-pager"]:
-        args = args[1:]
-    if not args or args[0] not in ("diff", "log", "show"):
-        return False
-    for a in args[1:]:
-        opt = a.split("=", 1)[0]
-        if opt.startswith(("--ou", "--ext")) or (len(opt) > 2 and ("--output".startswith(opt)
-                                                                  or "--ext-diff".startswith(opt))):
-            return False
-    return True
-
-
-def expands(seg: str) -> bool:
-    """True when bash would expand part of the segment before the command sees it: `$` outside single
-    quotes (parameters, also inside double quotes), or an unquoted `{`, `*`, `?` or `[` (braces, globs).
-    The words shlex returns are then not the words the command gets, so an option can hide in them.
-    plain_command() checks the same over the whole command; this per-segment check is kept on purpose as
-    a second line, so live_read() stays safe on its own."""
-    parsed = unquoted_mask(seg)
-    if parsed is None:
-        return True
-    text, mask = parsed
-    # `(` also catches extglob @( +( !( (RV-10)
-    return dollar_outside_single_quotes(text) or bool(re.search(r"[{*?\[(]", mask))
-
-
-# Digits are a file descriptor only when they start a word: `-F2>x` is the word `-F2` plus `>x` (RV-8).
-# Nor before `&>`: `2&>x` is the word `2` plus `&>x`, since bash has no `N&>` form (RV-8).
-REDIRECT_WORD = re.compile(
-    r"(?:(?<![^\s;&|<>])(\d+)(?=[<>]))?(&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*([^\s;&|<>]*)")
-
-
-def glued_redirect(mask: str) -> bool:
-    """True when a redirection touches the word before it (`-F0>&2`, `"-F"2</dev/null`, `x>/dev/null`).
-    Whether bash then reads the digits as a descriptor or as part of the word is exactly where the words
-    it passes and the words judged here can differ (RV-8), so a sed/awk/git segment with one is not a read.
-    So is one with a descriptor of more than one digit: a number too large for a descriptor is an ordinary
-    word to bash (`2147483648>x`), and no read needs a descriptor above 9. And so is a duplication (`<&`,
-    `>&`) whose target isn't exactly one digit, `-` or /dev/null: bash's lexer makes a `-` right after `<&`
-    or `>&` a token of its own, even after a space, so in `<&-1` or `<& -1` the `1` is a separate word that
-    the command receives."""
-    return any((m.start() > 0 and not mask[m.start() - 1].isspace()) or len(m.group(1) or "") > 1
-               or (m.group(2) in ("<&", ">&") and not re.fullmatch(r"\d|-|/dev/null", m.group(3)))
-               for m in REDIRECT_WORD.finditer(mask))
-
-
-def command_words(seg: str, mask: str) -> list:
-    """The words the command itself receives: bash removes redirections (`>/dev/null`, `2>&1`, `<<<x`, and
-    the word after a spaced operator) wherever they stand before it runs the command, so they are removed
-    here too before splitting (RV-8). Raises ValueError for quoting shlex can't follow."""
-    chars = list(seg)
-    for m in REDIRECT_WORD.finditer(mask):
-        chars[m.start():m.end()] = " " * (m.end() - m.start())
-    return shlex.split("".join(chars))
-
-
-# Commands that can run beside a sed/awk/git read without changing what that read runs: they can't define
-# a function or alias, change PATH or the environment, or source a file (RV-7). `printf -v` assigns, so no printf.
-SIDE_OK = READ_ONLY | {"cd", "echo", "true", "false", "pwd"}
-
-
-def harmless(seg: str, mask: str) -> bool:
-    """A segment that can't redefine the command another segment runs: empty, a recognised read, or a
-    SIDE_OK word with no write redirect."""
-    words = seg.split()
-    if not words:
-        return True
-    if words[0] in SIDE_OK:
-        return not writes_by_redirect(mask)
-    return live_read(seg, mask)
-
-
 def live_read(seg: str, mask: str) -> bool:
-    """A segment naming .light-harness/ is a read (BR-2, BR-3): no write redirect, and a read-only command
-    word (judged raw, as before), or sed, awk/gawk or git in a read-only form."""
+    """A segment naming .light-harness/ is a read (BR-2, BR-3): a read-only command word (judged raw, as
+    before) and no write redirect. sed, awk, gawk and git stay blocked, as at base (Q-9)."""
     words = seg.split()
-    if not words or writes_by_redirect(mask):
-        return False
-    if words[0] in READ_ONLY:
-        return True
-    check = {"sed": sed_reads, "awk": awk_reads, "gawk": awk_reads, "git": git_reads}.get(words[0])
-    if check is None or expands(seg) or glued_redirect(mask):
-        return False
-    try:
-        args = command_words(seg, mask)[1:]
-    except ValueError:
-        return False
-    return check(args)
+    return bool(words) and not writes_by_redirect(mask) and words[0] in READ_ONLY
 
 
 def names_live(text: str) -> bool:
@@ -594,11 +316,6 @@ def live_rules(cmd: str):
     for seg, mask in segs:
         if names_live(seg) and not live_read(seg, mask):
             block(why, "harness-files")
-    # sed, awk and git reads are new (the base blocked them all). Accept one only when nothing else in the
-    # command could make that word run something else: a function, alias, eval, source, PATH change, … (RV-7)
-    if any(names_live(seg) and seg.split()[0] not in READ_ONLY for seg, _ in segs) and not (
-            plain_command(cmd) and all(harmless(seg, mask) for seg, mask in segs)):
-        block(why, "harness-files")
 
 
 def bash_rules(cmd: str):
