@@ -17,8 +17,9 @@ File edits (Edit, Write, MultiEdit, NotebookEdit):
   4. Implementation files can only change in Build or Rework.
   5. While tasks are in progress, the main checkout isn't edited (work happens in .tasks/<name>/).
 Reads: .env files are not read.
-Bash: writes to the task's .light-harness/ files (reads with grep, sed -n, awk or git diff|log|show
-  pass; quoting is honoured), human-only harness commands, history rewrites, branch/worktree surgery,
+Bash: writes to the task's .light-harness/ files (reads with cat, grep, head and the other read-only
+  commands pass, quoting and /dev/null redirects honoured; sed, awk and git on them stay blocked: use
+  the Read tool or `light-harness show`), human-only harness commands, history rewrites, branch/worktree surgery,
   tampering with the audit trail or the telemetry settings, and `rm -rf` are blocked; network and push
   commands ask; read-only and harness commands run without a prompt.
 Every block and ask is also a `guard` telemetry event (rule id, tool, task, session, agent type).
