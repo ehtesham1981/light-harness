@@ -483,7 +483,8 @@ def expands(seg: str) -> bool:
 
 # Digits are a file descriptor only when they start a word: `-F2>x` is the word `-F2` plus `>x` (RV-8).
 # Nor before `&>`: `2&>x` is the word `2` plus `&>x`, since bash has no `N&>` form (RV-8).
-REDIRECT_WORD = re.compile(r"(?:(?<![^\s;&|<>])(\d+)(?=[<>]))?(?:&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*[^\s;&|<>]*")
+REDIRECT_WORD = re.compile(
+    r"(?:(?<![^\s;&|<>])(\d+)(?=[<>]))?(&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*([^\s;&|<>]*)")
 
 
 def glued_redirect(mask: str) -> bool:
@@ -491,8 +492,12 @@ def glued_redirect(mask: str) -> bool:
     Whether bash then reads the digits as a descriptor or as part of the word is exactly where the words
     it passes and the words judged here can differ (RV-8), so a sed/awk/git segment with one is not a read.
     So is one with a descriptor of more than one digit: a number too large for a descriptor is an ordinary
-    word to bash (`2147483648>x`), and no read needs a descriptor above 9."""
+    word to bash (`2147483648>x`), and no read needs a descriptor above 9. And so is a duplication (`<&`,
+    `>&`) whose target isn't exactly one digit, `-` or /dev/null: bash's lexer makes a `-` right after `<&`
+    or `>&` a token of its own, even after a space, so in `<&-1` or `<& -1` the `1` is a separate word that
+    the command receives."""
     return any((m.start() > 0 and not mask[m.start() - 1].isspace()) or len(m.group(1) or "") > 1
+               or (m.group(2) in ("<&", ">&") and not re.fullmatch(r"\d|-|/dev/null", m.group(3)))
                for m in REDIRECT_WORD.finditer(mask))
 
 
