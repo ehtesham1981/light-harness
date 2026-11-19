@@ -17,10 +17,10 @@ File edits (Edit, Write, MultiEdit, NotebookEdit):
   4. Implementation files can only change in Build or Rework.
   5. While tasks are in progress, the main checkout isn't edited (work happens in .tasks/<name>/).
 Reads: .env files are not read.
-Bash: writes to the task's .light-harness/ files (reads with grep, sed -n, awk, git diff|log|show
-  and the like pass; quoting is honoured), human-only harness commands, history rewrites, branch/worktree surgery, tampering with the
-  audit trail or the telemetry settings, and `rm -rf` are blocked; network and push commands ask;
-  read-only and harness commands run without a prompt.
+Bash: writes to the task's .light-harness/ files (reads with grep, sed -n, awk or git diff|log|show
+  pass; quoting is honoured), human-only harness commands, history rewrites, branch/worktree surgery,
+  tampering with the audit trail or the telemetry settings, and `rm -rf` are blocked; network and push
+  commands ask; read-only and harness commands run without a prompt.
 Every block and ask is also a `guard` telemetry event (rule id, tool, task, session, agent type).
 """
 import json
@@ -201,38 +201,51 @@ SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
 
 
 def unquoted_mask(cmd: str):
-    """`cmd` with every quoted or backslash-escaped character replaced by `_` (same length), so separators
-    and redirects can be found in the unquoted text only. None when the quoting can't be followed."""
-    out, state, i = [], "", 0
+    """(text, mask) for `cmd` as bash reads its quoting. `text` is `cmd` with line continuations (an
+    unescaped backslash-newline outside single quotes) removed. `mask` is `text` with every quoted or
+    backslash-escaped character replaced by `_` (same length), so separators and redirects are looked for
+    in unquoted text only. None when the quoting is beyond this parser: unbalanced quotes, a trailing
+    backslash."""
+    text, out, state, i = [], [], "", 0
     while i < len(cmd):
         c = cmd[i]
+        nxt = cmd[i + 1] if i + 1 < len(cmd) else ""
         if state == "'":
             state = "" if c == "'" else state
+            text.append(c)
             out.append("_")
         elif c == "\\":
-            if i + 1 == len(cmd):
+            if not nxt:
                 return None
-            out.append("__")
+            if nxt != "\n":
+                text.append(c + nxt)
+                out.append("__")
             i += 1
         elif state == '"':
             state = "" if c == '"' else state
+            text.append(c)
             out.append("_")
         elif c in "'\"":
             state = c
+            text.append(c)
             out.append("_")
         else:
+            text.append(c)
             out.append(c)
         i += 1
-    return None if state else "".join(out)
+    return None if state else ("".join(text), "".join(out))
 
 
 def live_segments(cmd: str) -> list:
-    """The command's segments, split only on unquoted separators (BR-1, BR-7). None when the quoting is
-    beyond this parser (ANSI-C or locale quotes, ${…}, heredocs, comments, unbalanced quotes): the caller
-    then judges the command as the base guard did."""
-    cmd = cmd.replace("\\\n", "")
-    mask = unquoted_mask(cmd)
-    if mask is None or re.search(r"\$['\"{]", cmd) or re.search(r"<<(?!<)|(?:^|[\s;&|(])#", mask):
+    """The command's (segment, mask) pairs, split only on unquoted separators (BR-1, BR-7). None when the
+    quoting is beyond this parser (see unquoted_mask), or the command has a heredoc or a comment: the caller
+    then judges the command as the base guard did. ANSI-C and locale quotes (`$'…'`, `$"…"`) and `${…}`,
+    which can nest quotes, fall back wherever they appear, even inside quotes."""
+    parsed = None if re.search(r"\$['\"{]", cmd) else unquoted_mask(cmd)
+    if parsed is None:
+        return None
+    cmd, mask = parsed
+    if re.search(r"(?<!<)<<(?!<)|(?:^|[\s;&|(])#", mask):
         return None
     segs, start = [], 0
     for m in LIVE_SPLIT.finditer(mask):
@@ -251,8 +264,8 @@ def writes_by_redirect(mask: str) -> bool:
         rest = mask[m.end():]
         if m.group(1) == ">|":
             return True
-        if m.group(1) == ">&":
-            if not re.match(r"\s*(\d+|-)(?=$|[\s;&|)])", rest):
+        if m.group(1) == ">&":   # a descriptor (2>&1, >&-) or, as bash's `>&word`, /dev/null
+            if not re.match(r"\s*(\d+|-|/dev/null)(?=$|[\s;&|)])", rest):
                 return True
         elif not re.match(r"\s*/dev/null(?=$|[\s;&|)])", rest):
             return True
