@@ -236,16 +236,55 @@ def unquoted_mask(cmd: str):
     return None if state else ("".join(text), "".join(out))
 
 
+PLAIN_CHARS = re.compile(r"[\t\n\x20-\x7e]*")
+# Unquoted characters that bring in shell syntax the sed/awk/git read check doesn't model: grouping and
+# function definitions ( ) { }, history/negation/extglob !, globs * ? [, and backticks.
+NOT_PLAIN = re.compile(r"[(){}!*?\[`]")
+
+
+def plain_command(cmd: str) -> bool:
+    """A command simple enough for sed, awk and git reads (new in this task; the base blocked them all): no
+    line continuation outside single quotes, no `$` outside single quotes, and none of the NOT_PLAIN
+    characters unquoted anywhere. Nothing in it can define a function, expand a word into an option or
+    group commands (RV-1, RV-7, RV-10)."""
+    parsed = unquoted_mask(cmd)
+    return (parsed is not None and parsed[0] == cmd and not dollar_outside_single_quotes(cmd)
+            and not NOT_PLAIN.search(parsed[1]))
+
+
+def dollar_outside_single_quotes(cmd: str) -> bool:
+    """True when `$` appears anywhere bash could expand it: outside single quotes, double quotes included."""
+    state, i = "", 0
+    while i < len(cmd):
+        c = cmd[i]
+        if state == "'":
+            state = "" if c == "'" else state
+        elif c == "\\":
+            i += 1
+        elif c == "'" and not state:
+            state = "'"
+        elif c == '"':
+            state = "" if state == '"' else '"'
+        elif c == "$":
+            return True
+        i += 1
+    return False
+
+
 def live_segments(cmd: str) -> list:
-    """The command's (segment, mask) pairs, split only on unquoted separators (BR-1, BR-7). None when the
-    quoting is beyond this parser (see unquoted_mask), or the command has a heredoc or a comment: the caller
-    then judges the command as the base guard did. ANSI-C and locale quotes (`$'…'`, `$"…"`) and `${…}`,
-    which can nest quotes, fall back wherever they appear, even inside quotes."""
-    parsed = None if re.search(r"\$['\"{]", cmd) else unquoted_mask(cmd)
+    """The command's (segment, mask) pairs, split only on unquoted separators (BR-1, BR-7). None, so the
+    command is judged exactly as the base guard judged it (plus BR-7), when it has quoting or syntax this
+    parser doesn't follow: characters other than printable ASCII, tab and newline; `$'…'`, `$"…"` or `${…}`
+    anywhere, before or after joining line continuations (RV-13); unbalanced quotes; a heredoc; or an
+    unquoted `#`, which starts a comment after `)` too (RV-14)."""
+    joined = cmd.replace("\\\n", "")
+    if not PLAIN_CHARS.fullmatch(cmd) or re.search(r"\$['\"{]", cmd) or re.search(r"\$['\"{]", joined):
+        return None
+    parsed = unquoted_mask(cmd)
     if parsed is None:
         return None
     cmd, mask = parsed
-    if re.search(r"(?<!<)<<(?!<)|(?:^|[\s;&|(])#", mask):
+    if re.search(r"(?<!<)<<(?!<)|#", mask):
         return None
     segs, start = [], 0
     for m in LIVE_SPLIT.finditer(mask):
@@ -452,7 +491,15 @@ def expands(seg: str) -> bool:
     return bool(re.search(r"[{*?\[(]", mask))   # `(` also catches extglob @( +( !( (RV-10)
 
 
-REDIRECT_WORD = re.compile(r"\d*(?:&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*[^\s;&|<>]*")
+# Digits are a file descriptor only when they start a word: `-F2>x` is the word `-F2` plus `>x` (RV-8).
+REDIRECT_WORD = re.compile(r"(?:(?<![^\s;&|<>])\d+)?(?:&>>|&>|>>|>\||>&|<<<|<&|<>|>|<)\s*[^\s;&|<>]*")
+
+
+def glued_redirect(mask: str) -> bool:
+    """True when a redirection touches the word before it (`-F0>&2`, `"-F"2</dev/null`, `x>/dev/null`).
+    Whether bash then reads the digits as a descriptor or as part of the word is exactly where the words
+    it passes and the words judged here can differ (RV-8), so a sed/awk/git segment with one is not a read."""
+    return any(m.start() > 0 and not mask[m.start() - 1].isspace() for m in REDIRECT_WORD.finditer(mask))
 
 
 def command_words(seg: str, mask: str) -> list:
@@ -490,7 +537,7 @@ def live_read(seg: str, mask: str) -> bool:
     if words[0] in READ_ONLY:
         return True
     check = {"sed": sed_reads, "awk": awk_reads, "gawk": awk_reads, "git": git_reads}.get(words[0])
-    if check is None or expands(seg):
+    if check is None or expands(seg) or glued_redirect(mask):
         return False
     try:
         args = command_words(seg, mask)[1:]
@@ -514,22 +561,25 @@ def live_rules(cmd: str):
     why = (f"{H.LIVE}/ holds the task's contract and config. Read the contract with the Read tool or "
            f"`light-harness show --task {task}`. Edit contract.md with the Edit tool, and change status "
            "with `light-harness set-status`.")
-    if SUBSTITUTION.search(cmd):
+    if SUBSTITUTION.search(cmd) or SUBSTITUTION.search(cmd.replace("\\\n", "")):   # also across a continuation
         block(why, "harness-files")
     segs = live_segments(cmd)
-    if segs is None:   # quoting this parser can't follow: judge it as the base guard did, plus BR-7's lone `&`
-        for seg in re.split(BASE_SPLIT + r"|(?<![&<>|])&(?![&>])", cmd):
-            words = seg.split()
-            if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
-                block(why, "harness-files")
+    if segs is None:
+        # Not a plain command: the base guard's judgement, and BR-7's lone `&` as a further split. Both
+        # splits must pass, so the lone-`&` split can only add blocks (RV-11).
+        for split in (BASE_SPLIT, BASE_SPLIT + r"|(?<![&<>|])&(?![&>])"):
+            for seg in re.split(split, cmd):
+                words = seg.split()
+                if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
+                    block(why, "harness-files")
         return
     for seg, mask in segs:
         if names_live(seg) and not live_read(seg, mask):
             block(why, "harness-files")
     # sed, awk and git reads are new (the base blocked them all). Accept one only when nothing else in the
     # command could make that word run something else: a function, alias, eval, source, PATH change, … (RV-7)
-    if any(names_live(seg) and seg.split()[0] not in READ_ONLY for seg, _ in segs) and not all(
-            harmless(seg, mask) for seg, mask in segs):
+    if any(names_live(seg) and seg.split()[0] not in READ_ONLY for seg, _ in segs) and not (
+            plain_command(cmd) and all(harmless(seg, mask) for seg, mask in segs)):
         block(why, "harness-files")
 
 
