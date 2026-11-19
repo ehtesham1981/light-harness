@@ -246,10 +246,12 @@ def plain_command(cmd: str) -> bool:
     """A command simple enough for sed, awk and git reads (new in this task; the base blocked them all): no
     line continuation outside single quotes, no `$` outside single quotes, and none of the NOT_PLAIN
     characters unquoted anywhere. Nothing in it can define a function, expand a word into an option or
-    group commands (RV-1, RV-7, RV-10)."""
+    group commands (RV-1, RV-7, RV-10). Nor a backslash outside single quotes, where bash and shlex can
+    disagree on what it escapes (`"\\$p"` is `$p` to bash, `\\$p` to shlex: RV-15), so the words judged
+    are the words the command gets."""
     parsed = unquoted_mask(cmd)
     return (parsed is not None and parsed[0] == cmd and not dollar_outside_single_quotes(cmd)
-            and not NOT_PLAIN.search(parsed[1]))
+            and not NOT_PLAIN.search(parsed[1]) and "\\" not in re.sub(r"'[^']*'", "", cmd))
 
 
 def dollar_outside_single_quotes(cmd: str) -> bool:
@@ -423,11 +425,13 @@ def awk_program_writes(prog: str) -> bool:
     """True unless the awk program provably can't write or run anything. awk can only write a file through
     `>`/`>>`/`|` after print or printf, and only run a command through a pipe, system() or (gawk) an
     indirect `@f()` call or `@include`/`@load`. So any `|` other than `||`, any `@`, system, getline, or any
-    `>` after the first print/printf counts as a write. Comparisons such as `NR>5` before any print pass."""
-    if "@" in prog or "|" in prog.replace("||", "") or re.search(r"\b(?:system|getline)\b", prog):
+    `>` after the first print/printf counts as a write. Comparisons such as `NR>5` before any print pass.
+    The names are matched as plain substrings, not words: awk ends a number at the first letter, so
+    `x=1system("…")` calls system() although `1system` has no word boundary (RV-16)."""
+    if "@" in prog or "|" in prog.replace("||", "") or "system" in prog or "getline" in prog:
         return True
-    m = re.search(r"\bprintf?\b", prog)
-    return bool(m) and ">" in prog[m.end():]
+    i = prog.find("print")
+    return i >= 0 and ">" in prog[i:]
 
 
 def awk_reads(args: list) -> bool:
