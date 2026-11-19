@@ -469,26 +469,15 @@ def git_reads(args: list) -> bool:
 def expands(seg: str) -> bool:
     """True when bash would expand part of the segment before the command sees it: `$` outside single
     quotes (parameters, also inside double quotes), or an unquoted `{`, `*`, `?` or `[` (braces, globs).
-    The words shlex returns are then not the words the command gets, so an option can hide in them."""
+    The words shlex returns are then not the words the command gets, so an option can hide in them.
+    plain_command() checks the same over the whole command; this per-segment check is kept on purpose as
+    a second line, so live_read() stays safe on its own."""
     parsed = unquoted_mask(seg)
     if parsed is None:
         return True
     text, mask = parsed
-    state, i = "", 0
-    while i < len(text):
-        c = text[i]
-        if state == "'":
-            state = "" if c == "'" else state
-        elif c == "\\":
-            i += 1                      # an escaped character, `\$` included, is literal
-        elif c == "'" and not state:
-            state = "'"
-        elif c == '"':
-            state = "" if state == '"' else '"'
-        elif c == "$":
-            return True
-        i += 1
-    return bool(re.search(r"[{*?\[(]", mask))   # `(` also catches extglob @( +( !( (RV-10)
+    # `(` also catches extglob @( +( !( (RV-10)
+    return dollar_outside_single_quotes(text) or bool(re.search(r"[{*?\[(]", mask))
 
 
 # Digits are a file descriptor only when they start a word: `-F2>x` is the word `-F2` plus `>x` (RV-8).
