@@ -452,10 +452,20 @@ def expands(seg: str) -> bool:
     return bool(re.search(r"[{*?\[]", mask))
 
 
-# A command can be made to mean something else before it runs: a function or alias of the same name, a
-# hashed path, a case pattern (where `|` isn't a pipe), or a changed PATH.
-SHADOWING = re.compile(r"\w\s*\(\s*\)|(?:^|[;&|(\n])\s*(?:(?:function|alias|hash|enable|case|builtin)(?=\s|$)"
-                       r"|(?:export\s+)?PATH\+?=)")
+# Commands that can run beside a sed/awk/git read without changing what that read runs: they can't define
+# a function or alias, change PATH or the environment, or source a file (RV-7). `printf -v` assigns, so no printf.
+SIDE_OK = READ_ONLY | {"cd", "echo", "true", "false", "pwd"}
+
+
+def harmless(seg: str, mask: str) -> bool:
+    """A segment that can't redefine the command another segment runs: empty, a recognised read, or a
+    SIDE_OK word with no write redirect."""
+    words = seg.split()
+    if not words:
+        return True
+    if words[0] in SIDE_OK:
+        return not writes_by_redirect(mask)
+    return live_read(seg, mask)
 
 
 def live_read(seg: str, mask: str) -> bool:
@@ -500,11 +510,14 @@ def live_rules(cmd: str):
             if names_live(seg) and (">" in seg or not words or words[0] not in READ_ONLY):
                 block(why, "harness-files")
         return
-    if SHADOWING.search(unquoted_mask(cmd)[1]):   # a read-only word may not be the command it names
-        block(why, "harness-files")
     for seg, mask in segs:
         if names_live(seg) and not live_read(seg, mask):
             block(why, "harness-files")
+    # sed, awk and git reads are new (the base blocked them all). Accept one only when nothing else in the
+    # command could make that word run something else: a function, alias, eval, source, PATH change, … (RV-7)
+    if any(names_live(seg) and seg.split()[0] not in READ_ONLY for seg, _ in segs) and not all(
+            harmless(seg, mask) for seg, mask in segs):
+        block(why, "harness-files")
 
 
 def bash_rules(cmd: str):
