@@ -1810,6 +1810,21 @@ def _runs_stop_on_interrupt():
             raise
 
 
+def _communicate(p, cmd, timeout: int):
+    """p.communicate(timeout), in short slices: a wait for a process doesn't return to Python on Windows, so
+    a Ctrl-C would otherwise only be handled once the run ends. Retrying after TimeoutExpired loses no
+    output. Raises subprocess.TimeoutExpired once `timeout` seconds have passed."""
+    end = time.monotonic() + timeout
+    while True:
+        left = end - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        try:
+            return p.communicate(timeout=min(0.5, left))
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _finish(p):
     """After a kill: collect what the process wrote, without waiting forever on pipes a grandchild holds."""
     try:
@@ -1838,7 +1853,7 @@ def run_process(cmd: list[str], env: dict, timeout: int, on_start=None, stdin=No
         with _signals_stop():
             if on_start:
                 on_start(p.pid)
-            out, err = p.communicate(timeout=timeout)
+            out, err = _communicate(p, cmd, timeout)
     except BaseException:
         kill_tree(p.pid)
         _finish(p)
