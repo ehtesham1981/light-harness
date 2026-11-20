@@ -1243,7 +1243,8 @@ def _start_ps(pid: int, run=None):
 
 
 def _is_pid(pid) -> bool:
-    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+    # pids are 32-bit on every OS; a larger number in a damaged record would overflow the OS calls
+    return isinstance(pid, int) and not isinstance(pid, bool) and 0 < pid < 2 ** 31
 
 
 def holder_alive(pid, start) -> bool:
@@ -1283,16 +1284,16 @@ def read_record(path: Path) -> dict:
     live holder's record is never mistaken for an empty one."""
     for i in range(10):
         try:
-            text = Path(path).read_text(encoding=UTF8, errors="replace").strip()
+            text = Path(path).read_text(encoding=UTF8).strip()
             break
-        except FileNotFoundError:
+        except (FileNotFoundError, UnicodeDecodeError):  # gone, or bytes no harness wrote
             return {}
         except OSError:
             if i == 9:
                 return {}
             time.sleep(0.05)
     if text.isascii() and text.isdigit():
-        return {"pid": int(text)}
+        return {"pid": int(text)} if len(text) <= 10 else {}  # a pid has at most 10 digits
     try:
         d = json.loads(text)
     except (ValueError, RecursionError):  # garbage, or nested too deep to parse
@@ -1666,7 +1667,7 @@ def _folder_alive(name: str, owner: Path | None) -> bool:
     if _is_pid(rec.get("pid")):
         return holder_alive(rec["pid"], rec.get("start"))
     m = _RUN_DIR.match(name)
-    return bool(m) and proc_start(int(m.group(1))) is not None
+    return bool(m) and _is_pid(int(m.group(1))) and proc_start(int(m.group(1))) is not None
 
 
 def sweep_temp_root(root: Path) -> list[str]:
