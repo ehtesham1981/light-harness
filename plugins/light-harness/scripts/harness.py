@@ -1210,10 +1210,20 @@ def _start_linux(pid: int, read=None):
     return rest[19]  # field 22: starttime
 
 
+def ps_env() -> dict:
+    """The environment `ps` runs in: this one with a fixed time zone and locale, so `lstart` (local time,
+    in the locale's format) reads the same in every process, whatever TZ, LANG or PS_* settings each was
+    started with."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k in ("TZ", "LANG", "LANGUAGE") or k.startswith(("LC_", "PS_", "_XPG")))}
+    env.update(TZ="UTC", LC_ALL="C", LANG="C")
+    return env
+
+
 def _run_ps(argv) -> tuple[int, str]:
     try:
         r = subprocess.run(argv, capture_output=True, encoding=UTF8, errors="replace", stdin=subprocess.DEVNULL,
-                           timeout=10)
+                           env=ps_env(), timeout=10)
         return r.returncode, r.stdout
     except (OSError, subprocess.SubprocessError):
         return 1, ""
@@ -1268,12 +1278,12 @@ def kill_tree(pid: int) -> None:
 
 def read_record(path: Path) -> dict:
     """A lock, slot or owner file as a dict. A file from 1.9 or earlier holds only the pid: {"pid": n}.
-    Unreadable or not a JSON object: {}. A read that fails because the file is being replaced right then
-    (a sharing violation on Windows) is retried for about half a second, so a live holder's record is never
-    mistaken for an empty one."""
+    Unreadable, undecodable or not a JSON object: {}. Never raises. A read that fails because the file is
+    being replaced right then (a sharing violation on Windows) is retried for about half a second, so a
+    live holder's record is never mistaken for an empty one."""
     for i in range(10):
         try:
-            text = Path(path).read_text(encoding=UTF8).strip()
+            text = Path(path).read_text(encoding=UTF8, errors="replace").strip()
             break
         except FileNotFoundError:
             return {}
@@ -1281,11 +1291,11 @@ def read_record(path: Path) -> dict:
             if i == 9:
                 return {}
             time.sleep(0.05)
-    if text.isdigit():
+    if text.isascii() and text.isdigit():
         return {"pid": int(text)}
     try:
         d = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # garbage, or nested too deep to parse
         return {}
     return d if isinstance(d, dict) else {}
 
@@ -1661,9 +1671,10 @@ def _folder_alive(name: str, owner: Path | None) -> bool:
 
 def sweep_temp_root(root: Path) -> list[str]:
     """Remove run folders whose run is no longer going, and their owner files. Only entries named like run
-    folders are touched: real folders are deleted with their contents, a link or junction in a folder's
-    place is removed itself (never its target), and other files are left alone. Never raises. Returns
-    the removed entries' names."""
+    folders are touched, whatever they are: real folders are deleted with their contents, a link or
+    junction in a folder's place is removed itself (never its target), and any other entry (a file, say)
+    is removed when a dead run's owner file sits next to it; without one it is left alone. Never raises.
+    Returns the removed entries' names."""
     removed = []
     try:
         entries = list(Path(root).iterdir())
@@ -1674,21 +1685,17 @@ def sweep_temp_root(root: Path) -> list[str]:
         name = p.name
         if name.endswith(".owner") or not _RUN_DIR.match(name):
             continue
+        owner = p.with_name(name + ".owner") if name + ".owner" in names else None
         try:
             st = os.lstat(p)
         except OSError:
             continue
-        link = _is_link_stat(st)
-        if not link and not stat.S_ISDIR(st.st_mode):
-            continue
-        owner = p.with_name(name + ".owner") if name + ".owner" in names else None
+        if owner is None and not (_is_link_stat(st) or stat.S_ISDIR(st.st_mode)):
+            continue  # a file with no owner file next to it was never a run's: not ours to remove
         try:
             if _folder_alive(name, owner):
                 continue
-            if link:
-                _rm_link(_ext(p))
-            else:
-                _rm_run_dir(p)
+            _rm_run_dir(p)  # a link itself, a file, or a folder with its contents
         except OSError:
             continue  # tried again by the next run that starts
         removed.append(name)
