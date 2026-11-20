@@ -485,8 +485,36 @@ def suite_figures(ev: list[dict]) -> dict:
             "suite_minutes": _finite_sum(_suite_seconds(e.get("duration_s")) for e in runs) / 60}
 
 
+LOAD_FIELDS = ("slots", "running", "load_avg", "wait_s")
+
+
+def _load_value(v):
+    """A stored load figure: a finite number >= 0 (not bool), else None (ignored, like a bad duration)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:
+        return None
+    return f if math.isfinite(f) and f >= 0 else None
+
+
 def load_figures(ev: list[dict]) -> dict | None:
-    raise NotImplementedError
+    """The machine's load around a task's suite runs, from suite-run records (not reused verifies) that
+    carry load fields: total time waited for a run slot in minutes, the latest slot count, the mean number
+    of runs in progress when a run took its slot, and the highest load average. None when no record
+    carries a load field (all records from before 1.10), so `metrics` shows nothing new for them."""
+    runs = [e for e in ev if e.get("event") == "suite" and e.get("cache") != "hit"
+            and any(k in e for k in LOAD_FIELDS)]
+    if not runs:
+        return None
+    waits = [w for w in (_load_value(e.get("wait_s")) for e in runs) if w is not None]
+    slots = [e["slots"] for e in runs if isinstance(e.get("slots"), int) and not isinstance(e.get("slots"), bool)
+             and e["slots"] > 0]
+    running = [r for r in (_load_value(e.get("running")) for e in runs) if r is not None]
+    loads = [x for x in (_load_value(e.get("load_avg")) for e in runs) if x is not None]
+    return {"slot_wait_minutes": _finite_sum(waits) / 60, "slots": slots[-1] if slots else None,
+            "mean_running": _mean(running), "max_load_avg": max(loads) if loads else None}
 
 
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
@@ -594,6 +622,9 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
             "events": len(ev),
             **suite_figures(ev),
         }
+        load = load_figures(ev)
+        if load is not None:  # only records from 1.10 on carry load fields: older data looks as before
+            tasks[slug]["suite_load"] = load
 
     engineers = defaultdict(lambda: {"tasks": set(), "sessions": set(), "approvals": 0, "unlocks": 0,
                                      "prompts": 0, "approval_wait_s": [], "response_s": []})
@@ -663,6 +694,9 @@ def kpis(trails: dict, finished: set, events: list[dict], now: float | None = No
     summary.update(suite_runs=sum(t["suite_runs"] for t in vals), cache_hits=hits, cache_misses=misses,
                    cache_hit_rate=hits / (hits + misses) if hits + misses else None,
                    suite_minutes=_finite_sum(t["suite_minutes"] for t in vals))
+    load = load_figures(events)
+    if load is not None:
+        summary["suite_load"] = load
     return {"summary": summary, "tasks": tasks, "engineers": eng_out}
 
 
@@ -705,6 +739,12 @@ def _suite_line(x) -> str:
     return f"{x['suite_runs']} · cache hit rate {_rate(x['cache_hit_rate'])} · suite minutes {_minutes(x['suite_minutes'])}"
 
 
+def _load_line(x) -> str:
+    """The slot wait, slot count, mean runs in progress and highest load average of suite runs."""
+    return (f"slot wait {_minutes(x['slot_wait_minutes'])} min · slots {_num(x['slots'])} · "
+            f"runs in progress {_num(x['mean_running'])} · load avg max {_num(x['max_load_avg'])}")
+
+
 def _split_rows(x) -> list:
     """The time-split rows of a task's detail view."""
     if not x:
@@ -742,6 +782,7 @@ def render(data: dict, only: str | None = None) -> str:
                 ("Subagents", " · ".join(f"{k} {v['runs']}× {dur(v['seconds'])}" for k, v in t["subagents"].items()) or "-"),
                 ("Gates (ok/refused)", " · ".join(f"{k} {v['ok']}/{v['fail']}" for k, v in t["gates"].items()) or "-"),
                 ("Suite runs", _suite_line(t)),
+                *([("Suite load", _load_line(t["suite_load"]))] if t.get("suite_load") else []),
                 ("Sessions / events", f"{t['sessions']} / {t['events']}")]
         out += [f"  {k:<22} {v}" for k, v in rows]
         return "\n".join(out)
@@ -755,6 +796,8 @@ def render(data: dict, only: str | None = None) -> str:
                f"{_num(s['verify_fails_per_task'])} · guard blocks {_num(s['guard_blocks_per_task'])} · "
                f"test unlocks {_num(s['unlocks_per_task'])}")
     out.append(f"  suite runs {_suite_line(s)}")
+    if s.get("suite_load"):
+        out.append(f"  suite load {_load_line(s['suite_load'])}")
     if s["time_in_stage_s"]:
         out.append("  time in stage: " + " · ".join(f"{k} {dur(v)}" for k, v in s["time_in_stage_s"].items()))
     if s["time_split"]:
