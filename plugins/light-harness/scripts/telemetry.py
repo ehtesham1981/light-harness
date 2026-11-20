@@ -485,6 +485,10 @@ def suite_figures(ev: list[dict]) -> dict:
             "suite_minutes": _finite_sum(_suite_seconds(e.get("duration_s")) for e in runs) / 60}
 
 
+def load_figures(ev: list[dict]) -> dict | None:
+    raise NotImplementedError
+
+
 def kpis(trails: dict, finished: set, events: list[dict], now: float | None = None,
          issue_rounds: dict | None = None) -> dict:
     """KPIs from the audit trails ({task: [(epoch, subject), ...]} oldest first, available for every

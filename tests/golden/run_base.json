@@ -1,0 +1,6361 @@
+{
+ "source": "base-commit harness.py/telemetry.py (89b0318, 1.9.0) in tests/base_harness",
+ "run_tests": {
+  "python3 -m pytest -q | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python3 -m pytest -q | junit default | pass + junit]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [python3 -m pytest -q | junit default | fail + junit]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [python3 -m pytest -q | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python3 -m pytest -q | junit default | all skipped]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [python3 -m pytest -q | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [python3 -m pytest -q | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python3 -m pytest -q | junit empty | pass + junit]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [python3 -m pytest -q | junit empty | fail + junit]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [python3 -m pytest -q | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python3 -m pytest -q | junit empty | all skipped]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [python3 -m pytest -q | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python3 -m pytest -q | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [python3 -m pytest -q | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [python3 -m pytest -q | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit default | pass + junit]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit default | fail + junit]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit default | all skipped]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit empty | pass + junit]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit empty | fail + junit]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit empty | all skipped]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "python -m pytest -q -k 'not slow' | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [python -m pytest -q -k 'not slow' | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [python -m pytest -q -k 'not slow' | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-q",
+      "-k",
+      "not slow"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [py -m pytest | junit default | pass + junit]: ✓ ünïcode\nstderr of [py -m pytest | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [py -m pytest | junit default | fail + junit]: ✓ ünïcode\nstderr of [py -m pytest | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [py -m pytest | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [py -m pytest | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [py -m pytest | junit default | all skipped]: ✓ ünïcode\nstderr of [py -m pytest | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [py -m pytest | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [py -m pytest | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [py -m pytest | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [py -m pytest | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [py -m pytest | junit empty | pass + junit]: ✓ ünïcode\nstderr of [py -m pytest | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [py -m pytest | junit empty | fail + junit]: ✓ ünïcode\nstderr of [py -m pytest | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [py -m pytest | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [py -m pytest | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [py -m pytest | junit empty | all skipped]: ✓ ünïcode\nstderr of [py -m pytest | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [py -m pytest | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [py -m pytest | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "py -m pytest | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [py -m pytest | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [py -m pytest | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [node --test | junit default | pass + junit]: ✓ ünïcode\nstderr of [node --test | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [node --test | junit default | fail + junit]: ✓ ünïcode\nstderr of [node --test | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [node --test | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [node --test | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [node --test | junit default | all skipped]: ✓ ünïcode\nstderr of [node --test | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [node --test | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [node --test | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [node --test | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [node --test | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [node --test | junit empty | pass + junit]: ✓ ünïcode\nstderr of [node --test | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [node --test | junit empty | fail + junit]: ✓ ünïcode\nstderr of [node --test | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [node --test | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [node --test | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [node --test | junit empty | all skipped]: ✓ ünïcode\nstderr of [node --test | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [node --test | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [node --test | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "node --test | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [node --test | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [node --test | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [sh -c wrapper | junit default | pass + junit]: ✓ ünïcode\nstderr of [sh -c wrapper | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [sh -c wrapper | junit default | fail + junit]: ✓ ünïcode\nstderr of [sh -c wrapper | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [sh -c wrapper | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [sh -c wrapper | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [sh -c wrapper | junit default | all skipped]: ✓ ünïcode\nstderr of [sh -c wrapper | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [sh -c wrapper | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [sh -c wrapper | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [sh -c wrapper | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [sh -c wrapper | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [sh -c wrapper | junit empty | pass + junit]: ✓ ünïcode\nstderr of [sh -c wrapper | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [sh -c wrapper | junit empty | fail + junit]: ✓ ünïcode\nstderr of [sh -c wrapper | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [sh -c wrapper | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [sh -c wrapper | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [sh -c wrapper | junit empty | all skipped]: ✓ ünïcode\nstderr of [sh -c wrapper | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [sh -c wrapper | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [sh -c wrapper | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "sh -c wrapper | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [sh -c wrapper | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [sh -c wrapper | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "sh",
+      "-c",
+      "pytest \"$@\"",
+      "sh"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [npx jest --ci | junit default | pass + junit]: ✓ ünïcode\nstderr of [npx jest --ci | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [npx jest --ci | junit default | fail + junit]: ✓ ünïcode\nstderr of [npx jest --ci | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [npx jest --ci | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [npx jest --ci | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [npx jest --ci | junit default | all skipped]: ✓ ünïcode\nstderr of [npx jest --ci | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [npx jest --ci | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [npx jest --ci | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [npx jest --ci | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [npx jest --ci | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [npx jest --ci | junit empty | pass + junit]: ✓ ünïcode\nstderr of [npx jest --ci | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [npx jest --ci | junit empty | fail + junit]: ✓ ünïcode\nstderr of [npx jest --ci | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [npx jest --ci | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [npx jest --ci | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [npx jest --ci | junit empty | all skipped]: ✓ ünïcode\nstderr of [npx jest --ci | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [npx jest --ci | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [npx jest --ci | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "npx jest --ci | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [npx jest --ci | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [npx jest --ci | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "npx",
+      "jest",
+      "--ci"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [braces {x} | junit default | pass + junit]: ✓ ünïcode\nstderr of [braces {x} | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [braces {x} | junit default | fail + junit]: ✓ ünïcode\nstderr of [braces {x} | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [braces {x} | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [braces {x} | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [braces {x} | junit default | all skipped]: ✓ ünïcode\nstderr of [braces {x} | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [braces {x} | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [braces {x} | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [braces {x} | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [braces {x} | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [braces {x} | junit empty | pass + junit]: ✓ ünïcode\nstderr of [braces {x} | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [braces {x} | junit empty | fail + junit]: ✓ ünïcode\nstderr of [braces {x} | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [braces {x} | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [braces {x} | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [braces {x} | junit empty | all skipped]: ✓ ünïcode\nstderr of [braces {x} | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [braces {x} | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [braces {x} | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "braces {x} | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [braces {x} | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [braces {x} | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "{x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty braces {} | junit default | pass + junit]: ✓ ünïcode\nstderr of [empty braces {} | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [empty braces {} | junit default | fail + junit]: ✓ ünïcode\nstderr of [empty braces {} | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [empty braces {} | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [empty braces {} | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty braces {} | junit default | all skipped]: ✓ ünïcode\nstderr of [empty braces {} | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [empty braces {} | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [empty braces {} | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [empty braces {} | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [empty braces {} | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty braces {} | junit empty | pass + junit]: ✓ ünïcode\nstderr of [empty braces {} | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [empty braces {} | junit empty | fail + junit]: ✓ ünïcode\nstderr of [empty braces {} | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [empty braces {} | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [empty braces {} | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty braces {} | junit empty | all skipped]: ✓ ünïcode\nstderr of [empty braces {} | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [empty braces {} | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [empty braces {} | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty braces {} | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [empty braces {} | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [empty braces {} | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--reporter={}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [placeholder {path} | junit default | pass + junit]: ✓ ünïcode\nstderr of [placeholder {path} | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [placeholder {path} | junit default | fail + junit]: ✓ ünïcode\nstderr of [placeholder {path} | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [placeholder {path} | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [placeholder {path} | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [placeholder {path} | junit default | all skipped]: ✓ ünïcode\nstderr of [placeholder {path} | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [placeholder {path} | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [placeholder {path} | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [placeholder {path} | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [placeholder {path} | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [placeholder {path} | junit empty | pass + junit]: ✓ ünïcode\nstderr of [placeholder {path} | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [placeholder {path} | junit empty | fail + junit]: ✓ ünïcode\nstderr of [placeholder {path} | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [placeholder {path} | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [placeholder {path} | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [placeholder {path} | junit empty | all skipped]: ✓ ünïcode\nstderr of [placeholder {path} | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [placeholder {path} | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [placeholder {path} | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "placeholder {path} | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [placeholder {path} | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [placeholder {path} | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "run.py",
+      "--out={path}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit default | pass + junit]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit default | fail + junit]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit default | all skipped]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit empty | pass + junit]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit empty | fail + junit]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit empty | all skipped]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "unknown placeholder {concurrency_x} | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [unknown placeholder {concurrency_x} | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [unknown placeholder {concurrency_x} | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "node",
+      "--test",
+      "--test-concurrency={concurrency_x}"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [near misses of the placeholder | junit default | pass + junit]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [near misses of the placeholder | junit default | fail + junit]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [near misses of the placeholder | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [near misses of the placeholder | junit default | all skipped]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [near misses of the placeholder | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [near misses of the placeholder | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [near misses of the placeholder | junit empty | pass + junit]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [near misses of the placeholder | junit empty | fail + junit]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [near misses of the placeholder | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [near misses of the placeholder | junit empty | all skipped]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [near misses of the placeholder | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "near misses of the placeholder | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [near misses of the placeholder | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [near misses of the placeholder | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "pytest",
+      "-n",
+      "{Concurrency}",
+      "{ concurrency }",
+      "{concurrency",
+      "concurrency}",
+      "$concurrency",
+      "%concurrency%"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty argument | junit default | pass + junit]: ✓ ünïcode\nstderr of [empty argument | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [empty argument | junit default | fail + junit]: ✓ ünïcode\nstderr of [empty argument | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [empty argument | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [empty argument | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty argument | junit default | all skipped]: ✓ ünïcode\nstderr of [empty argument | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [empty argument | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [empty argument | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [empty argument | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [empty argument | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty argument | junit empty | pass + junit]: ✓ ünïcode\nstderr of [empty argument | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [empty argument | junit empty | fail + junit]: ✓ ünïcode\nstderr of [empty argument | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [empty argument | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [empty argument | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [empty argument | junit empty | all skipped]: ✓ ünïcode\nstderr of [empty argument | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [empty argument | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [empty argument | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "empty argument | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [empty argument | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [empty argument | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "",
+      "-q"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit default | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [non-ASCII | junit default | pass + junit]: ✓ ünïcode\nstderr of [non-ASCII | junit default | pass + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_a::test_two": "passed"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_a::test_two": "passed"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit default | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [non-ASCII | junit default | fail + junit]: ✓ ünïcode\nstderr of [non-ASCII | junit default | fail + junit]\n",
+    "results": {
+     "tests.test_a::test_one": "passed",
+     "tests.test_b::test_two": "failed",
+     "tests.test_b::test_three": "error"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "passed",
+    "tests.test_b::test_two": "failed",
+    "tests.test_b::test_three": "error"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit default | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [non-ASCII | junit default | collection error rc 2]: ✓ ünïcode\nstderr of [non-ASCII | junit default | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit default | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [non-ASCII | junit default | all skipped]: ✓ ünïcode\nstderr of [non-ASCII | junit default | all skipped]\n",
+    "results": {
+     "tests.test_a::test_one": "skipped",
+     "tests.test_a::test_two": "skipped"
+    }
+   },
+   "last_results": {
+    "tests.test_a::test_one": "skipped",
+    "tests.test_a::test_two": "skipped"
+   },
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit default | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [non-ASCII | junit default | no tests rc 5]: ✓ ünïcode\nstderr of [non-ASCII | junit default | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit default | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [non-ASCII | junit default | killed by signal rc -9]: ✓ ünïcode\nstderr of [non-ASCII | junit default | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试",
+      "--junitxml=<JUNIT>"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit empty | pass + junit": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [non-ASCII | junit empty | pass + junit]: ✓ ünïcode\nstderr of [non-ASCII | junit empty | pass + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit empty | fail + junit": {
+   "returned": {
+    "rc": 1,
+    "out": "stdout of [non-ASCII | junit empty | fail + junit]: ✓ ünïcode\nstderr of [non-ASCII | junit empty | fail + junit]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit empty | collection error rc 2": {
+   "returned": {
+    "rc": 2,
+    "out": "stdout of [non-ASCII | junit empty | collection error rc 2]: ✓ ünïcode\nstderr of [non-ASCII | junit empty | collection error rc 2]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit empty | all skipped": {
+   "returned": {
+    "rc": 0,
+    "out": "stdout of [non-ASCII | junit empty | all skipped]: ✓ ünïcode\nstderr of [non-ASCII | junit empty | all skipped]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit empty | no tests rc 5": {
+   "returned": {
+    "rc": 5,
+    "out": "stdout of [non-ASCII | junit empty | no tests rc 5]: ✓ ünïcode\nstderr of [non-ASCII | junit empty | no tests rc 5]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  },
+  "non-ASCII | junit empty | killed by signal rc -9": {
+   "returned": {
+    "rc": -9,
+    "out": "stdout of [non-ASCII | junit empty | killed by signal rc -9]: ✓ ünïcode\nstderr of [non-ASCII | junit empty | killed by signal rc -9]\n",
+    "results": {}
+   },
+   "last_results": {},
+   "spawns": [
+    {
+     "via": "run",
+     "argv": [
+      "<PY>",
+      "-m",
+      "pytest",
+      "-k",
+      "naïve ü 测试"
+     ],
+     "cwd": "<ROOT>",
+     "encoding": "utf-8",
+     "errors": "replace",
+     "env": {
+      "extra": [],
+      "missing": [],
+      "changed": []
+     },
+     "temp": {
+      "same": false,
+      "exists": true,
+      "empty": false,
+      "under_root": false
+     }
+    }
+   ],
+   "temp_root_left": [],
+   "lock_left": []
+  }
+ },
+ "gates": {
+  "redgate | pass": {
+   "args": [
+    "redgate"
+   ],
+   "snapshot": "build",
+   "exit": 1,
+   "out": "✗ tests PASS before implementation — they don't prove anything yet. The test-author must write tests that fail against the stubs.\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "redgate",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "pass",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "redgate | fail": {
+   "args": [
+    "redgate"
+   ],
+   "snapshot": "build",
+   "exit": 0,
+   "out": "✓ Red gate passed; tests are locked. Implement until green, then run `verify`.\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1\n- ⚠ Existing tests failing against the stubs (must pass again at verify): tests.test_old::test_double",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "redgate",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "fail",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "redgate | collection error": {
+   "args": [
+    "redgate"
+   ],
+   "snapshot": "build",
+   "exit": 1,
+   "out": "✗ test run exited 2 (collection/usage error, not test failures). Make sure stubs exist so tests import and fail on assertions.\ntoy: ERROR collecting tests/test_old.py: RuntimeError: lht collection error\ntoy: ERROR collecting tests/test_t.py: RuntimeError: lht collection error\ntoy: 0 passed, 0 failed, 0 skipped, 2 errors\ntoy-stderr: exit 2\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "redgate",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "fail",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "redgate | skipped": {
+   "args": [
+    "redgate"
+   ],
+   "snapshot": "build",
+   "exit": 1,
+   "out": "✗ tests PASS before implementation — they don't prove anything yet. The test-author must write tests that fail against the stubs.\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "redgate",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "pass",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "verify | pass": {
+   "args": [
+    "verify"
+   ],
+   "snapshot": "green",
+   "exit": 0,
+   "out": "**Result: PASS** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: PASS** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "verify",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "miss",
+     "result": "pass",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verify | fail": {
+   "args": [
+    "verify"
+   ],
+   "snapshot": "green",
+   "exit": 1,
+   "out": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\ntoy: tests/test_old.py::test_double failed (AssertionError: lht forced failure)\ntoy: tests/test_t.py::test_ac1 failed (AssertionError: lht forced failure)\ntoy: 0 passed, 2 failed, 0 skipped, 0 errors\ntoy-stderr: exit 1\n```\n- ✗ Green gate: red-gate test is failed: tests.test_old::test_double\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\ntoy: tests/test_old.py::test_double failed (AssertionError: lht forced failure)\ntoy: tests/test_t.py::test_ac1 failed (AssertionError: lht forced failure)\ntoy: 0 passed, 2 failed, 0 skipped, 0 errors\ntoy-stderr: exit 1\n```\n- ✗ Green gate: red-gate test is failed: tests.test_old::test_double\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "verify",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "miss",
+     "result": "fail",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verify | collection error": {
+   "args": [
+    "verify"
+   ],
+   "snapshot": "green",
+   "exit": 1,
+   "out": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 2)\n```\ntoy: ERROR collecting tests/test_old.py: RuntimeError: lht collection error\ntoy: ERROR collecting tests/test_t.py: RuntimeError: lht collection error\ntoy: 0 passed, 0 failed, 0 skipped, 2 errors\ntoy-stderr: exit 2\n```\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 2)\n```\ntoy: ERROR collecting tests/test_old.py: RuntimeError: lht collection error\ntoy: ERROR collecting tests/test_t.py: RuntimeError: lht collection error\ntoy: 0 passed, 0 failed, 0 skipped, 2 errors\ntoy-stderr: exit 2\n```",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "verify",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "miss",
+     "result": "fail",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verify | skipped": {
+   "args": [
+    "verify"
+   ],
+   "snapshot": "green",
+   "exit": 1,
+   "out": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: red-gate test is skipped: tests.test_old::test_double\n- ✗ Green gate: red-gate test is skipped: tests.test_t::test_ac1\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: red-gate test is skipped: tests.test_old::test_double\n- ✗ Green gate: red-gate test is skipped: tests.test_t::test_ac1",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "verify",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "miss",
+     "result": "pass",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verdict pass | pass": {
+   "args": [
+    "verdict",
+    "pass",
+    "--by",
+    "Reviewer"
+   ],
+   "snapshot": "review",
+   "exit": 0,
+   "out": "**Result: PASS** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n✓ Verdict PASS → Status Done. Next: commit the reviewed work on the task branch, then `finish-task`.\n",
+   "status": "Done",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: PASS** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests",
+    "verdict": "**Verdict: PASS** by Reviewer — <WHEN> \nIssues: 3 logged, 0 unresolved"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "review",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "bypass",
+     "result": "pass",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verdict pass | fail": {
+   "args": [
+    "verdict",
+    "pass",
+    "--by",
+    "Reviewer"
+   ],
+   "snapshot": "review",
+   "exit": 1,
+   "out": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\ntoy: tests/test_old.py::test_double failed (AssertionError: lht forced failure)\ntoy: tests/test_t.py::test_ac1 failed (AssertionError: lht forced failure)\ntoy: 0 passed, 2 failed, 0 skipped, 0 errors\ntoy-stderr: exit 1\n```\n- ✗ Green gate: red-gate test is failed: tests.test_old::test_double\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1\n✗ PASS refused: verification fails on the current tree\n",
+   "status": "Review",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\ntoy: tests/test_old.py::test_double failed (AssertionError: lht forced failure)\ntoy: tests/test_t.py::test_ac1 failed (AssertionError: lht forced failure)\ntoy: 0 passed, 2 failed, 0 skipped, 0 errors\ntoy-stderr: exit 1\n```\n- ✗ Green gate: red-gate test is failed: tests.test_old::test_double\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "review",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "bypass",
+     "result": "fail",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verdict pass | collection error": {
+   "args": [
+    "verdict",
+    "pass",
+    "--by",
+    "Reviewer"
+   ],
+   "snapshot": "review",
+   "exit": 1,
+   "out": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 2)\n```\ntoy: ERROR collecting tests/test_old.py: RuntimeError: lht collection error\ntoy: ERROR collecting tests/test_t.py: RuntimeError: lht collection error\ntoy: 0 passed, 0 failed, 0 skipped, 2 errors\ntoy-stderr: exit 2\n```\n✗ PASS refused: verification fails on the current tree\n",
+   "status": "Review",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 2)\n```\ntoy: ERROR collecting tests/test_old.py: RuntimeError: lht collection error\ntoy: ERROR collecting tests/test_t.py: RuntimeError: lht collection error\ntoy: 0 passed, 0 failed, 0 skipped, 2 errors\ntoy-stderr: exit 2\n```",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "review",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "bypass",
+     "result": "fail",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "verdict pass | skipped": {
+   "args": [
+    "verdict",
+    "pass",
+    "--by",
+    "Reviewer"
+   ],
+   "snapshot": "review",
+   "exit": 1,
+   "out": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: red-gate test is skipped: tests.test_old::test_double\n- ✗ Green gate: red-gate test is skipped: tests.test_t::test_ac1\n✗ PASS refused: verification fails on the current tree\n",
+   "status": "Review",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "**Result: FAIL** — <WHEN> (plan <HEX>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<HEX>]\n- ✓ Red gate: red gate at <HEX>\n- ✓ Green gate: test suite passed (2 tests)\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: red-gate test is skipped: tests.test_old::test_double\n- ✗ Green gate: red-gate test is skipped: tests.test_t::test_ac1",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "review",
+     "scope": "full",
+     "duration_s": "<D>",
+     "cache": "bypass",
+     "result": "pass",
+     "env_failures": 0,
+     "key": "<KEY>"
+    }
+   ],
+   "lock_left": false
+  },
+  "baseline (set-status Build) | pass": {
+   "args": [
+    "set-status",
+    "Build"
+   ],
+   "snapshot": "plan",
+   "exit": 0,
+   "out": "✓ Baseline: 1 existing tests pass before this task (they must keep passing)\n✓ Status: Plan → Build\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "baseline",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "pass",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "baseline (set-status Build) | fail": {
+   "args": [
+    "set-status",
+    "Build"
+   ],
+   "snapshot": "plan",
+   "exit": 0,
+   "out": "✓ Baseline: 0 existing tests pass before this task (they must keep passing)\n✓ Status: Plan → Build\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "baseline",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "fail",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "baseline (set-status Build) | collection error": {
+   "args": [
+    "set-status",
+    "Build"
+   ],
+   "snapshot": "plan",
+   "exit": 0,
+   "out": "⚠ Couldn't read per-test results from the existing suite (exit 2); no baseline recorded. Existing tests that pass at the red gate will need --allow-passing.\ntoy: ERROR collecting tests/test_old.py: RuntimeError: lht collection error\ntoy: 0 passed, 0 failed, 0 skipped, 1 errors\ntoy-stderr: exit 2\n✓ Status: Plan → Build\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "baseline",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "fail",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "baseline (set-status Build) | skipped": {
+   "args": [
+    "set-status",
+    "Build"
+   ],
+   "snapshot": "plan",
+   "exit": 0,
+   "out": "✓ Baseline: 0 existing tests pass before this task (they must keep passing)\n✓ Status: Plan → Build\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "_Not run._",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [
+    {
+     "event": "suite",
+     "repo": "repo",
+     "task": "toy",
+     "gate": "baseline",
+     "scope": "full",
+     "duration_s": "<D>",
+     "result": "pass",
+     "env_failures": 0
+    }
+   ],
+   "lock_left": false
+  },
+  "probe run | pass": {
+   "args": [
+    "probe",
+    "run"
+   ],
+   "snapshot": "probe",
+   "exit": 0,
+   "out": "✓ RV-1.1 (RV-1): exit 0\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [],
+   "lock_left": false
+  },
+  "probe run | fail": {
+   "args": [
+    "probe",
+    "run"
+   ],
+   "snapshot": "probe",
+   "exit": 1,
+   "out": "✗ RV-1.1 (RV-1): exit 1\nprobe: difference found\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [],
+   "lock_left": false
+  },
+  "probe run | collection error": {
+   "args": [
+    "probe",
+    "run"
+   ],
+   "snapshot": "probe",
+   "exit": 1,
+   "out": "✗ RV-1.1 (RV-1): exit 2\nprobe: broken\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [],
+   "lock_left": false
+  },
+  "probe run | skipped": {
+   "args": [
+    "probe",
+    "run"
+   ],
+   "snapshot": "probe",
+   "exit": 1,
+   "out": "✗ RV-1.1 (RV-1): exit 5\nprobe: nothing to check\n",
+   "status": "Build",
+   "blocks": {
+    "redgate": "**Passed** <WHEN> — 1 new tests, all failing against stubs.\n- Test files locked: tests/test_old.py, tests/test_t.py\n- ACs covered: AC-1\n- Existing tests (passed before this task; must keep passing): 1",
+    "verify": "_Not run._",
+    "verdict": "_Pending._"
+   },
+   "suite": [],
+   "lock_left": false
+  }
+ }
+}

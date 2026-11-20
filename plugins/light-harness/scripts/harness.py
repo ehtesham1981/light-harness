@@ -1141,6 +1141,104 @@ def clean_env() -> dict:
     return env
 
 
+# --- Machine-wide runs: process identity, run slots, per-run temp folders, timeouts (#16, #25, #30) ---
+TEMP_ROOT_ENV = "LIGHT_HARNESS_TEMP_ROOT"   # tests only: the per-run temp root itself (stripped from runs)
+SLOT_POLL = 1.0                             # seconds between slot checks while waiting
+LEFTOVER_LIMIT = 50                         # entries a run may leave in its temp folder before verify warns
+RUN_LOAD: dict = {}                         # load figures of the current suite run, for its suite record
+LEFTOVERS: list = []                        # (run label, entries left) for runs that left more than the limit
+
+
+class SuiteTimeout(Exception):
+    """A suite ran past suite_timeout; its process tree was killed."""
+
+    def __init__(self, seconds: int):
+        super().__init__(f"suite timed out after {seconds} s")
+        self.seconds = seconds
+
+
+def suite_timeout(cfg: dict) -> int:
+    raise NotImplementedError
+
+
+def proc_start(pid: int):
+    raise NotImplementedError
+
+
+def _start_windows(pid: int, k32=None):
+    raise NotImplementedError
+
+
+def _start_linux(pid: int, read=None):
+    raise NotImplementedError
+
+
+def _start_ps(pid: int, run=None):
+    raise NotImplementedError
+
+
+def holder_alive(pid, start) -> bool:
+    raise NotImplementedError
+
+
+def kill_tree(pid: int) -> None:
+    raise NotImplementedError
+
+
+def read_record(path: Path) -> dict:
+    raise NotImplementedError
+
+
+def note_suite(pid: int) -> None:
+    raise NotImplementedError
+
+
+@contextlib.contextmanager
+def _os_lock(path: Path):
+    raise NotImplementedError
+    yield
+
+
+def slot_dir() -> Path:
+    raise NotImplementedError
+
+
+def slot_count() -> int:
+    raise NotImplementedError
+
+
+def concurrency(slots: int | None = None) -> int:
+    raise NotImplementedError
+
+
+@contextlib.contextmanager
+def run_slot(gate: str | None = None):
+    raise NotImplementedError
+    yield
+
+
+def temp_root() -> Path:
+    raise NotImplementedError
+
+
+def sweep_temp_root(root: Path) -> list[str]:
+    raise NotImplementedError
+
+
+@contextlib.contextmanager
+def run_temp(suffix: str = ""):
+    raise NotImplementedError
+    yield
+
+
+def run_env(tmp: Path) -> dict:
+    raise NotImplementedError
+
+
+def run_process(cmd: list[str], env: dict, timeout: int, on_start=None) -> tuple[int, str]:
+    raise NotImplementedError
+
+
 def probe_bases(entries: list[dict]) -> list[Path]:
     """A fresh export of the files the probes recorded, one folder per probe so probes running at the
     same time can't affect each other through it. Outside the task folder (in the harness's own state,
@@ -1581,7 +1679,8 @@ SUITE_GATES = ("redgate", "verify", "baseline", "review")
 
 
 def record_suite_run(gate: str, *, duration_s, result: str | None, cache: str | None = None,
-                     key: str | None = None, scope: str = "full", env_failures: int = 0) -> None:
+                     key: str | None = None, scope: str = "full", env_failures: int = 0,
+                     slots=None, running=None, load_avg=None, wait_s=None) -> None:
     """Append one suite-run record (`suite` event, for `metrics`). Best effort: never raises, prints
     nothing, so recording can't change a gate's outcome. `scope` and `env_failures` are fixed for now and
     exist for targeted runs and environment-failure detection (#12)."""
