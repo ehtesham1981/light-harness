@@ -1453,33 +1453,37 @@ def run_slot(gate: str | None = None):
     guard = d / ".guard"
     gate = gate or RUN_LOAD.get("gate") or "probe"
     t0, shown, mine, n, running = time.monotonic(), None, None, 1, 1
-    while mine is None:
-        with _os_lock(guard):
-            n, live = slot_count(), []
-            for f in sorted(d.glob("slot-*.json")):
-                rec = read_record(f)
-                if holder_alive(rec.get("pid"), rec.get("start")):
-                    live.append((f, rec))
-                else:
-                    try:
-                        f.unlink(missing_ok=True)
-                    except OSError:
-                        live.append((f, rec))  # can't free it now; look again next time
-            if len(live) < n:
-                used = {f.name for f, _ in live}
-                i = 0
-                while f"slot-{i}.json" in used:
-                    i += 1
-                mine = d / f"slot-{i}.json"
-                _write_record(mine, _holder_record(gate))
-                running = len(live) + 1
-                break
-        ahead = [r for _, r in live]
-        who = sorted((str(r.get("repo")), str(r.get("task")), str(r.get("gate")), str(r.get("pid"))) for r in ahead)
-        if who != shown:
-            print(waiting_line(ahead), flush=True)
-            shown = who
-        time.sleep(SLOT_POLL)
+    try:
+        while mine is None:
+            with _os_lock(guard):
+                n, live = slot_count(), []
+                for f in sorted(d.glob("slot-*.json")):
+                    rec = read_record(f)
+                    if holder_alive(rec.get("pid"), rec.get("start")):
+                        live.append((f, rec))
+                    else:
+                        try:
+                            f.unlink(missing_ok=True)
+                        except OSError:
+                            live.append((f, rec))  # can't free it now; look again next time
+                if len(live) < n:
+                    used = {f.name for f, _ in live}
+                    i = 0
+                    while f"slot-{i}.json" in used:
+                        i += 1
+                    mine = d / f"slot-{i}.json"
+                    _write_record(mine, _holder_record(gate))
+                    running = len(live) + 1
+                    break
+            ahead = [r for _, r in live]
+            who = sorted((str(r.get("repo")), str(r.get("task")), str(r.get("gate")), str(r.get("pid"))) for r in ahead)
+            if who != shown:
+                print(waiting_line(ahead), flush=True)
+                shown = who
+            time.sleep(SLOT_POLL)
+    except BaseException:  # interrupted while waiting: the wait so far isn't suite time either
+        RUN_LOAD["wait_s"] = round((RUN_LOAD.get("wait_s") or 0) + max(0.0, time.monotonic() - t0), 3)
+        raise
     waited = round(max(0.0, time.monotonic() - t0), 3)
     if RUN_LOAD.get("slots") is None:
         RUN_LOAD["slots"] = n
@@ -1777,6 +1781,35 @@ def _signals_stop():
                 signal.signal(sig, h)
 
 
+LIVE_RUNS: dict = {}                        # pid -> Popen of every suite or probe this process is running
+_LIVE_LOCK = threading.Lock()
+_STOPPING = threading.Event()               # set once an interrupt is stopping this process's runs
+
+
+def stop_live_runs() -> None:
+    """Kill every suite or probe this process is running (each with its whole tree), including probes in
+    worker threads, and refuse to start more. Called when the command is interrupted."""
+    _STOPPING.set()
+    with _LIVE_LOCK:
+        procs = list(LIVE_RUNS.values())
+    for p in procs:
+        kill_tree(p.pid)
+
+
+@contextlib.contextmanager
+def _runs_stop_on_interrupt():
+    """Around a suite or a batch of probes, in the thread that runs the command: SIGTERM and SIGHUP end
+    the harness through an exception (POSIX, main thread), and any interrupt or error kills every run
+    this process started before it goes on, so none keeps running (or holds the lock and slot) after it."""
+    _STOPPING.clear()
+    with _signals_stop():
+        try:
+            yield
+        except BaseException:
+            stop_live_runs()
+            raise
+
+
 def _finish(p):
     """After a kill: collect what the process wrote, without waiting forever on pipes a grandchild holds."""
     try:
@@ -1797,7 +1830,11 @@ def run_process(cmd: list[str], env: dict, timeout: int, on_start=None, stdin=No
     kw = {"start_new_session": True} if os.name != "nt" else {}
     p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin,
                          encoding=UTF8, errors="replace", env=env, **kw)
+    with _LIVE_LOCK:
+        LIVE_RUNS[p.pid] = p
     try:
+        if _STOPPING.is_set():  # the command is being interrupted: started too late, stop it at once
+            raise subprocess.SubprocessError("stopped: the command was interrupted")
         with _signals_stop():
             if on_start:
                 on_start(p.pid)
@@ -1806,6 +1843,9 @@ def run_process(cmd: list[str], env: dict, timeout: int, on_start=None, stdin=No
         kill_tree(p.pid)
         _finish(p)
         raise
+    finally:
+        with _LIVE_LOCK:
+            LIVE_RUNS.pop(p.pid, None)
     return p.returncode, (out or "") + (err or "")
 
 
@@ -1964,13 +2004,19 @@ def run_probes(entries: list[dict]) -> list[tuple[dict, int, str]]:
         return []
     cfg = load_config()
     timeout, workers = probe_timeout(cfg), min(probe_workers(), len(entries))
-    with base_hidden():
+    with base_hidden(), _runs_stop_on_interrupt():
         bases = probe_bases(entries)
         if workers == 1:
             return [(e, *run_probe(e, b, timeout, n)) for n, (e, b) in enumerate(zip(entries, bases), 1)]
-        with ThreadPoolExecutor(max_workers=workers) as ex:  # results in saved order, whichever ends first
+        ex = ThreadPoolExecutor(max_workers=workers)
+        try:  # results in saved order, whichever ends first
             futures = [ex.submit(run_probe, e, b, timeout, n) for n, (e, b) in enumerate(zip(entries, bases), 1)]
             return [(e, *f.result()) for e, f in zip(entries, futures)]
+        except BaseException:
+            stop_live_runs()  # before waiting for the workers, so an interrupt ends the command promptly
+            raise
+        finally:
+            ex.shutdown(wait=True, cancel_futures=True)
 
 
 def run_probe(entry: dict, base: Path, timeout: int | None = None, n: int = 1) -> tuple[int, str]:
@@ -2234,7 +2280,7 @@ def run_tests(cfg):
         cmd.append(cfg["junit_arg"].format(path=str(junit_path)))
     timeout = suite_timeout(cfg)
     try:  # the suite never sees the base-commit copies or session markers, just as in CI; its own TEMP
-        with base_hidden(), run_temp() as tmp:
+        with base_hidden(), run_temp() as tmp, _runs_stop_on_interrupt():
             rc, out = run_process(cmd, run_env(tmp), timeout, on_start=note_suite)
     except subprocess.TimeoutExpired:
         raise SuiteTimeout(timeout) from None  # lock and slot released, base copies back, folder removed
