@@ -27,12 +27,14 @@ Run `light-harness --help` (or `python3 <plugin>/scripts/harness.py --help`) for
 from __future__ import annotations
 
 import argparse
+import atexit
 import collections
 import contextlib
 import datetime as dt
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import posixpath
 import re
@@ -1256,9 +1258,16 @@ def holder_alive(pid, start) -> bool:
     cur = proc_start(pid)
     if cur is None:
         return False
+    start = _start_token(start)
     if not start or cur == "":
         return True
-    return cur == str(start)
+    return cur == start
+
+
+def _start_token(start):
+    """A recorded start time as the harness writes it (a string), trimmed; anything else in a damaged
+    record (a list, a number, true) is unknown: None."""
+    return start.strip() if isinstance(start, str) else None
 
 
 def kill_tree(pid: int) -> None:
@@ -1349,9 +1358,11 @@ def _take_lock(lock: Path):
                 if holder_alive(pid, old.get("start")):
                     die(f"another test or probe run of this task is in progress (pid {pid}); wait for it to finish. "
                         f"If none is running (it was killed), a human can delete {lock}.")
-                spid, sstart = old.get("suite_pid"), old.get("suite_start")
-                # stop the suite only on a well-formed record whose suite is confirmed by pid and start time
-                if _is_pid(pid) and _is_pid(spid) and sstart and proc_start(spid) == str(sstart):
+                spid, sstart = old.get("suite_pid"), _start_token(old.get("suite_start"))
+                # stop the suite only on a well-formed record whose suite is confirmed by pid and start time,
+                # and never the holder or this process itself
+                if _is_pid(pid) and _is_pid(spid) and spid not in (pid, os.getpid()) and sstart and \
+                        proc_start(spid) == sstart:
                     kill_tree(spid)
                     print(f"stopped an orphaned suite from a killed run (pid {spid})", flush=True)
                 lock.unlink(missing_ok=True)
@@ -1444,12 +1455,23 @@ def _age(seconds: float) -> str:
     return f"{s} s" if s < 60 else f"{s // 60} min"
 
 
+def _finite(x) -> bool:
+    """A real number that converts to a finite float (not a bool, NaN, ±Infinity or an int past float's
+    range: all possible in a damaged record, since json.loads accepts them)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    try:
+        return math.isfinite(x)
+    except OverflowError:
+        return False
+
+
 def waiting_line(holders: list[dict], now: float | None = None) -> str:
     now = time.time() if now is None else now
     parts = []
     for r in holders:
         since = r.get("since")
-        age = _age(now - since) if isinstance(since, (int, float)) and not isinstance(since, bool) else "?"
+        age = _age(now - since) if _finite(since) and _finite(now - since) else "?"
         parts.append(f"{r.get('repo') or '?'}/{r.get('task') or '?'} running {r.get('gate') or '?'} ({age})")
     return "waiting for a run slot: " + ", ".join(parts)
 
@@ -1591,8 +1613,38 @@ def _rm_entry(path: str):
 
 def _rm_run_dir(p: Path):
     """Delete a run folder and everything in it (raises OSError if something stays). Never follows a
-    link inside it; on Windows it works through extended-length paths, so deep contents go too."""
-    _rm_entry(_ext(p))
+    link inside it; on Windows it works through extended-length paths, so deep contents go too. On
+    Windows, contents whose permissions refuse the delete (a deny entry the suite set) get their
+    inherited permissions back first: the user owns them, so it may always change them."""
+    try:
+        _rm_entry(_ext(p))
+    except OSError:
+        if os.name != "nt" or not os.path.lexists(_ext(p)) or _is_link_stat(os.lstat(_ext(p))):
+            raise
+        _reset_acl(p)
+        _rm_entry(_ext(p))
+
+
+def _reset_acl(p: Path):
+    """Windows: give a run folder and everything in it their inherited permissions back (`icacls /reset`,
+    one entry at a time, a folder before its contents so it can be listed), so a deny entry the suite
+    set no longer stops the delete. A link or junction is never entered, so nothing outside the run
+    folder changes. Best effort."""
+    path = str(p)
+    try:
+        if _is_link_stat(os.lstat(path)):
+            return
+    except OSError:
+        return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["icacls", path, "/reset", "/C", "/Q"], capture_output=True, stdin=subprocess.DEVNULL,
+                       timeout=60)
+    with contextlib.suppress(OSError):
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            with os.scandir(path) as it:
+                children = [e.path for e in it]
+            for c in children:
+                _reset_acl(Path(c))
 
 
 def _root_usable(root: Path, shared: bool) -> bool:
@@ -1636,6 +1688,53 @@ def _root_usable(root: Path, shared: bool) -> bool:
 
 
 _ROOT_FALLBACK: list = []
+_FALLBACK_PREFIX = "lh-run-"
+_FALLBACK_DIR = re.compile(r"^lh-run-[A-Za-z0-9_]{8}$")  # what tempfile.mkdtemp(prefix=_FALLBACK_PREFIX) makes
+FALLBACK_MIN_AGE = 60  # seconds: an empty fallback root younger than this may be another process's, just made
+
+
+def _drop_fallback_root(root: Path):
+    """At exit: remove this process's last-resort root if its runs left it empty."""
+    with contextlib.suppress(OSError):
+        os.rmdir(root)
+
+
+def _root_safe(root: Path, shared: bool) -> bool:
+    """May start-up clean-up look into `root`? Only a real folder (never a link or junction, whose
+    target could be anything) that is this user's own, or on POSIX a shared sticky one."""
+    try:
+        st = os.lstat(root)
+    except OSError:
+        return False
+    if _is_link_stat(st) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if os.name != "nt":
+        mine = st.st_uid == os.getuid()
+        return mine or (shared and bool(st.st_mode & stat.S_ISVTX))
+    return True
+
+
+def sweep_other_roots(used: Path) -> None:
+    """Clean up dead runs in the run roots this run isn't using, so a run killed while the shared root
+    was unusable (or usable) is cleaned up whichever root the next run gets: the configured root, the
+    private fallback, and other processes' last-resort roots, which are also removed once empty and a
+    minute old. Never raises."""
+    tmp = Path(tempfile.gettempdir())
+    roots = [(temp_root(), not os.environ.get(TEMP_ROOT_ENV)),
+             (tmp / ("lh" if os.name == "nt" else f"lh-{os.getuid()}"), False)]
+    with contextlib.suppress(OSError):
+        roots += [(p, False) for p in tmp.iterdir() if _FALLBACK_DIR.match(p.name)]
+    seen = {os.path.normcase(os.path.abspath(used))}
+    for root, shared in roots:
+        key = os.path.normcase(os.path.abspath(root))
+        if key in seen or not _root_safe(root, shared):
+            continue
+        seen.add(key)
+        sweep_temp_root(root)
+        if _FALLBACK_DIR.match(root.name):
+            with contextlib.suppress(OSError):
+                if time.time() - os.lstat(root).st_mtime > FALLBACK_MIN_AGE:
+                    os.rmdir(root)  # only if empty
 
 
 def _run_root() -> Path:
@@ -1652,7 +1751,8 @@ def _run_root() -> Path:
         chosen = alt
     else:
         if not _ROOT_FALLBACK:
-            _ROOT_FALLBACK.append(Path(tempfile.mkdtemp(prefix="lh-")))
+            _ROOT_FALLBACK.append(Path(tempfile.mkdtemp(prefix=_FALLBACK_PREFIX)))
+            atexit.register(_drop_fallback_root, _ROOT_FALLBACK[0])
         chosen = _ROOT_FALLBACK[0]
     if not _TEMP_WARNED:
         _TEMP_WARNED.append(1)
@@ -1723,13 +1823,14 @@ def run_temp(suffix: str = "", label: str | None = None):
     new name instead."""
     root = _run_root()
     sweep_temp_root(root)
+    sweep_other_roots(root)
     base = f"{task_slug() or 'task'}-{os.getpid()}{suffix}"
     name = base
     for i in range(1, 1000):  # a folder under our own pid is a dead run's, or this process's earlier run's
         if not os.path.lexists(root / name):
             break
         try:
-            _rm_entry(_ext(root / name))
+            _rm_run_dir(root / name)
             break
         except OSError:
             name = f"{base}-r{i}"
