@@ -12,6 +12,9 @@ PLUGIN="$REPO/plugins/light-harness"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 unset HARNESS_ROOT CLAUDECODE LIGHT_HARNESS_SESSION_ID LIGHT_HARNESS_OTLP_ENDPOINT LIGHT_HARNESS_OTLP_HEADERS LIGHT_HARNESS_TELEMETRY
 export GIT_CONFIG_GLOBAL="$W/gitconfig"   # telemetry opt-in writes the "global" git config: keep it here
+# machine-wide state (run slots, per-run temp root) stays inside $W, never the user's real folders
+export HOME="$W/home" XDG_CACHE_HOME="$W/home/.cache" LOCALAPPDATA="$W/home/AppData/Local" LIGHT_HARNESS_TEMP_ROOT="$W/lh-tmp"
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$LOCALAPPDATA" "$LIGHT_HARNESS_TEMP_ROOT"
 PYBIN="${PYTHON:-python3}"
 H="$PYBIN $PLUGIN/scripts/harness.py"
 PASS=0; FAIL=0
@@ -713,7 +716,8 @@ assert not ({"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PROJECT_DIR", "LIGH
 assert e.get("CLAUDE_API_URL") == "http://x"                                             # a project's own variable stays
 import tempfile, pathlib
 lk = pathlib.Path(tempfile.mkdtemp()) / "base-lock-t"
-H._take_lock(lk); assert lk.read_text() == str(os.getpid())
+import json as _json
+H._take_lock(lk); assert _json.loads(lk.read_text())["pid"] == os.getpid()            # the lock is a JSON record (BR-2)
 import contextlib, io
 try:
     with contextlib.redirect_stderr(io.StringIO()):
@@ -721,8 +725,7 @@ try:
     raise AssertionError("a second run took a held lock")
 except SystemExit:
     pass
-if os.name != "nt":                                                                       # a killed run's lock is taken over
-    lk.write_text("999999999"); H._take_lock(lk); assert lk.read_text() == str(os.getpid())
+lk.write_text("999999999"); H._take_lock(lk); assert _json.loads(lk.read_text())["pid"] == os.getpid()   # a killed run's lock is taken over, on every OS
 lk.unlink()
 assert str(H.PLUGIN_ROOT / "bin") not in e["PATH"].split(os.pathsep) and e["PATH"], e["PATH"]
 lay2 = {"backend/tests/test_g.py": 'def test_br2_sweep():\n    """BR-2 [sweep]"""\n'}
