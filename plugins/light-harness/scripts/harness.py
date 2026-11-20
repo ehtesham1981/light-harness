@@ -1052,42 +1052,6 @@ def restore_aside():
         _move_dir(aside, d)
 
 
-def _take_lock(lock: Path):
-    """One test or probe run per task at a time, so a second run can't mistake the first's moved-aside
-    copies for a crashed run's. A lock left by a killed run is taken over: its process is gone (POSIX),
-    or it is over two hours old (Windows, where a process can't be probed safely)."""
-    for _ in range(2):
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-            return
-        except FileExistsError:
-            try:
-                pid = int(lock.read_text().strip() or 0)
-            except (OSError, ValueError):
-                pid = 0
-            alive = False
-            if os.name != "nt" and pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except ProcessLookupError:
-                    alive = False
-                except PermissionError:
-                    alive = True
-            elif os.name == "nt":
-                try:
-                    alive = time.time() - lock.stat().st_mtime < 7200
-                except OSError:
-                    alive = False
-            if alive:
-                die(f"another test or probe run of this task is in progress (pid {pid}); wait for it to finish. "
-                    f"If none is running (it was killed), a human can delete {lock}.")
-            lock.unlink(missing_ok=True)
-    die(f"can't take the run lock {lock}")
-
-
 @contextlib.contextmanager
 def _hidden(d: Path, aside: Path):
     """Move the task's base copies aside for the duration, and put them back."""
@@ -1157,7 +1121,7 @@ RUN_LOAD: dict = {}                         # load figures of the current suite 
 LEFTOVERS: list = []                        # (run label, entries left) for runs that left more than the limit
 HELD_LOCK: list = []                        # the run lock this process holds, for note_suite()
 STILL_ACTIVE = 259                          # GetExitCodeProcess: the process hasn't exited
-_RUN_DIR = re.compile(r"^.+-(\d+)(?:-p\d+)?$")  # a run folder's name: <slug>-<pid>[-p<n>]
+_RUN_DIR = re.compile(r"^.+-(\d+)(?:-p\d+)?(?:-r\d+)?$")  # a run folder: <slug>-<pid>[-p<n>][-r<n>]
 _TEMP_WARNED: list = []
 
 
@@ -1294,21 +1258,29 @@ def kill_tree(pid: int) -> None:
                            stdin=subprocess.DEVNULL, timeout=60)
         else:
             import signal
-            try:
-                os.killpg(pid, signal.SIGKILL)  # a suite is its own process group's leader
-            except OSError:
-                os.kill(pid, signal.SIGKILL)
+            # suites and probes are started as their own process group's leader. Only a group is killed:
+            # a pid that leads no group isn't one of our runs (e.g. reused by another process in the same
+            # second as a recorded start time, which is as precise as `ps` gets on macOS)
+            os.killpg(pid, signal.SIGKILL)
     except Exception:  # noqa: BLE001 - a process that's already gone is fine
         pass
 
 
 def read_record(path: Path) -> dict:
     """A lock, slot or owner file as a dict. A file from 1.9 or earlier holds only the pid: {"pid": n}.
-    Unreadable or not a JSON object: {}."""
-    try:
-        text = Path(path).read_text(encoding=UTF8).strip()
-    except OSError:
-        return {}
+    Unreadable or not a JSON object: {}. A read that fails because the file is being replaced right then
+    (a sharing violation on Windows) is retried for about half a second, so a live holder's record is never
+    mistaken for an empty one."""
+    for i in range(10):
+        try:
+            text = Path(path).read_text(encoding=UTF8).strip()
+            break
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            if i == 9:
+                return {}
+            time.sleep(0.05)
     if text.isdigit():
         return {"pid": int(text)}
     try:
@@ -1367,7 +1339,8 @@ def _take_lock(lock: Path):
                     die(f"another test or probe run of this task is in progress (pid {pid}); wait for it to finish. "
                         f"If none is running (it was killed), a human can delete {lock}.")
                 spid, sstart = old.get("suite_pid"), old.get("suite_start")
-                if _is_pid(spid) and sstart and proc_start(spid) == str(sstart):
+                # stop the suite only on a well-formed record whose suite is confirmed by pid and start time
+                if _is_pid(pid) and _is_pid(spid) and sstart and proc_start(spid) == str(sstart):
                     kill_tree(spid)
                     print(f"stopped an orphaned suite from a killed run (pid {spid})", flush=True)
                 lock.unlink(missing_ok=True)
@@ -1380,14 +1353,17 @@ def note_suite(pid: int) -> None:
     if not HELD_LOCK:
         return
     lock = HELD_LOCK[0]
-    rec = read_record(lock)
-    if rec.get("pid") != os.getpid():
-        return
-    rec.update(suite_pid=pid, suite_start=proc_start(pid) or "")
-    try:
-        _write_record(lock, rec)
-    except OSError:
-        pass
+    start = proc_start(pid) or ""
+    # under the same guard as _take_lock, so a takeover never reads the record while it's being replaced
+    with _os_lock(lock.with_name("guard-" + lock.name)):
+        rec = read_record(lock)
+        if rec.get("pid") != os.getpid():
+            return
+        rec.update(suite_pid=pid, suite_start=start)
+        try:
+            _write_record(lock, rec)
+        except OSError:
+            pass
 
 
 @contextlib.contextmanager
@@ -1547,9 +1523,143 @@ def temp_root() -> Path:
     return Path(tmp) / "lh"
 
 
+def _ext(p) -> str:
+    """A path for deleting a run folder's contents. On Windows the extended-length form (\\\\?\\C:\\...,
+    \\\\?\\UNC\\server\\share\\...), so contents past 260 characters can be removed even with long paths
+    switched off."""
+    s = os.path.abspath(str(p))
+    if os.name != "nt" or s.startswith("\\\\?\\"):
+        return s
+    return "\\\\?\\UNC\\" + s[2:] if s.startswith("\\\\") else "\\\\?\\" + s
+
+
+def _is_link_stat(st) -> bool:
+    """A symlink, or on Windows any reparse point (junction, symlink, mount point)."""
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
+def _rm_link(path: str):
+    """Remove a link or junction itself, never what it points to."""
+    try:
+        os.unlink(path)
+    except OSError:
+        os.rmdir(path)  # a junction, or a link to a folder on Windows
+
+
+def _rm_entry(path: str):
+    """Delete one entry and, for a real folder, everything in it, never following a link or junction.
+    Read-only files and folders are made writable first when that is what stops the delete."""
+    st = os.lstat(path)
+    if _is_link_stat(st):
+        _rm_link(path)
+        return
+    if not stat.S_ISDIR(st.st_mode):
+        try:
+            os.unlink(path)
+        except PermissionError:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            os.unlink(path)
+        return
+    if os.name != "nt" and (st.st_mode & stat.S_IRWXU) != stat.S_IRWXU:
+        with contextlib.suppress(OSError):
+            os.chmod(path, stat.S_IRWXU)  # a read-only folder: its entries can't be removed otherwise
+    with os.scandir(path) as it:
+        children = [e.path for e in it]
+    for c in children:
+        _rm_entry(c)
+    try:
+        os.rmdir(path)
+    except PermissionError:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        os.rmdir(path)
+
+
+def _rm_run_dir(p: Path):
+    """Delete a run folder and everything in it (raises OSError if something stays). Never follows a
+    link inside it; on Windows it works through extended-length paths, so deep contents go too."""
+    _rm_entry(_ext(p))
+
+
+def _root_usable(root: Path, shared: bool) -> bool:
+    """Can runs keep their folders under `root`? It is created if missing: a shared root like /tmp itself
+    (anyone may add a folder, only its owner may remove it), a private one for this user only. It must be
+    a real folder, not a link, that this process can write to; on POSIX either this user's own, or (shared)
+    open to everyone with the sticky bit, as /tmp is."""
+    try:
+        if not os.path.lexists(root):
+            if os.name == "nt":
+                os.makedirs(root, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(os.path.abspath(root)), exist_ok=True)
+                os.mkdir(root, 0o700)
+                if shared:
+                    os.chmod(root, 0o1777)
+        st = os.lstat(root)
+    except OSError:
+        return False
+    if _is_link_stat(st) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if os.name != "nt":
+        mine = st.st_uid == os.getuid()
+        if shared and not (mine or (st.st_mode & stat.S_ISVTX and st.st_mode & stat.S_IWOTH)):
+            return False
+        if not shared:
+            if not mine:
+                return False
+            if st.st_mode & 0o077:
+                try:
+                    os.chmod(root, 0o700)
+                except OSError:
+                    return False
+    try:  # writable by this process, whatever its permission bits say
+        fd, probe = tempfile.mkstemp(dir=str(root), prefix=".lh-")
+        os.close(fd)
+        os.unlink(probe)
+    except OSError:
+        return False
+    return True
+
+
+_ROOT_FALLBACK: list = []
+
+
+def _run_root() -> Path:
+    """The temp root runs actually use: temp_root() when it's usable, else a private folder for this user
+    (<TEMP>\\lh on Windows, $TMPDIR/lh-<uid> elsewhere), else a new private folder from tempfile. Prints one
+    warning line when it falls back; a run never fails because the shared root is unusable."""
+    root = temp_root()
+    if _root_usable(root, shared=not os.environ.get(TEMP_ROOT_ENV)):
+        return root
+    tmp = Path(tempfile.gettempdir())
+    alt = tmp / ("lh" if os.name == "nt" else f"lh-{os.getuid()}")
+    if os.path.normcase(os.path.abspath(alt)) != os.path.normcase(os.path.abspath(root)) and \
+            _root_usable(alt, shared=False):
+        chosen = alt
+    else:
+        if not _ROOT_FALLBACK:
+            _ROOT_FALLBACK.append(Path(tempfile.mkdtemp(prefix="lh-")))
+        chosen = _ROOT_FALLBACK[0]
+    if not _TEMP_WARNED:
+        _TEMP_WARNED.append(1)
+        print(f"⚠ can't use {root} for run temp folders; using {chosen}", flush=True)
+    return chosen
+
+
+def _folder_alive(name: str, owner: Path | None) -> bool:
+    """Is the run that made folder `name` still going? By its owner file (pid and start time) when that
+    parses, else by the pid in the folder's name."""
+    rec = read_record(owner) if owner is not None else {}
+    if _is_pid(rec.get("pid")):
+        return holder_alive(rec["pid"], rec.get("start"))
+    m = _RUN_DIR.match(name)
+    return bool(m) and proc_start(int(m.group(1))) is not None
+
+
 def sweep_temp_root(root: Path) -> list[str]:
-    """Remove run folders whose run is no longer going (and their owner files). Only real folders named
-    like run folders are touched, never links. Never raises. Returns the removed folders' names."""
+    """Remove run folders whose run is no longer going, and their owner files. Only entries named like run
+    folders are touched: real folders are deleted with their contents, a link or junction in a folder's
+    place is removed itself (never its target), and other files are left alone. Never raises. Returns
+    the removed entries' names."""
     removed = []
     try:
         entries = list(Path(root).iterdir())
@@ -1558,84 +1668,79 @@ def sweep_temp_root(root: Path) -> list[str]:
     names = {p.name for p in entries}
     for p in entries:
         name = p.name
-        m = _RUN_DIR.match(name)
-        if name.endswith(".owner") or not m:
+        if name.endswith(".owner") or not _RUN_DIR.match(name):
             continue
         try:
-            if _is_link(p) or not p.is_dir():
+            st = os.lstat(p)
+        except OSError:
+            continue
+        link = _is_link_stat(st)
+        if not link and not stat.S_ISDIR(st.st_mode):
+            continue
+        owner = p.with_name(name + ".owner") if name + ".owner" in names else None
+        try:
+            if _folder_alive(name, owner):
                 continue
+            if link:
+                _rm_link(_ext(p))
+            else:
+                _rm_run_dir(p)
         except OSError:
-            continue
-        owner = p.with_name(name + ".owner")
-        if name + ".owner" in names:
-            rec = read_record(owner)
-            alive = holder_alive(rec.get("pid"), rec.get("start")) if rec else True  # being written: leave it
-        else:
-            alive = proc_start(int(m.group(1))) is not None
-        if alive:
-            continue
-        try:
-            _rm_run_dir(p)
-            owner.unlink(missing_ok=True)
-            removed.append(name)
-        except OSError:
-            pass
+            continue  # tried again by the next run that starts
+        removed.append(name)
+        if owner is not None:
+            with contextlib.suppress(OSError):
+                owner.unlink()
     for p in entries:  # owner files whose folder is gone and whose run is over
         name = p.name
         if name.endswith(".owner") and _RUN_DIR.match(name[:-6]) and name[:-6] not in names:
-            rec = read_record(p)
-            if not holder_alive(rec.get("pid"), rec.get("start")):
-                try:
+            try:
+                if not _folder_alive(name[:-6], p):
                     p.unlink()
-                except OSError:
-                    pass
+            except OSError:
+                pass
     return removed
-
-
-def _rm_run_dir(p: Path):
-    """_rm_tree, making read-only folders writable first (POSIX) if a first try fails."""
-    try:
-        _rm_tree(p)
-    except OSError:
-        for dirpath, dirnames, _ in os.walk(p):
-            for dname in dirnames:
-                full = os.path.join(dirpath, dname)
-                if not os.path.islink(full):
-                    with contextlib.suppress(OSError):
-                        os.chmod(full, stat.S_IRWXU)
-        with contextlib.suppress(OSError):
-            os.chmod(p, stat.S_IRWXU)
-        _rm_tree(p)
 
 
 @contextlib.contextmanager
 def run_temp(suffix: str = "", label: str | None = None):
     """A new, empty temp folder for one suite or probe run, removed afterwards whatever the outcome.
     Dead runs' folders are cleaned up first. An owner file next to the folder (not in it) records this
-    process, so a later process with the same pid can't keep it alive."""
-    root = temp_root()
-    root.mkdir(parents=True, exist_ok=True)
+    process, so a later process with the same pid can't keep it alive. An old folder under this run's name
+    that can't be removed (a process still holds it open) is left for a later run, and this run uses a
+    new name instead."""
+    root = _run_root()
     sweep_temp_root(root)
-    name = f"{task_slug() or 'task'}-{os.getpid()}{suffix}"
+    base = f"{task_slug() or 'task'}-{os.getpid()}{suffix}"
+    name = base
+    for i in range(1, 1000):  # a folder under our own pid is a dead run's, or this process's earlier run's
+        if not os.path.lexists(root / name):
+            break
+        try:
+            _rm_entry(_ext(root / name))
+            break
+        except OSError:
+            name = f"{base}-r{i}"
     d, owner = root / name, root / f"{name}.owner"
-    if os.path.lexists(d):
-        _rm_run_dir(d)
     _write_record(owner, {"pid": os.getpid(), "start": proc_start(os.getpid()) or ""})
-    d.mkdir()
+    if os.name == "nt":
+        d.mkdir()
+    else:
+        d.mkdir(mode=0o700)
     try:
         yield d
     finally:
         try:
-            left = sum(1 for _ in d.iterdir())
+            left = sum(1 for _ in os.scandir(_ext(d)))
             if left > LEFTOVER_LIMIT:
                 LEFTOVERS.append((label or ("suite" if not suffix else f"probe{suffix}"), left))
         except OSError:
             pass
-        try:
+        with contextlib.suppress(OSError):
             _rm_run_dir(d)
-            owner.unlink(missing_ok=True)
-        except OSError:
-            pass  # the next run's start removes it
+        if not os.path.lexists(d):
+            with contextlib.suppress(OSError):
+                owner.unlink()  # otherwise kept, so the next run's start can tell the folder is dead
 
 
 def run_env(tmp: Path) -> dict:
