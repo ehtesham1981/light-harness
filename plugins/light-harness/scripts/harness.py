@@ -1533,9 +1533,10 @@ def run_slot(gate: str | None = None):
                         except OSError:
                             stuck.add(f.name)  # a dead entry that can't go (a folder, say): never a holder
                 if len(live) < n:
-                    used = {f.name for f, _ in live} | stuck
+                    # names as the OS compares them: on Windows SLOT-0.JSON is slot-0.json
+                    used = {os.path.normcase(x) for x in {f.name for f, _ in live} | stuck}
                     i = 0
-                    while f"slot-{i}.json" in used:
+                    while os.path.normcase(f"slot-{i}.json") in used:
                         i += 1
                     mine = d / f"slot-{i}.json"
                     _write_record(mine, _holder_record(gate))

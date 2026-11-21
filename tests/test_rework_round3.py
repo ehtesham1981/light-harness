@@ -1641,3 +1641,59 @@ def test_br9_fallback_root_kept_while_its_process_lives_sweep(hroot, monkeypatch
     finally:
         live.kill()
         live.wait()
+
+
+SLOT_NAME_CASES = ["slot-{i}.json", "SLOT-{i}.JSON", "Slot-{i}.Json", "slot-{i}.JSON"]
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_br5_slot_name_case_sweep(hroot, monkeypatch, slots):
+    """BR-5 [sweep] (Build sweep, round 4): generator: a live holder's slot file name in each letter case
+    {slot-i.json, SLOT-i.JSON, Slot-i.Json, slot-i.JSON} × its index {0, 1} × slot count {1, 2}. Oracle: where
+    the OS matches names regardless of case (Windows), that file is a live holder: a requester claims only a
+    slot the holder doesn't occupy, never overwrites it, and with no free slot waits; elsewhere a name the
+    harness doesn't write isn't a slot. The live holder's record is never replaced."""
+    fast_identity(monkeypatch)
+    monkeypatch.setattr(H, "slot_count", lambda: slots)
+    live = T.sleeper(60)
+    try:
+        rec = {"pid": live.pid, "start": str(H.proc_start(live.pid)), "repo": "r", "task": "t", "gate": "verify",
+               "since": time.time()}
+        diffs = []
+        insensitive = os.path.normcase("A") == os.path.normcase("a")
+        for pattern, idx in itertools.product(SLOT_NAME_CASES, [0, 1]):
+            d = H.slot_dir()
+            for f in d.glob("*"):
+                if f.name != ".guard":
+                    f.unlink()
+            held = d / pattern.format(i=idx)
+            T.write_json(held, rec)
+            counts = insensitive or held.name == f"slot-{idx}.json"
+            free = slots - (1 if counts else 0)
+            if free <= 0:
+                calls = {"n": 0}
+
+                def one_scan(n=slots, calls=calls):
+                    calls["n"] += 1
+                    if calls["n"] > 1:
+                        raise TimeoutError("waited")
+                    return n
+                monkeypatch.setattr(H, "slot_count", one_scan)
+                try:
+                    with H.run_slot("verify"):
+                        diffs.append(f"{held.name} × {slots} slot(s): claimed although the only slot is held")
+                except TimeoutError:
+                    pass
+                monkeypatch.setattr(H, "slot_count", lambda: slots)
+            else:
+                with H.run_slot("verify"):
+                    mine = [f for f in d.glob("*.json") if H.read_record(f).get("pid") == os.getpid()]
+                    if not mine:
+                        diffs.append(f"{held.name} × {slots}: no slot claimed")
+            if H.read_record(held).get("pid") != live.pid:
+                diffs.append(f"{held.name} × {slots} slot(s): the live holder's record was replaced")
+        print(f"BR-5 slot-name case sweep: {2 * len(SLOT_NAME_CASES)} names, {len(diffs)} differ")
+        assert not diffs, "\n  ".join(diffs)
+    finally:
+        live.kill()
+        live.wait()
