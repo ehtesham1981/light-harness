@@ -1122,6 +1122,7 @@ LEFTOVER_LIMIT = 50                         # entries a run may leave in its tem
 RUN_LOAD: dict = {}                         # load figures of the current suite run, for its suite record
 LEFTOVERS: list = []                        # (run label, entries left) for runs that left more than the limit
 HELD_LOCK: list = []                        # the run lock this process holds, for note_suite()
+HELD_SLOTS: set = set()                     # slot files this process holds now (its threads' runs)
 STILL_ACTIVE = 259                          # GetExitCodeProcess: the process hasn't exited
 _RUN_DIR = re.compile(r"^.+-(\d+)(?:-p\d+)?(?:-r\d+)?$")  # a run folder: <slug>-<pid>[-p<n>][-r<n>]
 _TEMP_WARNED: list = []
@@ -1197,7 +1198,12 @@ def _start_windows(pid: int, k32=None):
         return ""
     h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
-        return DENIED if k32.GetLastError() == 5 else None  # 5: access denied: it exists, not ours to open
+        err = k32.GetLastError()
+        if err == 87:
+            return None  # ERROR_INVALID_PARAMETER: no process has this pid
+        # 5: access denied, it exists but isn't ours to open; anything else (a resource or quota error, say)
+        # says nothing about whether it exists, so it counts as existing with an unknown start
+        return DENIED if err == 5 else ""
     try:
         code = ctypes.c_ulong()
         if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
@@ -1525,7 +1531,9 @@ def run_slot(gate: str | None = None):
                     except OSError:
                         continue  # gone already
                     rec = read_record(f) if regular else {}
-                    if regular and _slot_alive(rec):
+                    # a record of this very process that it doesn't hold now is one its release left behind
+                    leftover = rec.get("pid") == os.getpid() and os.path.normcase(str(f)) not in HELD_SLOTS
+                    if regular and not leftover and _slot_alive(rec):
                         live.append((f, rec))
                     else:
                         try:
@@ -1540,6 +1548,7 @@ def run_slot(gate: str | None = None):
                         i += 1
                     mine = d / f"slot-{i}.json"
                     _write_record(mine, _holder_record(gate))
+                    HELD_SLOTS.add(os.path.normcase(str(mine)))
                     running = len(live) + 1
                     break
             ahead = [r for _, r in live]
@@ -1566,10 +1575,14 @@ def run_slot(gate: str | None = None):
         yield
     finally:
         with _os_lock(guard):
-            try:
-                mine.unlink(missing_ok=True)
-            except OSError:
-                pass
+            HELD_SLOTS.discard(os.path.normcase(str(mine)))  # from now on a leftover record of it is dead
+            for i in range(20):  # another process may hold it open for an instant (Windows)
+                try:
+                    mine.unlink(missing_ok=True)
+                    break
+                except OSError:
+                    if i < 19:
+                        time.sleep(0.05)
 
 
 def temp_root() -> Path:
@@ -1628,8 +1641,14 @@ def _rm_entry(path: str):
         try:
             os.unlink(path)
         except PermissionError:
-            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-            os.unlink(path)
+            if st.st_nlink > 1:
+                # a hard link shares its attributes with names outside the run folder: never change them
+                if os.name != "nt":
+                    raise
+                _unlink_keep_attrs(path)
+            else:
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                os.unlink(path)
         return
     if os.name != "nt" and (st.st_mode & stat.S_IRWXU) != stat.S_IRWXU:
         with contextlib.suppress(OSError):
@@ -1643,6 +1662,30 @@ def _rm_entry(path: str):
     except PermissionError:
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
         os.rmdir(path)
+
+
+def _unlink_keep_attrs(path: str):
+    """Windows: remove one name of a file even when it is read-only, without clearing the flag (which a
+    hard link shares with the file's other names). Raises OSError if it can't (an old Windows, the file
+    in use)."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    # DELETE access, share all, open the name itself (never a reparse target), backup semantics
+    h = k.CreateFileW(path, 0x10000, 7, None, 3, 0x00200000 | 0x02000000, None)
+    if h in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        flags = wintypes.DWORD(0x1 | 0x2 | 0x10)  # DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE
+        if not k.SetFileInformationByHandle(h, 21, ctypes.byref(flags), 4):  # FileDispositionInfoEx
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        k.CloseHandle(h)
 
 
 def _rm_run_dir(p: Path):
@@ -1659,20 +1702,97 @@ def _rm_run_dir(p: Path):
         _rm_entry(_ext(p))
 
 
-def _reset_acl(p: Path):
-    """Windows: give a run folder and everything in it their inherited permissions back (`icacls /reset`,
-    one entry at a time, a folder before its contents so it can be listed), so a deny entry the suite
-    set no longer stops the delete. A link or junction is never entered, so nothing outside the run
-    folder changes. Best effort."""
-    path = str(p)
+_WIN_SD: list = []  # [security descriptor buffer or None]: owner-only permissions for run folders (Windows)
+
+
+def _private_sd():
+    """Windows: a security descriptor whose protected DACL grants full control only to this user, SYSTEM
+    and Administrators (as the user's own %LOCALAPPDATA%\\Temp does), inherited by everything made inside.
+    None if it can't be built. Built once per process."""
+    if _WIN_SD:
+        return _WIN_SD[0]
+    sd = None
     try:
-        if _is_link_stat(os.lstat(path)):
-            return
+        import ctypes
+        from ctypes import wintypes
+        adv = ctypes.WinDLL("advapi32", use_last_error=True)
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetCurrentProcess.restype = wintypes.HANDLE
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.LocalFree.argtypes = [ctypes.c_void_p]
+        adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        adv.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.DWORD)]
+        adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+        tok = wintypes.HANDLE()
+        if adv.OpenProcessToken(k.GetCurrentProcess(), 0x8, ctypes.byref(tok)):  # TOKEN_QUERY
+            try:
+                n = wintypes.DWORD()
+                adv.GetTokenInformation(tok, 1, None, 0, ctypes.byref(n))  # TokenUser
+                buf = ctypes.create_string_buffer(n.value)
+                s = wintypes.LPWSTR()
+                if adv.GetTokenInformation(tok, 1, buf, n, ctypes.byref(n)) and adv.ConvertSidToStringSidW(
+                        ctypes.c_void_p(ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]), ctypes.byref(s)):
+                    sid = s.value
+                    k.LocalFree(s)
+                    p = ctypes.c_void_p()
+                    sddl = f"D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+                    if adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(p), None):
+                        sd = p  # kept for the life of the process
+            finally:
+                k.CloseHandle(tok)
+    except (OSError, AttributeError, ValueError):
+        sd = None
+    _WIN_SD.append(sd)
+    return sd
+
+
+def _mkdir_private(d: Path) -> None:
+    """Create a run folder that only this user (plus SYSTEM and Administrators) can open, whatever the root
+    above it grants: on Windows with the owner-only descriptor, elsewhere with mode 700. Raises OSError if
+    it can't be made that way."""
+    if os.name != "nt":
+        d.mkdir(mode=0o700)
+        return
+    import ctypes
+    from ctypes import wintypes
+    sd = _private_sd()
+    if sd is None:
+        raise OSError(f"can't build private permissions for {d}")
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SecurityAttributes)]
+    sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), sd, False)
+    if not k.CreateDirectoryW(_ext(d), ctypes.byref(sa)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _reset_acl(p: Path):
+    """Windows: give a run folder and everything in it owner-only permissions (one entry at a time, a folder
+    before its contents so it can be listed), so a deny entry the suite set no longer stops the delete.
+    Each entry's own permissions are replaced without propagating to existing children, and a link,
+    junction or hard-linked file is never touched, so nothing outside the run folder changes. Best effort."""
+    path = _ext(p)
+    try:
+        st = os.lstat(path)
+        if _is_link_stat(st) or (not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1):
+            return  # a link, or a hard link whose permissions are shared with a file outside the run folder
     except OSError:
         return
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(["icacls", path, "/reset", "/C", "/Q"], capture_output=True, stdin=subprocess.DEVNULL,
-                       timeout=60)
+    sd = _private_sd()
+    if sd is not None:
+        with contextlib.suppress(OSError, AttributeError):
+            import ctypes
+            from ctypes import wintypes
+            adv = ctypes.WinDLL("advapi32", use_last_error=True)
+            adv.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+            adv.SetFileSecurityW(path, 0x4, sd)  # DACL only; doesn't propagate to existing children
     with contextlib.suppress(OSError):
         if stat.S_ISDIR(os.lstat(path).st_mode):
             with os.scandir(path) as it:
@@ -1910,11 +2030,22 @@ def run_temp(suffix: str = "", label: str | None = None):
         except OSError:
             name = f"{base}-r{i}"
     d, owner = root / name, root / f"{name}.owner"
-    _write_record(owner, {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "user": _user()})
-    if os.name == "nt":
+    record = {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "user": _user()}
+    _write_record(owner, record)
+    try:
+        _mkdir_private(d)  # only this user may open it, whatever a shared root like C:\lh-tmp grants
+    except OSError:
+        if os.name != "nt":
+            raise
+        # owner-only permissions couldn't be set: use the user's own TEMP, which is private already
+        with contextlib.suppress(OSError):
+            owner.unlink()
+        alt = Path(tempfile.gettempdir()) / "lh"
+        if not _root_usable(alt, shared=False):
+            raise
+        d, owner = alt / name, alt / f"{name}.owner"
+        _write_record(owner, record)
         d.mkdir()
-    else:
-        d.mkdir(mode=0o700)
     try:
         yield d
     finally:
