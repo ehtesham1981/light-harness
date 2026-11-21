@@ -1726,10 +1726,47 @@ _FALLBACK_DIR = re.compile(r"^lh-run-[A-Za-z0-9_]{8}$")  # what tempfile.mkdtemp
 FALLBACK_MIN_AGE = 60  # seconds: an empty fallback root younger than this may be another process's, just made
 
 
+_ROOT_OWNER = ".lh-root"  # in a last-resort root: the process using it (not shaped like a run folder's name)
+
+
+def _new_fallback_root() -> Path:
+    """A new last-resort root for this process, with a record of this process inside it, so another run's
+    clean-up leaves it alone while this process lives (it may sit empty between runs for a long time)."""
+    root = Path(tempfile.mkdtemp(prefix=_FALLBACK_PREFIX))
+    with contextlib.suppress(OSError):
+        _write_record(root / _ROOT_OWNER, {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""),
+                                           "user": _user()})
+    atexit.register(_drop_fallback_root, root)
+    return root
+
+
 def _drop_fallback_root(root: Path):
     """At exit: remove this process's last-resort root if its runs left it empty."""
     with contextlib.suppress(OSError):
+        (root / _ROOT_OWNER).unlink()
+    with contextlib.suppress(OSError):
         os.rmdir(root)
+
+
+def _drop_dead_fallback_root(root: Path, idle: float):
+    """Remove another process's last-resort root once it is empty and that process is over: by its record
+    when it has one (a live one is kept however long it has been idle), else when it had been idle over
+    FALLBACK_MIN_AGE (a root just made, before its record is written). Never raises."""
+    marker = root / _ROOT_OWNER
+    try:
+        rec = read_record(marker) if os.path.lexists(marker) else None
+        if rec is not None:
+            if _is_pid(rec.get("pid")) and holder_alive(rec["pid"], rec.get("start")):
+                return
+        elif idle <= FALLBACK_MIN_AGE:
+            return
+        if any(e.name != _ROOT_OWNER for e in os.scandir(root)):
+            return  # something is still in it
+        if rec is not None:
+            marker.unlink()
+        os.rmdir(root)
+    except OSError:
+        pass
 
 
 def _root_safe(root: Path, shared: bool) -> bool:
@@ -1750,8 +1787,8 @@ def _root_safe(root: Path, shared: bool) -> bool:
 def sweep_other_roots(used: Path) -> None:
     """Clean up dead runs in the run roots this run isn't using, so a run killed while the shared root
     was unusable (or usable) is cleaned up whichever root the next run gets: the configured root, the
-    private fallback, and other processes' last-resort roots, which are also removed once empty and a
-    minute old. Never raises."""
+    private fallback, and other processes' last-resort roots, which are also removed once empty and their
+    process is over. Never raises."""
     tmp = Path(tempfile.gettempdir())
     roots = [(temp_root(), not os.environ.get(TEMP_ROOT_ENV)),
              (tmp / ("lh" if os.name == "nt" else f"lh-{os.getuid()}"), False)]
@@ -1763,11 +1800,13 @@ def sweep_other_roots(used: Path) -> None:
         if key in seen or not _root_safe(root, shared):
             continue
         seen.add(key)
+        try:
+            idle = time.time() - os.lstat(root).st_mtime  # before the sweep, which may change it
+        except OSError:
+            continue
         sweep_temp_root(root)
         if _FALLBACK_DIR.match(root.name):
-            with contextlib.suppress(OSError):
-                if time.time() - os.lstat(root).st_mtime > FALLBACK_MIN_AGE:
-                    os.rmdir(root)  # only if empty
+            _drop_dead_fallback_root(root, idle)
 
 
 def _run_root() -> Path:
@@ -1783,9 +1822,8 @@ def _run_root() -> Path:
             _root_usable(alt, shared=False):
         chosen = alt
     else:
-        if not _ROOT_FALLBACK:
-            _ROOT_FALLBACK.append(Path(tempfile.mkdtemp(prefix=_FALLBACK_PREFIX)))
-            atexit.register(_drop_fallback_root, _ROOT_FALLBACK[0])
+        if not _ROOT_FALLBACK or not _root_safe(_ROOT_FALLBACK[0], shared=False):
+            _ROOT_FALLBACK[:] = [_new_fallback_root()]  # none yet, or it was removed under us
         chosen = _ROOT_FALLBACK[0]
     if not _TEMP_WARNED:
         _TEMP_WARNED.append(1)

@@ -1565,3 +1565,79 @@ def test_rv14_denied_pid_frees_slot_and_lock(hroot, monkeypatch, capsys):
         if lk.get("suite_pid") != 4242 or lk.get("suite_start") != "" or lk.get("start") != "":
             diffs.append(f"note_suite's record {lk!r}")
     assert not diffs, problems_report("RV-14", diffs, len(pids) * 5 + 4)
+
+
+# ---------------------------------------------------------------- BR-9: a last-resort root under its live process
+
+ROOT_OWNERS = ["live", "dead", "damaged", "missing"]
+ROOT_AGES = [5, 90, 3600]           # seconds since the root last changed (idle between runs)
+ROOT_CONTENTS = ["empty", "dead-run", "live-run"]
+
+
+def test_br9_fallback_root_kept_while_its_process_lives_sweep(hroot, monkeypatch):
+    """BR-9 [sweep] (Build sweep, round 4): generator: a last-resort `lh-run-*` root's own record {its process
+    live, its process dead, damaged bytes, no record (just made)} × idle time {5 s, 90 s, an hour} × what is in
+    it {nothing, a dead run's folder with its owner, a live run's folder with its owner}, swept by another
+    run's start-up clean-up. Oracle (BR-9 `Otherwise:`, "nothing raises"): a root whose process is live is
+    kept however long it has been idle; a root with no usable record is judged by age (kept under
+    FALLBACK_MIN_AGE); a dead run's folder in it is removed, a live run's folder is kept, and so is any root
+    that still holds something. Then: a process whose own last-resort root was removed under it gets a new
+    one, and its next run_temp works."""
+    live = T.sleeper(120)
+    try:
+        live_tok = str(H.proc_start(live.pid))
+        dead_pid, dead_tok = dead_child()
+        diffs, n = [], 0
+        for owner, age, content in itertools.product(ROOT_OWNERS, ROOT_AGES, ROOT_CONTENTS):
+            n += 1
+            root = hroot.systemp / f"lh-run-c{n:07d}"
+            root.mkdir()
+            marker = root / H._ROOT_OWNER
+            if owner == "live":
+                T.write_json(marker, {"pid": live.pid, "start": live_tok, "user": H._user()})
+            elif owner == "dead":
+                T.write_json(marker, {"pid": dead_pid, "start": dead_tok, "user": H._user()})
+            elif owner == "damaged":
+                marker.write_bytes(b"\xff\xfe{")
+            run = None
+            if content != "empty":
+                pid, tok = (dead_pid, dead_tok) if content == "dead-run" else (live.pid, live_tok)
+                run = root / f"other-{pid}"
+                run.mkdir()
+                T.write_json(root / f"other-{pid}.owner", {"pid": pid, "start": tok, "user": H._user()})
+            past = time.time() - age
+            os.utime(root, (past, past))
+            try:
+                H.sweep_other_roots(hroot.root)
+            except Exception as e:  # noqa: BLE001 - the class is "raises"
+                diffs.append(f"{owner} × {age} s × {content}: raised {type(e).__name__}: {e}")
+                continue
+            owner_live = owner == "live"
+            judged_dead = (owner in ("dead", "damaged")) or (owner == "missing" and age > H.FALLBACK_MIN_AGE)
+            holds = content == "live-run"
+            expect_root = owner_live or not judged_dead or holds
+            if root.exists() != expect_root:
+                diffs.append(f"{owner} × {age} s × {content}: root {'kept' if root.exists() else 'removed'}, "
+                             f"expected {'kept' if expect_root else 'removed'}")
+            if run is not None and root.exists() and run.exists() != (content == "live-run"):
+                diffs.append(f"{owner} × {age} s × {content}: run folder {'kept' if run.exists() else 'removed'}")
+        # a process whose own last-resort root was removed under it
+        monkeypatch.setattr(H, "_root_usable", lambda root, shared: False)
+        first = H._run_root()
+        mine = (first / H._ROOT_OWNER)
+        if H.read_record(mine).get("pid") != os.getpid():
+            diffs.append("own last-resort root has no record of this process")
+        H._drop_fallback_root(first)
+        if first.exists():
+            diffs.append("own empty last-resort root not removed at exit")
+        try:
+            with H.run_temp() as d:
+                if not d.is_dir() or d.parent == first:
+                    diffs.append(f"run after its root was removed used {d}")
+        except Exception as e:  # noqa: BLE001
+            diffs.append(f"run after its root was removed raised {type(e).__name__}: {e}")
+        print(f"BR-9 fallback-root sweep: {n} roots, {len(diffs)} differ")
+        assert not diffs, "\n  ".join(diffs[:10])
+    finally:
+        live.kill()
+        live.wait()
