@@ -140,14 +140,18 @@ def test_ac2_start_windows_fake_k32(procs, denied, expected):
 
 
 def test_ac2_ex7_windows_pid_reuse_and_access_denied(monkeypatch):
-    """AC-2 EX-7 BR-2 (Windows branch, fake pids): a record whose pid now belongs to a newer process (creation
-    time differs) is dead; the same creation time is alive; access denied is alive (can't compare); an
-    exited process is dead."""
+    """AC-2 EX-7 BR-2 RV-14 (Windows branch, fake pids): a record whose pid now belongs to a newer process
+    (creation time differs) is dead; the same creation time is alive; a record with a start whose pid this
+    user can't open (access denied) is dead, since only this user's harness writes records and it can open
+    its own processes; a legacy record (no start) with a denied pid is alive while the pid exists; an exited
+    process is dead."""
     k32 = FakeK32({4242: (STILL_ACTIVE, FT2), 4246: (0, FT1)}, denied=(4250,))
     monkeypatch.setattr(H, "proc_start", lambda pid: H._start_windows(pid, k32=k32))
     assert H.holder_alive(4242, str(FT1)) is False
     assert H.holder_alive(4242, str(FT2)) is True
-    assert H.holder_alive(4250, str(FT1)) is True
+    assert H.holder_alive(4250, str(FT1)) is False
+    assert H.holder_alive(4250, None) is True
+    assert H.holder_alive(4250, "") is True
     assert H.holder_alive(4246, str(FT1)) is False
     assert H.holder_alive(4254, str(FT1)) is False
 
@@ -443,12 +447,13 @@ class FakeWorld:
 
 
 def _lock_content(branch: str, holder: str, suite: str) -> tuple[str, bool]:
-    """(file content, whether the holder counts as alive by BR-2)."""
+    """(file content, whether the holder counts as alive by BR-2). On the nt branch the "start unreadable"
+    holder is a pid this user can't open (access denied) with a recorded start: dead (BR-2, RV-14)."""
     tok = lambda i: _token(branch, i)  # noqa: E731
     holder_rec = {"alive": ({"pid": PIDS["holder"], "start": tok(1)}, True),
                   "dead": ({"pid": PIDS["holder_dead"], "start": tok(3)}, False),
                   "pid reused": ({"pid": PIDS["holder_reused"], "start": tok(77)}, False),
-                  "alive, start unreadable": ({"pid": PIDS["holder_unreadable"], "start": tok(7)}, True)}
+                  "alive, start unreadable": ({"pid": PIDS["holder_unreadable"], "start": tok(7)}, branch != "nt")}
     suite_rec = {"none": {}, "alive": {"suite_pid": PIDS["suite"], "suite_start": tok(4)},
                  "dead": {"suite_pid": PIDS["suite_dead"], "suite_start": tok(6)},
                  "pid reused": {"suite_pid": PIDS["suite_reused"], "suite_start": tok(78)},
