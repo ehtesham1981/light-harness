@@ -1158,9 +1158,26 @@ def _kernel32():
                             "GetLastError": staticmethod(ctypes.get_last_error)})()
 
 
+class Unopenable(str):
+    """The start-time token of a process this user can't open (Windows: access denied). It is an empty
+    string, so it compares and tests like "" (start unknown) everywhere except where a check asks for it
+    by type. Never written into a record."""
+
+
+DENIED = Unopenable()
+
+
+def _user() -> str:
+    """This user, as written in run-folder owner records: DOMAIN\\name on Windows, the uid elsewhere."""
+    if os.name == "nt":
+        return f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".lower()
+    return str(os.getuid())
+
+
 def proc_start(pid: int):
     """A process's start-time token: None if no such process (or it has exited); "" if it exists but its
-    start time can't be read; otherwise an opaque string that differs for a later process with that pid."""
+    start time can't be read (DENIED, also "", when this user can't open it); otherwise an opaque string
+    that differs for a later process with that pid."""
     if os.name == "nt":
         return _start_windows(pid)
     if sys.platform.startswith("linux"):
@@ -1180,7 +1197,7 @@ def _start_windows(pid: int, k32=None):
         return ""
     h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
-        return "" if k32.GetLastError() == 5 else None  # 5: access denied, so it exists
+        return DENIED if k32.GetLastError() == 5 else None  # 5: access denied: it exists, not ours to open
     try:
         code = ctypes.c_ulong()
         if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
@@ -1259,9 +1276,20 @@ def holder_alive(pid, start) -> bool:
     if cur is None:
         return False
     start = _start_token(start)
-    if not start or cur == "":
+    if not start:
+        return True  # nothing to compare: alive while the pid exists
+    if isinstance(cur, Unopenable):
+        return False  # the record has a start, so this user's harness wrote it, and it could open that one
+    if cur == "":
         return True
     return cur == start
+
+
+def _slot_alive(rec: dict) -> bool:
+    """Is a slot's holder still running? As holder_alive, except that a slot record without a string start
+    is a dead holder's: the harness always writes one, and there are no slot files from before 1.10."""
+    start = rec.get("start")
+    return isinstance(start, str) and holder_alive(rec.get("pid"), start)
 
 
 def _start_token(start):
@@ -1335,7 +1363,7 @@ def _holder_record(gate: str | None = None) -> dict:
         task = task_slug() or ""
     except (SystemExit, Exception):  # noqa: BLE001
         task = ""
-    return {"pid": os.getpid(), "start": proc_start(os.getpid()) or "", "repo": repo, "task": task,
+    return {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "repo": repo, "task": task,
             "gate": gate or RUN_LOAD.get("gate") or "probe", "since": time.time()}
 
 
@@ -1375,7 +1403,7 @@ def note_suite(pid: int) -> None:
     if not HELD_LOCK:
         return
     lock = HELD_LOCK[0]
-    start = proc_start(pid) or ""
+    start = str(proc_start(pid) or "")
     # under the same guard as _take_lock, so a takeover never reads the record while it's being replaced
     with _os_lock(lock.with_name("guard-" + lock.name)):
         rec = read_record(lock)
@@ -1472,7 +1500,8 @@ def waiting_line(holders: list[dict], now: float | None = None) -> str:
     for r in holders:
         since = r.get("since")
         age = _age(now - since) if _finite(since) and _finite(now - since) else "?"
-        parts.append(f"{r.get('repo') or '?'}/{r.get('task') or '?'} running {r.get('gate') or '?'} ({age})")
+        repo, task, gate = (v if isinstance(v, str) and v else "?" for v in (r.get("repo"), r.get("task"), r.get("gate")))
+        parts.append(f"{repo}/{task} running {gate} ({age})")
     return "waiting for a run slot: " + ", ".join(parts)
 
 
@@ -1489,18 +1518,22 @@ def run_slot(gate: str | None = None):
     try:
         while mine is None:
             with _os_lock(guard):
-                n, live = slot_count(), []
+                n, live, stuck = slot_count(), [], set()
                 for f in sorted(d.glob("slot-*.json")):
-                    rec = read_record(f)
-                    if holder_alive(rec.get("pid"), rec.get("start")):
+                    try:
+                        regular = stat.S_ISREG(os.lstat(f).st_mode)
+                    except OSError:
+                        continue  # gone already
+                    rec = read_record(f) if regular else {}
+                    if regular and _slot_alive(rec):
                         live.append((f, rec))
                     else:
                         try:
                             f.unlink(missing_ok=True)
                         except OSError:
-                            live.append((f, rec))  # can't free it now; look again next time
+                            stuck.add(f.name)  # a dead entry that can't go (a folder, say): never a holder
                 if len(live) < n:
-                    used = {f.name for f, _ in live}
+                    used = {f.name for f, _ in live} | stuck
                     i = 0
                     while f"slot-{i}.json" in used:
                         i += 1
@@ -1765,6 +1798,9 @@ def _folder_alive(name: str, owner: Path | None) -> bool:
     parses, else by the pid in the folder's name."""
     rec = read_record(owner) if owner is not None else {}
     if _is_pid(rec.get("pid")):
+        if _start_token(rec.get("start")) and isinstance(proc_start(rec["pid"]), Unopenable):
+            # the shared root may hold another user's folders, whose live harness this user can't open
+            return rec.get("user") != _user()
         return holder_alive(rec["pid"], rec.get("start"))
     m = _RUN_DIR.match(name)
     return bool(m) and _is_pid(int(m.group(1))) and proc_start(int(m.group(1))) is not None
@@ -1835,7 +1871,7 @@ def run_temp(suffix: str = "", label: str | None = None):
         except OSError:
             name = f"{base}-r{i}"
     d, owner = root / name, root / f"{name}.owner"
-    _write_record(owner, {"pid": os.getpid(), "start": proc_start(os.getpid()) or ""})
+    _write_record(owner, {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "user": _user()})
     if os.name == "nt":
         d.mkdir()
     else:
