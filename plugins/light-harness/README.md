@@ -17,7 +17,7 @@ Review speed (1.8):
 Parallel tasks share the machine (1.10):
 - Suite and probe runs take a machine-wide run slot (`git config --global lightharness.slots N`, default cores ÷ 8) and wait, saying who is ahead, when all are taken. `{concurrency}` in `test_cmd` becomes cores ÷ slots.
 - A suite past `suite_timeout` (default 3600 s) is killed with its process tree and fails the gate with exit 124. A killed run's lock or slot is taken over at once on every OS, and its orphaned suite is stopped.
-- Each run gets its own empty TEMP folder (`<drive>:\lh-tmp\…` on Windows, `$TMPDIR/lh/…` elsewhere), removed afterwards.
+- Each run gets its own empty TEMP folder (`<drive>:\lh-tmp\…` on Windows, `$TMPDIR/lh/…` elsewhere), removed afterwards (one user per machine in this version; see the README).
 CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics`, including each task's time split into agent, human and idle time and its test-suite cost: suite runs, cache hit rate and suite minutes (engineer KPIs are opt-in, under a nickname).
 
 Full documentation: see the repository README.
