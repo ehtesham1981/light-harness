@@ -1344,10 +1344,16 @@ def read_record(path: Path) -> dict:
     return d if isinstance(d, dict) else {}
 
 
-def _write_record(path: Path, rec: dict):
-    """Replace a record file in one step, so a reader never sees half of it."""
+def _write_record(path: Path, rec: dict, private: bool = False):
+    """Replace a record file in one step, so a reader never sees half of it. `private`: on Windows the file
+    is created with owner-only permissions (as run folders are), so other users of a shared root can't
+    change it; os.replace keeps them."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(rec), encoding=UTF8)
+    data = json.dumps(rec).encode(UTF8)
+    if private and os.name == "nt" and _private_sd() is not None:
+        _write_private_file(tmp, data)
+    else:
+        tmp.write_bytes(data)
     for i in range(20):
         try:
             os.replace(tmp, path)
@@ -1357,6 +1363,31 @@ def _write_record(path: Path, rec: dict):
                 tmp.unlink(missing_ok=True)
                 raise
             time.sleep(0.05)
+
+
+def _write_private_file(path: Path, data: bytes) -> None:
+    """Windows: create a new file with the owner-only descriptor (`_private_sd`) and write `data` to it.
+    Raises OSError if it can't."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SecurityAttributes),
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k.CreateFileW.restype = wintypes.HANDLE
+    sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), _private_sd(), False)
+    # GENERIC_WRITE, no sharing, CREATE_ALWAYS, normal attributes
+    h = k.CreateFileW(_ext(path), 0x40000000, 0, ctypes.byref(sa), 2, 0x80, None)
+    if h in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    fd = msvcrt.open_osfhandle(h, os.O_WRONLY | os.O_BINARY)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
 
 
 def _holder_record(gate: str | None = None) -> dict:
@@ -1632,36 +1663,55 @@ def _rm_link(path: str):
 
 def _rm_entry(path: str):
     """Delete one entry and, for a real folder, everything in it, never following a link or junction.
-    Read-only files and folders are made writable first when that is what stops the delete."""
+    Read-only files and folders are made writable first when that is what stops the delete. Works with an
+    explicit stack, not recursion, so a tree of any depth is handled (raises OSError, never RecursionError,
+    when something stays)."""
     st = os.lstat(path)
     if _is_link_stat(st):
         _rm_link(path)
         return
     if not stat.S_ISDIR(st.st_mode):
-        try:
-            os.unlink(path)
-        except PermissionError:
-            if st.st_nlink > 1:
-                # a hard link shares its attributes with names outside the run folder: never change them
-                if os.name != "nt":
-                    raise
-                _unlink_keep_attrs(path)
-            else:
-                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-                os.unlink(path)
+        _rm_file(path, st)
         return
-    if os.name != "nt" and (st.st_mode & stat.S_IRWXU) != stat.S_IRWXU:
-        with contextlib.suppress(OSError):
-            os.chmod(path, stat.S_IRWXU)  # a read-only folder: its entries can't be removed otherwise
-    with os.scandir(path) as it:
-        children = [e.path for e in it]
-    for c in children:
-        _rm_entry(c)
+    stack = [(path, st, False)]  # (folder, its stat, contents already handled)
+    while stack:
+        folder, fst, emptied = stack.pop()
+        if emptied:
+            try:
+                os.rmdir(folder)
+            except PermissionError:
+                os.chmod(folder, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+                os.rmdir(folder)
+            continue
+        if os.name != "nt" and (fst.st_mode & stat.S_IRWXU) != stat.S_IRWXU:
+            with contextlib.suppress(OSError):
+                os.chmod(folder, stat.S_IRWXU)  # a read-only folder: its entries can't be removed otherwise
+        stack.append((folder, fst, True))
+        with os.scandir(folder) as it:
+            children = [e.path for e in it]
+        for c in children:
+            cst = os.lstat(c)
+            if _is_link_stat(cst):
+                _rm_link(c)
+            elif stat.S_ISDIR(cst.st_mode):
+                stack.append((c, cst, False))
+            else:
+                _rm_file(c, cst)
+
+
+def _rm_file(path: str, st):
+    """Delete one file (not a folder or link). A read-only one is made writable first, except a hard link,
+    whose flag is shared with names outside the run folder: that name is removed without changing it."""
     try:
-        os.rmdir(path)
+        os.unlink(path)
     except PermissionError:
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-        os.rmdir(path)
+        if st.st_nlink > 1:
+            if os.name != "nt":
+                raise
+            _unlink_keep_attrs(path)
+        else:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            os.unlink(path)
 
 
 def _unlink_keep_attrs(path: str):
@@ -1777,28 +1827,32 @@ def _reset_acl(p: Path):
     """Windows: give a run folder and everything in it owner-only permissions (one entry at a time, a folder
     before its contents so it can be listed), so a deny entry the suite set no longer stops the delete.
     Each entry's own permissions are replaced without propagating to existing children, and a link,
-    junction or hard-linked file is never touched, so nothing outside the run folder changes. Best effort."""
-    path = _ext(p)
-    try:
-        st = os.lstat(path)
-        if _is_link_stat(st) or (not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1):
-            return  # a link, or a hard link whose permissions are shared with a file outside the run folder
-    except OSError:
-        return
+    junction or hard-linked file is never touched, so nothing outside the run folder changes. Uses an
+    explicit stack, so a tree of any depth is handled. Best effort."""
     sd = _private_sd()
+    set_security = None
     if sd is not None:
         with contextlib.suppress(OSError, AttributeError):
             import ctypes
             from ctypes import wintypes
             adv = ctypes.WinDLL("advapi32", use_last_error=True)
             adv.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
-            adv.SetFileSecurityW(path, 0x4, sd)  # DACL only; doesn't propagate to existing children
-    with contextlib.suppress(OSError):
-        if stat.S_ISDIR(os.lstat(path).st_mode):
-            with os.scandir(path) as it:
-                children = [e.path for e in it]
-            for c in children:
-                _reset_acl(Path(c))
+            set_security = adv.SetFileSecurityW
+    stack = [_ext(p)]
+    while stack:
+        path = stack.pop()
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if _is_link_stat(st) or (not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1):
+            continue  # a link, or a hard link whose permissions are shared with a file outside the run folder
+        if set_security is not None:
+            set_security(path, 0x4, sd)  # DACL only; doesn't propagate to existing children
+        if stat.S_ISDIR(st.st_mode):
+            with contextlib.suppress(OSError):
+                with os.scandir(path) as it:
+                    stack.extend(e.path for e in it)
 
 
 def _root_usable(root: Path, shared: bool) -> bool:
@@ -1992,8 +2046,8 @@ def sweep_temp_root(root: Path) -> list[str]:
             if _folder_alive(name, owner):
                 continue
             _rm_run_dir(p)  # a link itself, a file, or a folder with its contents
-        except OSError:
-            continue  # tried again by the next run that starts
+        except Exception:  # noqa: BLE001 - clean-up never stops a run; tried again by the next run that starts
+            continue
         removed.append(name)
         if owner is not None:
             with contextlib.suppress(OSError):
@@ -2027,11 +2081,11 @@ def run_temp(suffix: str = "", label: str | None = None):
         try:
             _rm_run_dir(root / name)
             break
-        except OSError:
+        except Exception:  # noqa: BLE001 - an old folder that can't go is left; this run takes a new name
             name = f"{base}-r{i}"
     d, owner = root / name, root / f"{name}.owner"
     record = {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "user": _user()}
-    _write_record(owner, record)
+    _write_record(owner, record, private=True)  # other users of a shared root mustn't be able to change it
     try:
         _mkdir_private(d)  # only this user may open it, whatever a shared root like C:\lh-tmp grants
     except OSError:
@@ -2055,7 +2109,7 @@ def run_temp(suffix: str = "", label: str | None = None):
                 LEFTOVERS.append((label or ("suite" if not suffix else f"probe{suffix}"), left))
         except OSError:
             pass
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(Exception):  # clean-up never replaces the run's own outcome
             _rm_run_dir(d)
         if not os.path.lexists(d):
             with contextlib.suppress(OSError):
