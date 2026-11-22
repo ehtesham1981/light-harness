@@ -38,6 +38,7 @@ import math
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -1347,13 +1348,20 @@ def read_record(path: Path) -> dict:
 def _write_record(path: Path, rec: dict, private: bool = False):
     """Replace a record file in one step, so a reader never sees half of it. `private`: on Windows the file
     is created with owner-only permissions (as run folders are), so other users of a shared root can't
-    change it; os.replace keeps them."""
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    change it; os.replace keeps them. The temp file is always a new file under an unpredictable name: a
+    file someone else made under the name in advance is never opened, so its permissions can't carry over."""
     data = json.dumps(rec).encode(UTF8)
-    if private and os.name == "nt" and _private_sd() is not None:
-        _write_private_file(tmp, data)
-    else:
-        tmp.write_bytes(data)
+    for attempt in range(100):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+        try:
+            if private and os.name == "nt" and _private_sd() is not None:
+                _write_private_file(tmp, data)
+            else:
+                _write_new_file(tmp, data, 0o600 if private else 0o666)
+            break
+        except FileExistsError:
+            if attempt == 99:
+                raise
     for i in range(20):
         try:
             os.replace(tmp, path)
@@ -1365,9 +1373,23 @@ def _write_record(path: Path, rec: dict, private: bool = False):
             time.sleep(0.05)
 
 
+def _write_new_file(path: Path, data: bytes, mode: int) -> None:
+    """Create `path` as a new file (FileExistsError if anything is already there) and write `data` to it.
+    A partly written file is removed."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+
+
 def _write_private_file(path: Path, data: bytes) -> None:
     """Windows: create a new file with the owner-only descriptor (`_private_sd`) and write `data` to it.
-    Raises OSError if it can't."""
+    It is never an existing file: Windows would keep that file's own permissions and ignore the descriptor
+    (FileExistsError then). Raises OSError if it can't."""
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -1381,13 +1403,18 @@ def _write_private_file(path: Path, data: bytes) -> None:
                               wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     k.CreateFileW.restype = wintypes.HANDLE
     sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), _private_sd(), False)
-    # GENERIC_WRITE, no sharing, CREATE_ALWAYS, normal attributes
-    h = k.CreateFileW(_ext(path), 0x40000000, 0, ctypes.byref(sa), 2, 0x80, None)
+    # GENERIC_WRITE, no sharing, CREATE_NEW, normal attributes
+    h = k.CreateFileW(_ext(path), 0x40000000, 0, ctypes.byref(sa), 1, 0x80, None)
     if h in (None, ctypes.c_void_p(-1).value):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise ctypes.WinError(ctypes.get_last_error())  # ERROR_FILE_EXISTS comes out as FileExistsError
     fd = msvcrt.open_osfhandle(h, os.O_WRONLY | os.O_BINARY)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(_ext(path))
+        raise
 
 
 def _holder_record(gate: str | None = None) -> dict:
