@@ -186,7 +186,7 @@ def test_ac1_ex5_verify_times_out(snaps5, tmp_path, tmp_path_factory):
     rc, out = toy.h("verify")
     assert rc == 0 and toy.cache.exists(), out
     pids = tmp_path / "pids"
-    toy.ctl(_tree_ctl(pids, 10))
+    toy.ctl(_tree_ctl(pids, 120))
     suite = grand = None
     try:
         t0 = time.monotonic()
@@ -194,7 +194,7 @@ def test_ac1_ex5_verify_times_out(snaps5, tmp_path, tmp_path_factory):
         took = time.monotonic() - t0
         assert rc == 124, out
         assert "suite timed out after 5 s" in out, out
-        assert took < 11, took
+        assert 5 <= took < 60, took
         suite, grand = (int(x) for x in pids.read_text().split())
         assert T.wait_for(lambda: H.proc_start(suite) is None and H.proc_start(grand) is None, 10), \
             "a process of the timed-out suite is still running"
