@@ -430,6 +430,10 @@ def test_rv2_unusable_temp_root_sweep(hroot, monkeypatch, capsys, osname, state)
     monkeypatch.setattr(H, "os", _Proxy(os, name=osname, lstat=lstat, getuid=lambda: 1000,
                                         chmod=lambda *a, **k: None))
     monkeypatch.setattr(H, "tempfile", _Proxy(tempfile, gettempdir=lambda: str(usertemp), mkstemp=mkstemp))
+    if osname == "nt" and os.name != "nt":
+        # Windows faked on another OS: its owner-only descriptor can't be built here, so stand in a plain
+        # private mkdir for the run folder (this test checks which root is chosen, not permissions)
+        monkeypatch.setattr(H, "_mkdir_private", lambda d: d.mkdir(mode=0o700))
     with H.run_temp() as d:
         (d / "x").write_text("x")
         parent = Path(os.path.abspath(d.parent))

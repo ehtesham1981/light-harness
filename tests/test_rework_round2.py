@@ -172,7 +172,10 @@ def test_rv11_out_of_range_pid_sweep(hroot, dead_pid, pid, where):
         d = hroot.root / f"other-{abs(pid)}"
         d.mkdir()
         H.sweep_temp_root(hroot.root)
-        assert not d.exists()
+        if abs(pid) == 1 and os.name != "nt":  # pid 1 is init on POSIX: always a live process, so kept
+            assert d.exists()
+        else:
+            assert not d.exists()
     else:
         assert H.holder_alive(pid, "1") is False
         assert H.holder_alive(pid, None) is False
