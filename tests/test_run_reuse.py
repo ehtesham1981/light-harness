@@ -140,14 +140,16 @@ def test_br11_reuse_key_sweep(snaps, tmp_path, tmp_path_factory):
     # the base harness hashes its own plugin folder (PLUGIN_ROOT/scripts), so it runs from a plugin copy
     # whose harness.py and telemetry.py are the committed base files
     base_scripts = T.make_plugin(tmp_path / "base-plugin", "base") / "scripts"
-    procs = {}
+    # the two children run one after the other, with the same environment: the new child replaces the
+    # global git config file for each combination, and on Windows a git reading that file while it is being
+    # replaced fails, which emptied the base child's `base` part (RV-34). The base child runs first, so the
+    # file it reads is the one the environment starts with.
+    res = {}
     for flavour, scripts in (("base", base_scripts), ("new", T.PLUGIN_SRC / "scripts")):
-        procs[flavour] = subprocess.Popen(
+        p = subprocess.Popen(
             [sys.executable, "-c", CHILD, str(scripts), str(toy.task), str(cpath), str(tmp_path / f"{flavour}.json"),
              flavour], cwd=str(toy.task), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT)
-    res = {}
-    for flavour, p in procs.items():
         out, _ = p.communicate(timeout=600)
         assert p.returncode == 0, f"{flavour} child failed:\n{out.decode('utf-8', 'replace')[-3000:]}"
         res[flavour] = json.loads((tmp_path / f"{flavour}.json").read_text(encoding="utf-8"))

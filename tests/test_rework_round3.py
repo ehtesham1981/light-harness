@@ -922,6 +922,24 @@ def b5_line_pattern(kind, v) -> str:
             + disp(fields["gate"]) + r" \(" + age + r"\)")
 
 
+# How long a scenario may take to show its waiting lines or let its requesters finish. Generous, because the
+# sweep runs 4 pools of real processes at once and slow machines start processes slowly (RV-35); a passing
+# scenario returns as soon as its condition holds, so this costs nothing when things work.
+B5_WAIT = 20
+
+
+def _retry_os(fn, bound=5.0):
+    """Run fn, retrying while Windows says the file is in use (a requester may be reading it right now)."""
+    end = time.monotonic() + bound
+    while True:
+        try:
+            return fn()
+        except PermissionError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(0.05)
+
+
 def b5_run(sc: dict, w: Workers) -> list:
     """One scenario on one pool of workers; its problems."""
     base, k, slots = sc["dir"], sc["requesters"], sc["slots"]
@@ -932,8 +950,10 @@ def b5_run(sc: dict, w: Workers) -> list:
     if sc["kind"] == "folder":
         seed.mkdir()
         (seed / "f.txt").write_text("x", encoding="utf-8")
-    else:
+    elif sc["kind"] == "bytes":
         seed.write_bytes(sc["content"])
+    else:  # built now, so its `since` is 5 s before this scenario, not before the whole sweep (RV-35)
+        seed.write_bytes(b5_record(*sc["record"]))
     sid = sc["id"]
     events: dict = {i: [] for i in range(k)}
 
@@ -957,10 +977,10 @@ def b5_run(sc: dict, w: Workers) -> list:
     def release():
         if seed.is_dir():
             for c in seed.iterdir():
-                c.unlink()
-            seed.rmdir()
+                _retry_os(c.unlink)
+            _retry_os(seed.rmdir)
         else:
-            seed.unlink(missing_ok=True)
+            _retry_os(lambda: seed.unlink(missing_ok=True))
 
     for i in range(k):
         w.send(i, {"id": sid, "dir": str(sdir), "inside": str(inside), "slots": slots, "hold": 0.08})
@@ -968,7 +988,7 @@ def b5_run(sc: dict, w: Workers) -> list:
     live = sc["expect"] == "live"
     if live and slots == 1:
         waited = pump(lambda: all(any(e["ev"] == "out" and e["text"].startswith(WAITING) for e in events[i])
-                                  for i in range(k)), 5)
+                                  for i in range(k)), B5_WAIT)
         entered = [i for i in range(k) if any(e["ev"] == "in" for e in events[i])]
         if not waited or entered:
             problems.append(f"a live holder didn't block: waiting lines from all={waited}, entered {entered}")
@@ -979,12 +999,12 @@ def b5_run(sc: dict, w: Workers) -> list:
             if lines and not re.fullmatch(sc["pattern"], lines[0]):
                 problems.append(f"waiting line {lines[0]!r} doesn't match {sc['pattern']!r}")
         release()
-    if not pump(finished, 5):
+    if not pump(finished, B5_WAIT):
         stuck = [i for i in range(k) if not any(e["ev"] in ("done", "error") for e in events[i])]
-        problems.append(f"requesters {stuck} still waiting after 5 s (blocked by a dead or damaged entry)")
+        problems.append(f"requesters {stuck} still waiting after {B5_WAIT} s (blocked by a dead or damaged entry)")
         with contextlib.suppress(OSError):
             release()
-        if not pump(finished, 5):
+        if not pump(finished, B5_WAIT):
             for i in range(k):
                 if not any(e["ev"] in ("done", "error") for e in events[i]):
                     w.restart(i)
@@ -1015,7 +1035,7 @@ def test_br5_otherwise_sweep(hroot, tmp_path):
     requesters {1, 3}.
     Oracle (BR-5 Otherwise, Q-19): an entry that doesn't parse, whose pid isn't usable, whose start is
     missing or not a str, a folder named like a slot, or an unopenable pid with a start, is freed: every
-    requester runs within 5 s, no more at once than the slots, and the entry is gone (a folder is skipped).
+    requester runs within B5_WAIT (20 s), no more at once than the slots, and the entry is gone (a folder is skipped).
     A well-formed entry of a live child with its right start, or with start "", is live: with one slot
     every requester waits, printing the waiting line with `?` for a display field that can't be shown and
     for a non-finite since, and the entry stays; with two slots they run one at a time beside it. Nothing
@@ -1033,7 +1053,7 @@ def test_br5_otherwise_sweep(hroot, tmp_path):
             pid, tok = pid_states[ps]
             n = len(scenarios)
             scenarios.append({"id": n, "dir": tmp_path / "b5" / f"s{n}", "requesters": k, "slots": slots,
-                              "kind": kind, "content": v if kind == "bytes" else None if kind == "folder" else b5_record(kind, v, pid, tok),
+                              "kind": kind, "content": v if kind == "bytes" else None, "record": (kind, v, pid, tok),
                               "expect": b5_expected(kind, v, ps if has_pid else None),
                               "pattern": b5_line_pattern(kind, v),
                               "label": f"[{name} | pid {ps if has_pid else '-'} | slots {slots} | requesters {k}]"})
