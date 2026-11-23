@@ -54,7 +54,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
