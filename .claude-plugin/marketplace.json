@@ -8,6 +8,9 @@
     {
       "name": "light-harness",
       "source": "./plugins/light-harness",
+      "author": {
+        "name": "Ehtesham Ahmed"
+      },
       "description": "Gated one-off task workflow: task-init, task-plan (human approval), task-implement (red/green + anti-gaming), task-review."
     }
   ]
