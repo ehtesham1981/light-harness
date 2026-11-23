@@ -14,6 +14,10 @@ Review speed (1.8):
 - `verify` reuses a passing run of the suite and probes for as long as its key (code, locked tests, probes, config, harness version and the run environment) is unchanged, however old it is; it says `cached, key <12 hex>`, and `status` shows it too. `verify --fresh` re-runs, and `verdict pass` always does.
 - Saved probes run in parallel under `probe_timeout`.
 - `baseline --out <dir>` (a new or empty folder) gives each sweeper its own base copies.
+Parallel tasks share the machine (2.0):
+- Suite and probe runs take a machine-wide run slot (`git config --global lightharness.slots N`, default cores ÷ 8) and wait, saying who is ahead, when all are taken. `{concurrency}` in `test_cmd` becomes cores ÷ slots.
+- A suite past `suite_timeout` (default 3600 s) is killed with its process tree and fails the gate with exit 124. A killed run's lock or slot is taken over at once on every OS, and its orphaned suite is stopped.
+- Each run gets its own empty TEMP folder (`<drive>:\lh-tmp\…` on Windows, `$TMPDIR/lh/…` elsewhere), removed afterwards (one user per machine in this version; see the README).
 CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics`, including each task's time split into agent, human and idle time and its test-suite cost: suite runs, cache hit rate and suite minutes (engineer KPIs are opt-in, under a nickname).
 
 Full documentation: see the repository README.

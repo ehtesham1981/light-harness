@@ -27,6 +27,9 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lh_machine import machine_env  # noqa: E402
+
 TASK_DIR = Path(__file__).resolve().parents[1]
 PLUGIN_SRC = TASK_DIR / "plugins" / "light-harness"
 HARNESS_SRC = PLUGIN_SRC / "scripts" / "harness.py"
@@ -119,6 +122,8 @@ class Lab:
     def env(self, extra: dict | None = None) -> dict:
         env = {k: v for k, v in os.environ.items()
                if k.upper() not in DROP_ENV and not k.upper().startswith(DROP_PREFIXES)}
+        # machine-wide state (run slots, slot count, per-run temp root) stays inside pytest's temp folder
+        env.update(machine_env(Path(self.sandbox) / "lh-machine", gitconfig=self.gitconfig))
         env.update(GIT_CONFIG_GLOBAL=str(self.gitconfig), ST_COUNT=str(self.counter),
                    PYTHONIOENCODING="utf-8")
         env.update(self.extra_env)

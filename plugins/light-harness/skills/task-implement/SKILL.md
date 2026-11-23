@@ -47,6 +47,8 @@ Work through §8.3 step by step:
 - **Tests are locked.** If you believe a test is wrong, stop, explain in §10.3, and ask the human to run `python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" unlock-tests --task <name> --name "Full Name" --reason "..."` in their own terminal, in the project's main folder. Never work around a test.
 - No special-casing of example values, no test-runtime detection, no skips, no swallowed exceptions to force green.
 
+**Slow suites.** `redgate` and `verify` run the project's whole suite, and may first wait for a machine-wide run slot while other tasks' suites run. When the suite takes more than a minute or two, run `redgate` and `verify` in the background (Bash `run_in_background`) and wait for the notification, or give the Bash call a `timeout` above the expected suite time. Don't let the tool kill a gate mid-run and retry in a loop: a killed run is cleaned up by the next one, but the work is lost. A suite past `suite_timeout` fails with exit 124.
+
 ### 5. Verify
 Run `light-harness verify --task <name>`. This checks:
 - **Red-gate integrity**: locked tests and protected files are byte-identical; every red-gate test now runs and passes.
