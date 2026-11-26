@@ -1898,18 +1898,50 @@ LAST_VERIFY: dict = {}               # filled by verify(): {"cache", "key", "lab
 
 
 def reuse_digest(entry: dict) -> str:
-    """sha256 hex of the stored pass's key, result and results (stub)."""
-    return ""
+    """sha256 hex of the stored pass's key, result and results. When, label, output and per-part hashes are
+    left out: they don't change what was verified, and an old pass on the same key is still the same pass."""
+    body = {"key": entry.get("key"), "result": entry.get("result"), "results": entry.get("results")}
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode(UTF8)).hexdigest()
+
+
+def trail_anchor() -> dict | None:
+    """The verify-pass anchor in the newest commit of this task's audit trail, or None."""
+    slug = task_slug()
+    head = ref_sha(REF_TASKS + slug) if slug else None
+    if not head:
+        return None
+    try:
+        a = json.loads(state_file(head, VERIFY_ANCHOR) or "null")
+    except ValueError:
+        return None
+    return a if isinstance(a, dict) else None
 
 
 def anchor_reuse(key: str, results: dict) -> None:
-    """Record the pass just stored under `key` in the task's audit trail (stub)."""
-    return None
+    """Record the pass just stored under `key` in the task's audit trail (refs the guard keeps agents from
+    writing), so `verdict pass` can tell it from a cache file written by other means. Nothing is written when
+    the newest trail commit already anchors the same pass. A failure here only costs the reuse: the next
+    `verdict pass` runs fresh, so it never changes verify's outcome (errors and exits are swallowed)."""
+    try:
+        digest = reuse_digest({"key": key, "result": "pass", "results": results})
+        old = trail_anchor()
+        if not task_slug() or (old and old.get("digest") == digest):
+            return
+        label = (stored_reuse() or {}).get("label", "?")
+        body = json.dumps({"digest": digest, "key": key, "label": label}, indent=2) + "\n"
+        record(f"harness: verify-pass (key {key[:SHORT_KEY]})", {VERIFY_ANCHOR: body})
+    except (Exception, SystemExit):
+        return
 
 
 def reuse_anchored(entry: dict) -> bool:
-    """True iff the newest audit-trail commit anchors this stored pass (stub)."""
-    return False
+    """True iff the newest audit-trail commit anchors exactly this stored pass (its digest). Any error or a
+    missing anchor is False, so `verdict pass` runs fresh."""
+    try:
+        a = trail_anchor()
+        return bool(a) and a.get("digest") == reuse_digest(entry)
+    except (Exception, SystemExit):
+        return False
 
 
 def verdict_source(decision: dict) -> str:
@@ -2021,10 +2053,13 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
         if not hit:
             # Store only a fully passing run, and only if the key is the same after the run as before it
             # (this catches code left changed by the run; a swap that is undone before the run ends can
-            # still store a pass, which is why `verdict pass` never reuses one). Any other real run drops
-            # the stored one, so a failing `verify --fresh` is never followed by a reused pass.
+            # still store a pass, and `verdict pass` trusts it like any other). The stored pass is anchored
+            # in the audit trail, and `verdict pass` reuses only an anchored one, so a cache file written by
+            # other means can't pass the final gate. Any other real run drops the stored one, so a failing
+            # `verify --fresh` is never followed by a reused pass.
             if green and not failing and reuse_key(cfg, probes(), rg_state, appr[1] if appr else "") == key:
                 store_reuse(key, out, results)
+                anchor_reuse(key, results)
             else:
                 drop_reuse()
 
