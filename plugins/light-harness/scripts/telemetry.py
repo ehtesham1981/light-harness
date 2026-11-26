@@ -32,6 +32,7 @@ Telemetry never changes a gate's outcome: every failure in here is swallowed.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import math
 import os
@@ -55,6 +56,12 @@ ENGINEER_KEY = "lightharness.engineer"
 
 # --- settings -----------------------------------------------------------------------------------
 @lru_cache(maxsize=None)
+
+@functools.lru_cache(maxsize=None)
+def _config_all(cwd):
+    """Every lightharness.* git config key for `cwd`, read in one call (Q-9). Stub."""
+    raise NotImplementedError
+
 def git_config(key: str, cwd: str, scope: str = "") -> str:
     args = ["git", "config"] + ([f"--{scope}"] if scope else []) + ["--get", key]
     try:

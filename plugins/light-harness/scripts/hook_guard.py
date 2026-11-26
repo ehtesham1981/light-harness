@@ -83,6 +83,21 @@ def git_common(d: Path):
     return (p if p.is_absolute() else d / p).resolve()
 
 
+def walk_common(d: Path):
+    """The git common dir for `d`, found from `.git` entries without running git (BR-5). Stub."""
+    raise NotImplementedError
+
+
+def common_from_env(d: Path):
+    """LIGHT_HARNESS_GIT_COMMON when it is `d`'s common dir, else None (BR-5). Stub."""
+    raise NotImplementedError
+
+
+def task_name():
+    """The task for telemetry and messages, computed once on first use. Stub."""
+    raise NotImplementedError
+
+
 def active(d: Path):
     """The repo's git common dir if Light Harness has started a task in it, else None."""
     c = git_common(d)
