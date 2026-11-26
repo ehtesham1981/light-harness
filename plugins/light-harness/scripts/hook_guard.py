@@ -32,7 +32,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import harness as H  # noqa: E402
+# Claude Code runs hooks with PYTHONDONTWRITEBYTECODE=1, so without this harness.py (200 KB) is compiled from
+# source on every guarded call. HARNESS_ROOT, set for the import only, keeps the import from running git to find
+# the repo: the guard sets the root itself before using it (issue #24).
+_DWB, _ROOT_UNSET = sys.dont_write_bytecode, "HARNESS_ROOT" not in os.environ
+sys.dont_write_bytecode = False
+if _ROOT_UNSET:
+    os.environ["HARNESS_ROOT"] = os.getcwd()
+try:
+    import harness as H  # noqa: E402
+finally:
+    if _ROOT_UNSET:
+        del os.environ["HARNESS_ROOT"]
+    sys.dont_write_bytecode = _DWB
 
 PRE_APPROVAL = ("Draft", "Initialize", "Plan")
 OWNED_RE = re.compile(r"harness:(" + "|".join(map(re.escape, H.OWNED_BLOCKS)) + r")\b|^Status:", re.M)
@@ -41,10 +53,19 @@ OWNED_RE = re.compile(r"harness:(" + "|".join(map(re.escape, H.OWNED_BLOCKS)) + 
 CTX: dict = {}  # this tool call: common dir, task, session, tool, agent type (for telemetry)
 
 
+def task_name():
+    """The task for telemetry and messages. Finding it can run git, and only a block, an ask or a message needs
+    it, so it's worked out on first use (issue #24): from CTX["task"] when known, else CTX["task_fn"]."""
+    if "task" not in CTX:
+        f = CTX.get("task_fn")
+        CTX["task"] = f() if f else None
+    return CTX["task"]
+
+
 def note(decision: str, rule: str):
     c = CTX.get("common")
     if c:
-        H.telemetry.emit(c, "guard", cwd=c, task=CTX.get("task"), session=CTX.get("session"), actor="agent",
+        H.telemetry.emit(c, "guard", cwd=c, task=task_name(), session=CTX.get("session"), actor="agent",
                          decision=decision, rule=rule, tool=CTX.get("tool"), agent_type=CTX.get("agent_type"))
 
 
@@ -83,24 +104,51 @@ def git_common(d: Path):
     return (p if p.is_absolute() else d / p).resolve()
 
 
+GIT_DISCOVERY = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES",
+                 "GIT_DISCOVERY_ACROSS_FILESYSTEM")
+
+
 def walk_common(d: Path):
-    """The git common dir for `d`, found from `.git` entries without running git (BR-5). Stub."""
-    raise NotImplementedError
+    """`d`'s git common dir, found from the `.git` entries above it without running git (BR-5): a `.git` folder
+    (with a HEAD), or a gitfile's `gitdir:` and that folder's `commondir`. None when an entry is malformed or
+    there's no repo; the caller then asks git."""
+    d = existing(Path(d).resolve())
+    for x in (d, *d.parents):
+        g = x / ".git"
+        if g.is_dir():
+            return g.resolve() if (g / "HEAD").is_file() else None
+        if g.exists():
+            try:
+                line = g.read_text(encoding=H.UTF8).splitlines()[0].strip()
+            except (OSError, IndexError, UnicodeDecodeError):
+                return None
+            if not line.startswith("gitdir:"):
+                return None
+            gd = Path(line[len("gitdir:"):].strip())
+            gd = gd if gd.is_absolute() else x / gd
+            cf = gd / "commondir"
+            if cf.is_file():
+                try:
+                    c = Path(cf.read_text(encoding=H.UTF8).strip())
+                except (OSError, UnicodeDecodeError):
+                    return None
+                return (c if c.is_absolute() else gd / c).resolve()
+            return gd.resolve() if gd.is_dir() else None
+    return None
 
 
 def common_from_env(d: Path):
-    """LIGHT_HARNESS_GIT_COMMON when it is `d`'s common dir, else None (BR-5). Stub."""
-    raise NotImplementedError
-
-
-def task_name():
-    """The task for telemetry and messages, computed once on first use. Stub."""
-    raise NotImplementedError
-
+    """The common dir guard.sh found (LIGHT_HARNESS_GIT_COMMON), when `walk_common` agrees that `d` is in that
+    repo and no GIT_* variable changes how git finds it; else None (BR-5)."""
+    v = os.environ.get("LIGHT_HARNESS_GIT_COMMON")
+    if not v or any(os.environ.get(k) for k in GIT_DISCOVERY):
+        return None
+    w = walk_common(d)
+    return Path(v).resolve() if w is not None and H.same_path(w, Path(v)) else None
 
 def active(d: Path):
     """The repo's git common dir if Light Harness has started a task in it, else None."""
-    c = git_common(d)
+    c = common_from_env(d) or git_common(d)
     return c if c and (c / H.STATE).is_dir() else None
 
 
@@ -130,7 +178,7 @@ BLOCK_BASH = [  # (pattern, why, only if this also matches, rule id for telemetr
      r"|\bprobe\b[^\n;&|]*?(?:^|\s)['\"\\]*d[\\'\"]*r[\\'\"]*o[\\'\"]*p['\"]*(?=\s|$)",
      "approve, unlock-tests, forget, uninstall, telemetry opt-in/opt-out and probe drop are human-only. Ask the "
      "human to run it in their own terminal.", r"light-harness|harness\.py", "human-only"),
-    (r"\bLIGHT_HARNESS_(OTLP\w*|TELEMETRY|SESSION_ID|HUMAN_GAP_CAP|GIT_COMMON)=|(^|[\s;&|(])(unset|-u)\s+[^\n;&|]*\bLIGHT_HARNESS_|"
+    (r"\bLIGHT_HARNESS_(OTLP\w*|TELEMETRY|SESSION_ID|HUMAN_GAP_CAP|GIT_COMMON|PY)=|(^|[\s;&|(])(unset|-u)\s+[^\n;&|]*\bLIGHT_HARNESS_|"
      + GIT + r"config\b[^\n;&|]*\b(?i:lightharness)\.",
      "telemetry settings and the engineer's opt-in belong to the human. Ask them to change it.", None,
      "telemetry-settings"),
@@ -310,7 +358,7 @@ def live_rules(cmd: str):
     """Block Bash commands that change the task's contract or config; reads pass (issue #23)."""
     if not names_live(cmd):
         return
-    task = CTX.get("task")
+    task = task_name()
     if not task:
         m = re.search(r"\.tasks[/\\]([^/\\\s'\"]+)[/\\]" + re.escape(H.LIVE), cmd)
         task = m.group(1) if m else "<name>"
@@ -370,7 +418,8 @@ def edit_rules(tool: str, ti: dict, p: Path, common: Path):
                   "own folders (.tasks/<name>/), not in the main checkout.", "main-checkout")
         sys.exit(0)
 
-    CTX["task"] = task_of(root)
+    CTX.pop("task", None)
+    CTX["task_fn"] = lambda: task_of(root)
     H.set_root(root)
     rel = p.resolve().relative_to(H.ROOT).as_posix()
     current = H.CONTRACT.read_text(encoding=H.UTF8)
@@ -446,8 +495,11 @@ def main():
         if common:
             cmd = ti.get("command", "") or ""
             m = re.search(r"--task[\s=]+[\"']?([^\s\"';&|]+)", cmd)
-            CTX.update(common=common, task=re.sub(r"[^a-z0-9]+", "-", m.group(1).lower()).strip("-") if m
-                       else task_of(H.task_root_for(cwd)))
+            CTX.update(common=common)
+            if m:
+                CTX["task"] = re.sub(r"[^a-z0-9]+", "-", m.group(1).lower()).strip("-")
+            else:
+                CTX["task_fn"] = lambda: task_of(H.task_root_for(cwd))
             bash_rules(cmd)
         sys.exit(0)
 
