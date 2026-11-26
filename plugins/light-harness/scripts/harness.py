@@ -27,20 +27,24 @@ Run `light-harness --help` (or `python3 <plugin>/scripts/harness.py --help`) for
 from __future__ import annotations
 
 import argparse
+import atexit
 import collections
 import contextlib
 import datetime as dt
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -50,7 +54,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry  # noqa: E402
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 telemetry.VERSION = __version__
 
 # All harness text is UTF-8 (contract, config, tool output). Never rely on the locale default:
@@ -147,6 +151,7 @@ DEFAULT_CONFIG = {
     "worktree_dir": ".tasks",
     "parallel": 3,          # sweeper subagents and saved probes that run at once (1-4)
     "probe_timeout": 600,   # seconds before a saved probe counts as broken
+    "suite_timeout": 3600,  # seconds before a suite run is killed and its gate fails (exit 124)
 }
 PARALLEL_MAX = 4
 
@@ -1021,8 +1026,9 @@ def base_hidden():
     copies from probe_bases(), outside the task folder."""
     with base_lock():
         restore_aside()
-        with _hidden(ROOT / BASE_DIR, aside_dir()):
-            yield
+        with run_slot():  # wait for a machine-wide slot with the base copies still in place
+            with _hidden(ROOT / BASE_DIR, aside_dir()):
+                yield
 
 
 def aside_dir() -> Path:
@@ -1037,6 +1043,7 @@ def base_lock():
     try:
         yield
     finally:
+        HELD_LOCK.clear()
         lock.unlink(missing_ok=True)
 
 
@@ -1046,42 +1053,6 @@ def restore_aside():
     d, aside = ROOT / BASE_DIR, aside_dir()
     if not os.path.lexists(d) and aside.is_dir():
         _move_dir(aside, d)
-
-
-def _take_lock(lock: Path):
-    """One test or probe run per task at a time, so a second run can't mistake the first's moved-aside
-    copies for a crashed run's. A lock left by a killed run is taken over: its process is gone (POSIX),
-    or it is over two hours old (Windows, where a process can't be probed safely)."""
-    for _ in range(2):
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-            return
-        except FileExistsError:
-            try:
-                pid = int(lock.read_text().strip() or 0)
-            except (OSError, ValueError):
-                pid = 0
-            alive = False
-            if os.name != "nt" and pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except ProcessLookupError:
-                    alive = False
-                except PermissionError:
-                    alive = True
-            elif os.name == "nt":
-                try:
-                    alive = time.time() - lock.stat().st_mtime < 7200
-                except OSError:
-                    alive = False
-            if alive:
-                die(f"another test or probe run of this task is in progress (pid {pid}); wait for it to finish. "
-                    f"If none is running (it was killed), a human can delete {lock}.")
-            lock.unlink(missing_ok=True)
-    die(f"can't take the run lock {lock}")
 
 
 @contextlib.contextmanager
@@ -1139,6 +1110,1154 @@ def clean_env() -> dict:
         env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
                                       if p and not is_within(Path(p), PLUGIN_ROOT))
     return env
+
+
+# --- Machine-wide runs: process identity, run slots, per-run temp folders, timeouts (#16, #25, #30) ---
+# Every suite or probe run the harness starts (redgate, verify, verdict pass, the Plan->Build baseline,
+# saved probes) holds one machine-wide run slot, runs in its own empty temp folder and is killed with
+# its whole process tree when it runs past its timeout. A lock or slot holder is alive only while a
+# process with its pid exists AND has the start time it recorded, so a reused pid never holds one.
+TEMP_ROOT_ENV = "LIGHT_HARNESS_TEMP_ROOT"   # tests only: the per-run temp root itself (stripped from runs)
+SLOT_POLL = 1.0                             # seconds between slot checks while waiting
+LEFTOVER_LIMIT = 50                         # entries a run may leave in its temp folder before verify warns
+RUN_LOAD: dict = {}                         # load figures of the current suite run, for its suite record
+LEFTOVERS: list = []                        # (run label, entries left) for runs that left more than the limit
+HELD_LOCK: list = []                        # the run lock this process holds, for note_suite()
+HELD_SLOTS: set = set()                     # slot files this process holds now (its threads' runs)
+STILL_ACTIVE = 259                          # GetExitCodeProcess: the process hasn't exited
+_RUN_DIR = re.compile(r"^.+-(\d+)(?:-p\d+)?(?:-r\d+)?$")  # a run folder: <slug>-<pid>[-p<n>][-r<n>]
+_TEMP_WARNED: list = []
+
+
+class SuiteTimeout(Exception):
+    """A suite ran past suite_timeout; its process tree was killed."""
+
+    def __init__(self, seconds: int):
+        super().__init__(f"suite timed out after {seconds} s")
+        self.seconds = seconds
+
+
+def suite_timeout(cfg: dict) -> int:
+    """Seconds a suite may run: the config's `suite_timeout` if it's a positive whole number."""
+    v = cfg.get("suite_timeout", DEFAULT_CONFIG["suite_timeout"])
+    if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+        return DEFAULT_CONFIG["suite_timeout"]
+    return v
+
+
+def _kernel32():
+    """kernel32's process functions, as an object _start_windows can call (a fake in tests)."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    return type("K32", (), {"OpenProcess": staticmethod(k.OpenProcess),
+                            "GetExitCodeProcess": staticmethod(k.GetExitCodeProcess),
+                            "GetProcessTimes": staticmethod(k.GetProcessTimes),
+                            "CloseHandle": staticmethod(k.CloseHandle),
+                            "GetLastError": staticmethod(ctypes.get_last_error)})()
+
+
+class Unopenable(str):
+    """The start-time token of a process this user can't open (Windows: access denied). It is an empty
+    string, so it compares and tests like "" (start unknown) everywhere except where a check asks for it
+    by type. Never written into a record."""
+
+
+DENIED = Unopenable()
+
+
+def _user() -> str:
+    """This user, as written in run-folder owner records: DOMAIN\\name on Windows, the uid elsewhere."""
+    if os.name == "nt":
+        return f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".lower()
+    return str(os.getuid())
+
+
+def proc_start(pid: int):
+    """A process's start-time token: None if no such process (or it has exited); "" if it exists but its
+    start time can't be read (DENIED, also "", when this user can't open it); otherwise an opaque string
+    that differs for a later process with that pid."""
+    if os.name == "nt":
+        return _start_windows(pid)
+    if sys.platform.startswith("linux"):
+        return _start_linux(pid)
+    return _start_ps(pid)
+
+
+def _start_windows(pid: int, k32=None):
+    import ctypes
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+    try:
+        k32 = k32 or _kernel32()
+    except (OSError, AttributeError):
+        return ""
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        err = k32.GetLastError()
+        if err == 87:
+            return None  # ERROR_INVALID_PARAMETER: no process has this pid
+        # 5: access denied, it exists but isn't ours to open; anything else (a resource or quota error, say)
+        # says nothing about whether it exists, so it counts as existing with an unknown start
+        return DENIED if err == 5 else ""
+    try:
+        code = ctypes.c_ulong()
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return ""
+        if code.value != STILL_ACTIVE:
+            return None
+        times = [FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(h, *(ctypes.byref(t) for t in times)):
+            return ""
+        return str((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+    finally:
+        k32.CloseHandle(h)
+
+
+def _start_linux(pid: int, read=None):
+    def _read(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    try:
+        text = (read or _read)(f"/proc/{pid}/stat")
+    except OSError:
+        return None
+    rest = text[text.rfind(")") + 1:].split()  # fields from 3 (state) on; the name may hold ") ("
+    if len(rest) < 20:
+        return ""
+    if rest[0] in ("Z", "X"):
+        return None  # a zombie has exited
+    return rest[19]  # field 22: starttime
+
+
+def ps_env() -> dict:
+    """The environment `ps` runs in: this one with a fixed time zone and locale, so `lstart` (local time,
+    in the locale's format) reads the same in every process, whatever TZ, LANG or PS_* settings each was
+    started with."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k in ("TZ", "LANG", "LANGUAGE") or k.startswith(("LC_", "PS_", "_XPG")))}
+    env.update(TZ="UTC", LC_ALL="C", LANG="C")
+    return env
+
+
+def _run_ps(argv) -> tuple[int, str]:
+    try:
+        r = subprocess.run(argv, capture_output=True, encoding=UTF8, errors="replace", stdin=subprocess.DEVNULL,
+                           env=ps_env(), timeout=10)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def _start_ps(pid: int, run=None):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass  # exists, owned by another user
+    except OSError:
+        return None
+    rc, out = (run or _run_ps)(["ps", "-o", "lstart=", "-p", str(pid)])
+    return out.strip() if rc == 0 and out.strip() else ""
+
+
+def _is_pid(pid) -> bool:
+    # pids are 32-bit on every OS; a larger number in a damaged record would overflow the OS calls
+    return isinstance(pid, int) and not isinstance(pid, bool) and 0 < pid < 2 ** 31
+
+
+def holder_alive(pid, start) -> bool:
+    """Is the process that wrote a lock, slot or folder record still running? Not if no process has its
+    pid, or one does with another start time (the pid was reused). If either start time is unknown it
+    can't be compared, and an existing process counts as alive."""
+    if not _is_pid(pid):
+        return False
+    cur = proc_start(pid)
+    if cur is None:
+        return False
+    start = _start_token(start)
+    if not start:
+        return True  # nothing to compare: alive while the pid exists
+    if isinstance(cur, Unopenable):
+        return False  # the record has a start, so this user's harness wrote it, and it could open that one
+    if cur == "":
+        return True
+    return cur == start
+
+
+def _slot_alive(rec: dict) -> bool:
+    """Is a slot's holder still running? As holder_alive, except that a slot record without a string start
+    is a dead holder's: the harness always writes one, and there are no slot files from before 1.10."""
+    start = rec.get("start")
+    return isinstance(start, str) and holder_alive(rec.get("pid"), start)
+
+
+def _start_token(start):
+    """A recorded start time as the harness writes it (a string), trimmed; anything else in a damaged
+    record (a list, a number, true) is unknown: None."""
+    return start.strip() if isinstance(start, str) else None
+
+
+def kill_tree(pid: int) -> None:
+    """Kill a process and everything it started. Best effort: never raises."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        else:
+            import signal
+            # suites and probes are started as their own process group's leader. Only a group is killed:
+            # a pid that leads no group isn't one of our runs (e.g. reused by another process in the same
+            # second as a recorded start time, which is as precise as `ps` gets on macOS)
+            os.killpg(pid, signal.SIGKILL)
+    except Exception:  # noqa: BLE001 - a process that's already gone is fine
+        pass
+
+
+def read_record(path: Path) -> dict:
+    """A lock, slot or owner file as a dict. A file from 1.9 or earlier holds only the pid: {"pid": n}.
+    Unreadable, undecodable or not a JSON object: {}. Never raises. A read that fails because the file is
+    being replaced right then (a sharing violation on Windows) is retried for about half a second, so a
+    live holder's record is never mistaken for an empty one."""
+    for i in range(10):
+        try:
+            text = Path(path).read_text(encoding=UTF8).strip()
+            break
+        except (FileNotFoundError, UnicodeDecodeError):  # gone, or bytes no harness wrote
+            return {}
+        except OSError:
+            if i == 9:
+                return {}
+            time.sleep(0.05)
+    if text.isascii() and text.isdigit():
+        return {"pid": int(text)} if len(text) <= 10 else {}  # a pid has at most 10 digits
+    try:
+        d = json.loads(text)
+    except (ValueError, RecursionError):  # garbage, or nested too deep to parse
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _write_record(path: Path, rec: dict, private: bool = False):
+    """Replace a record file in one step, so a reader never sees half of it. `private`: on Windows the file
+    is created with owner-only permissions (as run folders are), so other users of a shared root can't
+    change it; os.replace keeps them. The temp file is always a new file under an unpredictable name: a
+    file someone else made under the name in advance is never opened, so its permissions can't carry over."""
+    data = json.dumps(rec).encode(UTF8)
+    for attempt in range(100):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+        try:
+            if private and os.name == "nt" and _private_sd() is not None:
+                _write_private_file(tmp, data)
+            else:
+                _write_new_file(tmp, data, 0o600 if private else 0o666)
+            break
+        except FileExistsError:
+            if attempt == 99:
+                raise
+    for i in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # Windows: another process is reading it right now
+            if i == 19:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
+def _write_new_file(path: Path, data: bytes, mode: int) -> None:
+    """Create `path` as a new file (FileExistsError if anything is already there) and write `data` to it.
+    A partly written file is removed."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), mode)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+
+
+def _write_private_file(path: Path, data: bytes) -> None:
+    """Windows: create a new file with the owner-only descriptor (`_private_sd`) and write `data` to it.
+    It is never an existing file: Windows would keep that file's own permissions and ignore the descriptor
+    (FileExistsError then). Raises OSError if it can't."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SecurityAttributes),
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k.CreateFileW.restype = wintypes.HANDLE
+    sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), _private_sd(), False)
+    # GENERIC_WRITE, no sharing, CREATE_NEW, normal attributes
+    h = k.CreateFileW(_ext(path), 0x40000000, 0, ctypes.byref(sa), 1, 0x80, None)
+    if h in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())  # ERROR_FILE_EXISTS comes out as FileExistsError
+    fd = msvcrt.open_osfhandle(h, os.O_WRONLY | os.O_BINARY)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(_ext(path))
+        raise
+
+
+def _holder_record(gate: str | None = None) -> dict:
+    """Who holds a lock or slot: this process, with its start time, repo, task and gate."""
+    try:
+        repo = main_checkout().name
+    except (SystemExit, Exception):  # noqa: BLE001 - only shown in the waiting line
+        repo = ""
+    try:
+        task = task_slug() or ""
+    except (SystemExit, Exception):  # noqa: BLE001
+        task = ""
+    return {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "repo": repo, "task": task,
+            "gate": gate or RUN_LOAD.get("gate") or "probe", "since": time.time()}
+
+
+def _take_lock(lock: Path):
+    """One test or probe run per task at a time, so a second run can't mistake the first's moved-aside
+    copies for a crashed run's. A lock whose holder is no longer running (its pid is gone, or now belongs
+    to a later process) is taken over at once, on every OS. If the killed run's suite is still running, it
+    is stopped first; a suite is stopped only when its own pid and start time match the record."""
+    with _os_lock(lock.with_name("guard-" + lock.name)):  # one takeover at a time
+        for _ in range(2):
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, json.dumps(_holder_record()).encode(UTF8))
+                os.close(fd)
+                HELD_LOCK[:] = [lock]
+                return
+            except FileExistsError:
+                old = read_record(lock)
+                pid = old.get("pid", 0)
+                if holder_alive(pid, old.get("start")):
+                    die(f"another test or probe run of this task is in progress (pid {pid}); wait for it to finish. "
+                        f"If none is running (it was killed), a human can delete {lock}.")
+                spid, sstart = old.get("suite_pid"), _start_token(old.get("suite_start"))
+                # stop the suite only on a well-formed record whose suite is confirmed by pid and start time,
+                # and never the holder or this process itself
+                if _is_pid(pid) and _is_pid(spid) and spid not in (pid, os.getpid()) and sstart and \
+                        proc_start(spid) == sstart:
+                    kill_tree(spid)
+                    print(f"stopped an orphaned suite from a killed run (pid {spid})", flush=True)
+                lock.unlink(missing_ok=True)
+    die(f"can't take the run lock {lock}")
+
+
+def note_suite(pid: int) -> None:
+    """Record the suite process this run started in the run lock it holds, so a later run can stop the
+    suite if this command is killed (BR-14). No-op when no lock is held."""
+    if not HELD_LOCK:
+        return
+    lock = HELD_LOCK[0]
+    start = str(proc_start(pid) or "")
+    # under the same guard as _take_lock, so a takeover never reads the record while it's being replaced
+    with _os_lock(lock.with_name("guard-" + lock.name)):
+        rec = read_record(lock)
+        if rec.get("pid") != os.getpid():
+            return
+        rec.update(suite_pid=pid, suite_start=start)
+        try:
+            _write_record(lock, rec)
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def _os_lock(path: Path):
+    """An exclusive OS lock on `path` for the duration; the OS releases it if this process dies."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as f:
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def slot_dir() -> Path:
+    """The per-user folder of machine-wide run slots, outside any repo (created on first use)."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        d = (Path(base) if base else Path.home() / "AppData" / "Local") / "light-harness" / "slots"
+    elif sys.platform == "darwin":
+        d = Path.home() / "Library" / "Caches" / "light-harness" / "slots"
+    else:
+        base = os.environ.get("XDG_CACHE_HOME")
+        d = (Path(base) if base else Path.home() / ".cache") / "light-harness" / "slots"
+    with contextlib.suppress(OSError):
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def slot_count() -> int:
+    """How many suite or probe runs may go at once on this machine: the human's user-level git config
+    `lightharness.slots` if it's a positive whole number, else max(1, cores // 8)."""
+    try:
+        r = subprocess.run(["git", "config", "--global", "--get", "lightharness.slots"], capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+        v = r.stdout.decode(UTF8, "replace").strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        v = ""
+    if re.fullmatch(r"[0-9]+", v) and int(v) > 0:
+        return int(v)
+    return max(1, (os.cpu_count() or 1) // 8)
+
+
+def concurrency(slots: int | None = None) -> int:
+    """The `{concurrency}` placeholder's value: max(1, cores // slots)."""
+    return max(1, (os.cpu_count() or 1) // (slots or slot_count()))
+
+
+def _age(seconds: float) -> str:
+    s = max(0, int(seconds))
+    return f"{s} s" if s < 60 else f"{s // 60} min"
+
+
+def _finite(x) -> bool:
+    """A real number that converts to a finite float (not a bool, NaN, ±Infinity or an int past float's
+    range: all possible in a damaged record, since json.loads accepts them)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    try:
+        return math.isfinite(x)
+    except OverflowError:
+        return False
+
+
+def waiting_line(holders: list[dict], now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    parts = []
+    for r in holders:
+        since = r.get("since")
+        age = _age(now - since) if _finite(since) and _finite(now - since) else "?"
+        repo, task, gate = (v if isinstance(v, str) and v else "?" for v in (r.get("repo"), r.get("task"), r.get("gate")))
+        parts.append(f"{repo}/{task} running {gate} ({age})")
+    return "waiting for a run slot: " + ", ".join(parts)
+
+
+@contextlib.contextmanager
+def run_slot(gate: str | None = None):
+    """Hold one machine-wide run slot for the duration, waiting (no time limit) while all are taken by
+    live runs. Dead holders' slots are freed. Fills RUN_LOAD with the slot count, the runs in progress,
+    the load average and the time spent waiting."""
+    d = slot_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    guard = d / ".guard"
+    gate = gate or RUN_LOAD.get("gate") or "probe"
+    t0, shown, mine, n, running = time.monotonic(), None, None, 1, 1
+    try:
+        while mine is None:
+            with _os_lock(guard):
+                n, live, stuck = slot_count(), [], set()
+                for f in sorted(d.glob("slot-*.json")):
+                    try:
+                        regular = stat.S_ISREG(os.lstat(f).st_mode)
+                    except OSError:
+                        continue  # gone already
+                    rec = read_record(f) if regular else {}
+                    # a record of this very process that it doesn't hold now is one its release left behind
+                    leftover = rec.get("pid") == os.getpid() and os.path.normcase(str(f)) not in HELD_SLOTS
+                    if regular and not leftover and _slot_alive(rec):
+                        live.append((f, rec))
+                    else:
+                        try:
+                            f.unlink(missing_ok=True)
+                        except OSError:
+                            stuck.add(f.name)  # a dead entry that can't go (a folder, say): never a holder
+                if len(live) < n:
+                    # names as the OS compares them: on Windows SLOT-0.JSON is slot-0.json
+                    used = {os.path.normcase(x) for x in {f.name for f, _ in live} | stuck}
+                    i = 0
+                    while os.path.normcase(f"slot-{i}.json") in used:
+                        i += 1
+                    mine = d / f"slot-{i}.json"
+                    _write_record(mine, _holder_record(gate))
+                    HELD_SLOTS.add(os.path.normcase(str(mine)))
+                    running = len(live) + 1
+                    break
+            ahead = [r for _, r in live]
+            who = sorted((str(r.get("repo")), str(r.get("task")), str(r.get("gate")), str(r.get("pid"))) for r in ahead)
+            if who != shown:
+                print(waiting_line(ahead), flush=True)
+                shown = who
+            time.sleep(SLOT_POLL)
+    except BaseException:  # interrupted while waiting: the wait so far isn't suite time either
+        RUN_LOAD["wait_s"] = round((RUN_LOAD.get("wait_s") or 0) + max(0.0, time.monotonic() - t0), 3)
+        raise
+    waited = round(max(0.0, time.monotonic() - t0), 3)
+    if RUN_LOAD.get("slots") is None:
+        RUN_LOAD["slots"] = n
+    if RUN_LOAD.get("running") is None:
+        RUN_LOAD["running"] = running
+    if RUN_LOAD.get("load_avg") is None and hasattr(os, "getloadavg"):
+        try:
+            RUN_LOAD["load_avg"] = round(os.getloadavg()[0], 2)
+        except OSError:
+            pass
+    RUN_LOAD["wait_s"] = round((RUN_LOAD.get("wait_s") or 0) + waited, 3)
+    try:
+        yield
+    finally:
+        with _os_lock(guard):
+            HELD_SLOTS.discard(os.path.normcase(str(mine)))  # from now on a leftover record of it is dead
+            for i in range(20):  # another process may hold it open for an instant (Windows)
+                try:
+                    mine.unlink(missing_ok=True)
+                    break
+                except OSError:
+                    if i < 19:
+                        time.sleep(0.05)
+
+
+def temp_root() -> Path:
+    """Where per-run temp folders go: LIGHT_HARNESS_TEMP_ROOT if set (tests), else a short folder on
+    the drive of the user's TEMP on Windows (<drive>:\\lh-tmp, so socket paths stay short; <TEMP>\\lh
+    if it can't be created), else $TMPDIR/lh."""
+    v = os.environ.get(TEMP_ROOT_ENV)
+    if v:
+        return Path(v)
+    tmp = tempfile.gettempdir()
+    if os.name == "nt":
+        drive = os.path.splitdrive(tmp)[0]
+        if drive:
+            root = Path(drive + "\\") / "lh-tmp"
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                return root
+            except OSError:
+                if not _TEMP_WARNED:
+                    _TEMP_WARNED.append(1)
+                    print(f"⚠ can't create {root}; using {Path(tmp) / 'lh'} for run temp folders", flush=True)
+    return Path(tmp) / "lh"
+
+
+def _ext(p) -> str:
+    """A path for deleting a run folder's contents. On Windows the extended-length form (\\\\?\\C:\\...,
+    \\\\?\\UNC\\server\\share\\...), so contents past 260 characters can be removed even with long paths
+    switched off."""
+    s = os.path.abspath(str(p))
+    if os.name != "nt" or s.startswith("\\\\?\\"):
+        return s
+    return "\\\\?\\UNC\\" + s[2:] if s.startswith("\\\\") else "\\\\?\\" + s
+
+
+def _is_link_stat(st) -> bool:
+    """A symlink, or on Windows any reparse point (junction, symlink, mount point)."""
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
+def _rm_link(path: str):
+    """Remove a link or junction itself, never what it points to."""
+    try:
+        os.unlink(path)
+    except OSError:
+        os.rmdir(path)  # a junction, or a link to a folder on Windows
+
+
+def _rm_entry(path: str):
+    """Delete one entry and, for a real folder, everything in it, never following a link or junction.
+    Read-only files and folders are made writable first when that is what stops the delete. Works with an
+    explicit stack, not recursion, so a tree of any depth is handled (raises OSError, never RecursionError,
+    when something stays)."""
+    st = os.lstat(path)
+    if _is_link_stat(st):
+        _rm_link(path)
+        return
+    if not stat.S_ISDIR(st.st_mode):
+        _rm_file(path, st)
+        return
+    stack = [(path, st, False)]  # (folder, its stat, contents already handled)
+    while stack:
+        folder, fst, emptied = stack.pop()
+        if emptied:
+            try:
+                os.rmdir(folder)
+            except PermissionError:
+                os.chmod(folder, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+                os.rmdir(folder)
+            continue
+        if os.name != "nt" and (fst.st_mode & stat.S_IRWXU) != stat.S_IRWXU:
+            with contextlib.suppress(OSError):
+                os.chmod(folder, stat.S_IRWXU)  # a read-only folder: its entries can't be removed otherwise
+        stack.append((folder, fst, True))
+        with os.scandir(folder) as it:
+            children = [e.path for e in it]
+        for c in children:
+            cst = os.lstat(c)
+            if _is_link_stat(cst):
+                _rm_link(c)
+            elif stat.S_ISDIR(cst.st_mode):
+                stack.append((c, cst, False))
+            else:
+                _rm_file(c, cst)
+
+
+def _rm_file(path: str, st):
+    """Delete one file (not a folder or link). A read-only one is made writable first, except a hard link,
+    whose flag is shared with names outside the run folder: that name is removed without changing it."""
+    try:
+        os.unlink(path)
+    except PermissionError:
+        if st.st_nlink > 1:
+            if os.name != "nt":
+                raise
+            _unlink_keep_attrs(path)
+        else:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            os.unlink(path)
+
+
+def _unlink_keep_attrs(path: str):
+    """Windows: remove one name of a file even when it is read-only, without clearing the flag (which a
+    hard link shares with the file's other names). Raises OSError if it can't (an old Windows, the file
+    in use)."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    # DELETE access, share all, open the name itself (never a reparse target), backup semantics
+    h = k.CreateFileW(path, 0x10000, 7, None, 3, 0x00200000 | 0x02000000, None)
+    if h in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        flags = wintypes.DWORD(0x1 | 0x2 | 0x10)  # DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE
+        if not k.SetFileInformationByHandle(h, 21, ctypes.byref(flags), 4):  # FileDispositionInfoEx
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        k.CloseHandle(h)
+
+
+def _rm_run_dir(p: Path):
+    """Delete a run folder and everything in it (raises OSError if something stays). Never follows a
+    link inside it; on Windows it works through extended-length paths, so deep contents go too. On
+    Windows, contents whose permissions refuse the delete (a deny entry the suite set) get their
+    inherited permissions back first: the user owns them, so it may always change them."""
+    try:
+        _rm_entry(_ext(p))
+    except OSError:
+        if os.name != "nt" or not os.path.lexists(_ext(p)) or _is_link_stat(os.lstat(_ext(p))):
+            raise
+        _reset_acl(p)
+        _rm_entry(_ext(p))
+
+
+_WIN_SD: list = []  # [security descriptor buffer or None]: owner-only permissions for run folders (Windows)
+
+
+def _private_sd():
+    """Windows: a security descriptor whose protected DACL grants full control only to this user, SYSTEM
+    and Administrators (as the user's own %LOCALAPPDATA%\\Temp does), inherited by everything made inside.
+    None if it can't be built. Built once per process."""
+    if _WIN_SD:
+        return _WIN_SD[0]
+    sd = None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        adv = ctypes.WinDLL("advapi32", use_last_error=True)
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetCurrentProcess.restype = wintypes.HANDLE
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.LocalFree.argtypes = [ctypes.c_void_p]
+        adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        adv.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.DWORD)]
+        adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+        tok = wintypes.HANDLE()
+        if adv.OpenProcessToken(k.GetCurrentProcess(), 0x8, ctypes.byref(tok)):  # TOKEN_QUERY
+            try:
+                n = wintypes.DWORD()
+                adv.GetTokenInformation(tok, 1, None, 0, ctypes.byref(n))  # TokenUser
+                buf = ctypes.create_string_buffer(n.value)
+                s = wintypes.LPWSTR()
+                if adv.GetTokenInformation(tok, 1, buf, n, ctypes.byref(n)) and adv.ConvertSidToStringSidW(
+                        ctypes.c_void_p(ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]), ctypes.byref(s)):
+                    sid = s.value
+                    k.LocalFree(s)
+                    p = ctypes.c_void_p()
+                    sddl = f"D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+                    if adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(p), None):
+                        sd = p  # kept for the life of the process
+            finally:
+                k.CloseHandle(tok)
+    except (OSError, AttributeError, ValueError):
+        sd = None
+    _WIN_SD.append(sd)
+    return sd
+
+
+def _mkdir_private(d: Path) -> None:
+    """Create a run folder that only this user (plus SYSTEM and Administrators) can open, whatever the root
+    above it grants: on Windows with the owner-only descriptor, elsewhere with mode 700. Raises OSError if
+    it can't be made that way."""
+    if os.name != "nt":
+        d.mkdir(mode=0o700)
+        return
+    import ctypes
+    from ctypes import wintypes
+    sd = _private_sd()
+    if sd is None:
+        raise OSError(f"can't build private permissions for {d}")
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SecurityAttributes)]
+    sa = SecurityAttributes(ctypes.sizeof(SecurityAttributes), sd, False)
+    if not k.CreateDirectoryW(_ext(d), ctypes.byref(sa)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _reset_acl(p: Path):
+    """Windows: give a run folder and everything in it owner-only permissions (one entry at a time, a folder
+    before its contents so it can be listed), so a deny entry the suite set no longer stops the delete.
+    Each entry's own permissions are replaced without propagating to existing children, and a link,
+    junction or hard-linked file is never touched, so nothing outside the run folder changes. Uses an
+    explicit stack, so a tree of any depth is handled. Best effort."""
+    sd = _private_sd()
+    set_security = None
+    if sd is not None:
+        with contextlib.suppress(OSError, AttributeError):
+            import ctypes
+            from ctypes import wintypes
+            adv = ctypes.WinDLL("advapi32", use_last_error=True)
+            adv.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+            set_security = adv.SetFileSecurityW
+    stack = [_ext(p)]
+    while stack:
+        path = stack.pop()
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if _is_link_stat(st) or (not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1):
+            continue  # a link, or a hard link whose permissions are shared with a file outside the run folder
+        if set_security is not None:
+            set_security(path, 0x4, sd)  # DACL only; doesn't propagate to existing children
+        if stat.S_ISDIR(st.st_mode):
+            with contextlib.suppress(OSError):
+                with os.scandir(path) as it:
+                    stack.extend(e.path for e in it)
+
+
+def _root_usable(root: Path, shared: bool) -> bool:
+    """Can runs keep their folders under `root`? It is created if missing: a shared root like /tmp itself
+    (anyone may add a folder, only its owner may remove it), a private one for this user only. It must be
+    a real folder, not a link, that this process can write to; on POSIX either this user's own, or (shared)
+    open to everyone with the sticky bit, as /tmp is."""
+    try:
+        if not os.path.lexists(root):
+            if os.name == "nt":
+                os.makedirs(root, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(os.path.abspath(root)), exist_ok=True)
+                os.mkdir(root, 0o700)
+                if shared:
+                    os.chmod(root, 0o1777)
+        st = os.lstat(root)
+    except OSError:
+        return False
+    if _is_link_stat(st) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if os.name != "nt":
+        mine = st.st_uid == os.getuid()
+        if shared and not (mine or (st.st_mode & stat.S_ISVTX and st.st_mode & stat.S_IWOTH)):
+            return False
+        if not shared:
+            if not mine:
+                return False
+            if st.st_mode & 0o077:
+                try:
+                    os.chmod(root, 0o700)
+                except OSError:
+                    return False
+    try:  # writable by this process, whatever its permission bits say
+        fd, probe = tempfile.mkstemp(dir=str(root), prefix=".lh-")
+        os.close(fd)
+        os.unlink(probe)
+    except OSError:
+        return False
+    return True
+
+
+_ROOT_FALLBACK: list = []
+_FALLBACK_PREFIX = "lh-run-"
+_FALLBACK_DIR = re.compile(r"^lh-run-[A-Za-z0-9_]{8}$")  # what tempfile.mkdtemp(prefix=_FALLBACK_PREFIX) makes
+FALLBACK_MIN_AGE = 60  # seconds: an empty fallback root younger than this may be another process's, just made
+
+
+_ROOT_OWNER = ".lh-root"  # in a last-resort root: the process using it (not shaped like a run folder's name)
+
+
+def _new_fallback_root() -> Path:
+    """A new last-resort root for this process, with a record of this process inside it, so another run's
+    clean-up leaves it alone while this process lives (it may sit empty between runs for a long time)."""
+    root = Path(tempfile.mkdtemp(prefix=_FALLBACK_PREFIX))
+    with contextlib.suppress(OSError):
+        _write_record(root / _ROOT_OWNER, {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""),
+                                           "user": _user()})
+    atexit.register(_drop_fallback_root, root)
+    return root
+
+
+def _drop_fallback_root(root: Path):
+    """At exit: remove this process's last-resort root if its runs left it empty."""
+    with contextlib.suppress(OSError):
+        (root / _ROOT_OWNER).unlink()
+    with contextlib.suppress(OSError):
+        os.rmdir(root)
+
+
+def _drop_dead_fallback_root(root: Path, idle: float):
+    """Remove another process's last-resort root once it is empty and that process is over: by its record
+    when it has one (a live one is kept however long it has been idle), else when it had been idle over
+    FALLBACK_MIN_AGE (a root just made, before its record is written). Never raises."""
+    marker = root / _ROOT_OWNER
+    try:
+        rec = read_record(marker) if os.path.lexists(marker) else None
+        if rec is not None:
+            if _is_pid(rec.get("pid")) and holder_alive(rec["pid"], rec.get("start")):
+                return
+        elif idle <= FALLBACK_MIN_AGE:
+            return
+        if any(e.name != _ROOT_OWNER for e in os.scandir(root)):
+            return  # something is still in it
+        if rec is not None:
+            marker.unlink()
+        os.rmdir(root)
+    except OSError:
+        pass
+
+
+def _root_safe(root: Path, shared: bool) -> bool:
+    """May start-up clean-up look into `root`? Only a real folder (never a link or junction, whose
+    target could be anything) that is this user's own, or on POSIX a shared sticky one."""
+    try:
+        st = os.lstat(root)
+    except OSError:
+        return False
+    if _is_link_stat(st) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if os.name != "nt":
+        mine = st.st_uid == os.getuid()
+        return mine or (shared and bool(st.st_mode & stat.S_ISVTX))
+    return True
+
+
+def sweep_other_roots(used: Path) -> None:
+    """Clean up dead runs in the run roots this run isn't using, so a run killed while the shared root
+    was unusable (or usable) is cleaned up whichever root the next run gets: the configured root, the
+    private fallback, and other processes' last-resort roots, which are also removed once empty and their
+    process is over. Never raises."""
+    tmp = Path(tempfile.gettempdir())
+    roots = [(temp_root(), not os.environ.get(TEMP_ROOT_ENV)),
+             (tmp / ("lh" if os.name == "nt" else f"lh-{os.getuid()}"), False)]
+    with contextlib.suppress(OSError):
+        roots += [(p, False) for p in tmp.iterdir() if _FALLBACK_DIR.match(p.name)]
+    seen = {os.path.normcase(os.path.abspath(used))}
+    for root, shared in roots:
+        key = os.path.normcase(os.path.abspath(root))
+        if key in seen or not _root_safe(root, shared):
+            continue
+        seen.add(key)
+        try:
+            idle = time.time() - os.lstat(root).st_mtime  # before the sweep, which may change it
+        except OSError:
+            continue
+        sweep_temp_root(root)
+        if _FALLBACK_DIR.match(root.name):
+            _drop_dead_fallback_root(root, idle)
+
+
+def _run_root() -> Path:
+    """The temp root runs actually use: temp_root() when it's usable, else a private folder for this user
+    (<TEMP>\\lh on Windows, $TMPDIR/lh-<uid> elsewhere), else a new private folder from tempfile. Prints one
+    warning line when it falls back; a run never fails because the shared root is unusable."""
+    root = temp_root()
+    if _root_usable(root, shared=not os.environ.get(TEMP_ROOT_ENV)):
+        return root
+    tmp = Path(tempfile.gettempdir())
+    alt = tmp / ("lh" if os.name == "nt" else f"lh-{os.getuid()}")
+    if os.path.normcase(os.path.abspath(alt)) != os.path.normcase(os.path.abspath(root)) and \
+            _root_usable(alt, shared=False):
+        chosen = alt
+    else:
+        if not _ROOT_FALLBACK or not _root_safe(_ROOT_FALLBACK[0], shared=False):
+            _ROOT_FALLBACK[:] = [_new_fallback_root()]  # none yet, or it was removed under us
+        chosen = _ROOT_FALLBACK[0]
+    if not _TEMP_WARNED:
+        _TEMP_WARNED.append(1)
+        print(f"⚠ can't use {root} for run temp folders; using {chosen}", flush=True)
+    return chosen
+
+
+def _folder_alive(name: str, owner: Path | None) -> bool:
+    """Is the run that made folder `name` still going? By its owner file (pid and start time) when that
+    parses, else by the pid in the folder's name."""
+    rec = read_record(owner) if owner is not None else {}
+    if _is_pid(rec.get("pid")):
+        if _start_token(rec.get("start")) and isinstance(proc_start(rec["pid"]), Unopenable):
+            # the shared root may hold another user's folders, whose live harness this user can't open
+            return rec.get("user") != _user()
+        return holder_alive(rec["pid"], rec.get("start"))
+    m = _RUN_DIR.match(name)
+    return bool(m) and _is_pid(int(m.group(1))) and proc_start(int(m.group(1))) is not None
+
+
+def sweep_temp_root(root: Path) -> list[str]:
+    """Remove run folders whose run is no longer going, and their owner files. Only entries named like run
+    folders are touched, whatever they are: real folders are deleted with their contents, a link or
+    junction in a folder's place is removed itself (never its target), and any other entry (a file, say)
+    is removed when a dead run's owner file sits next to it; without one it is left alone. Never raises.
+    Returns the removed entries' names."""
+    removed = []
+    try:
+        entries = list(Path(root).iterdir())
+    except OSError:
+        return removed
+    names = {p.name for p in entries}
+    for p in entries:
+        name = p.name
+        if name.endswith(".owner") or not _RUN_DIR.match(name):
+            continue
+        owner = p.with_name(name + ".owner") if name + ".owner" in names else None
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if owner is None and not (_is_link_stat(st) or stat.S_ISDIR(st.st_mode)):
+            continue  # a file with no owner file next to it was never a run's: not ours to remove
+        try:
+            if _folder_alive(name, owner):
+                continue
+            _rm_run_dir(p)  # a link itself, a file, or a folder with its contents
+        except Exception:  # noqa: BLE001 - clean-up never stops a run; tried again by the next run that starts
+            continue
+        removed.append(name)
+        if owner is not None:
+            with contextlib.suppress(OSError):
+                owner.unlink()
+    for p in entries:  # owner files whose folder is gone and whose run is over
+        name = p.name
+        if name.endswith(".owner") and _RUN_DIR.match(name[:-6]) and name[:-6] not in names:
+            try:
+                if not _folder_alive(name[:-6], p):
+                    p.unlink()
+            except OSError:
+                pass
+    return removed
+
+
+@contextlib.contextmanager
+def run_temp(suffix: str = "", label: str | None = None):
+    """A new, empty temp folder for one suite or probe run, removed afterwards whatever the outcome.
+    Dead runs' folders are cleaned up first. An owner file next to the folder (not in it) records this
+    process, so a later process with the same pid can't keep it alive. An old folder under this run's name
+    that can't be removed (a process still holds it open) is left for a later run, and this run uses a
+    new name instead."""
+    root = _run_root()
+    sweep_temp_root(root)
+    sweep_other_roots(root)
+    base = f"{task_slug() or 'task'}-{os.getpid()}{suffix}"
+    name = base
+    for i in range(1, 1000):  # a folder under our own pid is a dead run's, or this process's earlier run's
+        if not os.path.lexists(root / name):
+            break
+        try:
+            _rm_run_dir(root / name)
+            break
+        except Exception:  # noqa: BLE001 - an old folder that can't go is left; this run takes a new name
+            name = f"{base}-r{i}"
+    d, owner = root / name, root / f"{name}.owner"
+    record = {"pid": os.getpid(), "start": str(proc_start(os.getpid()) or ""), "user": _user()}
+    _write_record(owner, record, private=True)  # other users of a shared root mustn't be able to change it
+    try:
+        _mkdir_private(d)  # only this user may open it, whatever a shared root like C:\lh-tmp grants
+    except OSError:
+        if os.name != "nt":
+            raise
+        # owner-only permissions couldn't be set: use the user's own TEMP, which is private already
+        with contextlib.suppress(OSError):
+            owner.unlink()
+        alt = Path(tempfile.gettempdir()) / "lh"
+        if not _root_usable(alt, shared=False):
+            raise
+        d, owner = alt / name, alt / f"{name}.owner"
+        _write_record(owner, record)
+        d.mkdir()
+    try:
+        yield d
+    finally:
+        try:
+            left = sum(1 for _ in os.scandir(_ext(d)))
+            if left > LEFTOVER_LIMIT:
+                LEFTOVERS.append((label or ("suite" if not suffix else f"probe{suffix}"), left))
+        except OSError:
+            pass
+        with contextlib.suppress(Exception):  # clean-up never replaces the run's own outcome
+            _rm_run_dir(d)
+        if not os.path.lexists(d):
+            with contextlib.suppress(OSError):
+                owner.unlink()  # otherwise kept, so the next run's start can tell the folder is dead
+
+
+def run_env(tmp: Path) -> dict:
+    """clean_env() plus TEMP, TMP and TMPDIR pointing at the run's own folder. Only for the child process:
+    clean_env() itself, which the verify reuse key hashes, is unchanged."""
+    env = clean_env()
+    env.update(TEMP=str(tmp), TMP=str(tmp), TMPDIR=str(tmp))
+    return env
+
+
+@contextlib.contextmanager
+def _signals_stop():
+    """POSIX, main thread: SIGTERM and SIGHUP end the harness through an exception, so the suite's tree
+    (in its own session, out of reach of group signals) is killed before the harness exits."""
+    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    import signal
+
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+
+    old = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            with contextlib.suppress(OSError, ValueError):
+                old[sig] = signal.signal(sig, stop)
+    try:
+        yield
+    finally:
+        for sig, h in old.items():
+            with contextlib.suppress(OSError, ValueError, TypeError):
+                signal.signal(sig, h)
+
+
+LIVE_RUNS: dict = {}                        # pid -> Popen of every suite or probe this process is running
+_LIVE_LOCK = threading.Lock()
+_STOPPING = threading.Event()               # set once an interrupt is stopping this process's runs
+
+
+def stop_live_runs() -> None:
+    """Kill every suite or probe this process is running (each with its whole tree), including probes in
+    worker threads, and refuse to start more. Called when the command is interrupted."""
+    _STOPPING.set()
+    with _LIVE_LOCK:
+        procs = list(LIVE_RUNS.values())
+    for p in procs:
+        kill_tree(p.pid)
+
+
+@contextlib.contextmanager
+def _runs_stop_on_interrupt():
+    """Around a suite or a batch of probes, in the thread that runs the command: SIGTERM and SIGHUP end
+    the harness through an exception (POSIX, main thread), and any interrupt or error kills every run
+    this process started before it goes on, so none keeps running (or holds the lock and slot) after it."""
+    _STOPPING.clear()
+    with _signals_stop():
+        try:
+            yield
+        except BaseException:
+            stop_live_runs()
+            raise
+
+
+def _communicate(p, cmd, timeout: int):
+    """p.communicate(timeout), in short slices: a wait for a process doesn't return to Python on Windows, so
+    a Ctrl-C would otherwise only be handled once the run ends. Retrying after TimeoutExpired loses no
+    output. Raises subprocess.TimeoutExpired once `timeout` seconds have passed."""
+    end = time.monotonic() + timeout
+    while True:
+        left = end - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        try:
+            return p.communicate(timeout=min(0.5, left))
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _finish(p):
+    """After a kill: collect what the process wrote, without waiting forever on pipes a grandchild holds."""
+    try:
+        return p.communicate(timeout=30)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        for s in (p.stdout, p.stderr):
+            with contextlib.suppress(Exception):
+                s.close()
+        with contextlib.suppress(Exception):
+            p.kill()
+        return "", ""
+
+
+def run_process(cmd: list[str], env: dict, timeout: int, on_start=None, stdin=None) -> tuple[int, str]:
+    """Run a suite or probe: (exit code, stdout + stderr). On POSIX it gets its own session so its whole
+    tree can be killed. Past `timeout`, or if the harness is interrupted, the tree is killed and the
+    exception (subprocess.TimeoutExpired, KeyboardInterrupt, ...) is re-raised."""
+    kw = {"start_new_session": True} if os.name != "nt" else {}
+    p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin,
+                         encoding=UTF8, errors="replace", env=env, **kw)
+    with _LIVE_LOCK:
+        LIVE_RUNS[p.pid] = p
+    try:
+        if _STOPPING.is_set():  # the command is being interrupted: started too late, stop it at once
+            raise subprocess.SubprocessError("stopped: the command was interrupted")
+        with _signals_stop():
+            if on_start:
+                on_start(p.pid)
+            out, err = _communicate(p, cmd, timeout)
+    except BaseException:
+        kill_tree(p.pid)
+        _finish(p)
+        raise
+    finally:
+        with _LIVE_LOCK:
+            LIVE_RUNS.pop(p.pid, None)
+    return p.returncode, (out or "") + (err or "")
 
 
 def probe_bases(entries: list[dict]) -> list[Path]:
@@ -1296,16 +2415,22 @@ def run_probes(entries: list[dict]) -> list[tuple[dict, int, str]]:
         return []
     cfg = load_config()
     timeout, workers = probe_timeout(cfg), min(probe_workers(), len(entries))
-    with base_hidden():
+    with base_hidden(), _runs_stop_on_interrupt():
         bases = probe_bases(entries)
         if workers == 1:
-            return [(e, *run_probe(e, b, timeout)) for e, b in zip(entries, bases)]
-        with ThreadPoolExecutor(max_workers=workers) as ex:  # results in saved order, whichever ends first
-            futures = [ex.submit(run_probe, e, b, timeout) for e, b in zip(entries, bases)]
+            return [(e, *run_probe(e, b, timeout, n)) for n, (e, b) in enumerate(zip(entries, bases), 1)]
+        ex = ThreadPoolExecutor(max_workers=workers)
+        try:  # results in saved order, whichever ends first
+            futures = [ex.submit(run_probe, e, b, timeout, n) for n, (e, b) in enumerate(zip(entries, bases), 1)]
             return [(e, *f.result()) for e, f in zip(entries, futures)]
+        except BaseException:
+            stop_live_runs()  # before waiting for the workers, so an interrupt ends the command promptly
+            raise
+        finally:
+            ex.shutdown(wait=True, cancel_futures=True)
 
 
-def run_probe(entry: dict, base: Path, timeout: int | None = None) -> tuple[int, str]:
+def run_probe(entry: dict, base: Path, timeout: int | None = None, n: int = 1) -> tuple[int, str]:
     """Run a saved probe from its audit-trail copy (working directory: the task folder; the base-commit
     copies' folder `base` as its argument after the script). Exit 0: its defect class is gone; 1: it
     found differences; anything else: the probe broke."""
@@ -1316,14 +2441,15 @@ def run_probe(entry: dict, base: Path, timeout: int | None = None) -> tuple[int,
     path = pdir / entry["file"]
     path.write_bytes(content.encode(UTF8))
     cmd = probe_cmd(entry, path, base)
-    try:  # nothing in the environment marks a probe run (no session or harness markers either)
-        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace", env=clean_env(),
-                           stdin=subprocess.DEVNULL, timeout=timeout)
-    except FileNotFoundError as e:
-        return 127, f"can't run {cmd[0]}: {e}"
-    except subprocess.TimeoutExpired:
-        return 124, f"timed out after {timeout}s"
-    return r.returncode, r.stdout + r.stderr
+    # nothing in the environment marks a probe run (no session or harness markers either); its own temp
+    # folder; past its timeout its whole process tree is killed
+    with run_temp(f"-p{n}", label=f"probe {entry.get('id', n)}") as tmp:
+        try:
+            return run_process(cmd, run_env(tmp), timeout, stdin=subprocess.DEVNULL)
+        except FileNotFoundError as e:
+            return 127, f"can't run {cmd[0]}: {e}"
+        except subprocess.TimeoutExpired:
+            return 124, f"timed out after {timeout}s"
 
 
 def cmd_probe(args):
@@ -1553,6 +2679,9 @@ def test_files(cfg) -> list[str]:
 
 def run_tests(cfg):
     cmd = list(cfg["test_cmd"])
+    if any(isinstance(a, str) and "{concurrency}" in a for a in cmd):
+        n = str(concurrency())
+        cmd = [a.replace("{concurrency}", n) if isinstance(a, str) else a for a in cmd]
     if cmd and cmd[0] in ("python", "python3", "py"):
         cmd[0] = sys.executable  # same interpreter as the harness (portable across OSes/venvs)
     junit_path = ROOT / cfg["junit_path"] if cfg.get("junit_path") else JUNIT
@@ -1560,8 +2689,12 @@ def run_tests(cfg):
     junit_path.unlink(missing_ok=True)
     if cfg.get("junit_arg"):
         cmd.append(cfg["junit_arg"].format(path=str(junit_path)))
-    with base_hidden():  # the suite never sees the base-commit copies or session markers, just as in CI
-        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding=UTF8, errors="replace", env=clean_env())
+    timeout = suite_timeout(cfg)
+    try:  # the suite never sees the base-commit copies or session markers, just as in CI; its own TEMP
+        with base_hidden(), run_temp() as tmp, _runs_stop_on_interrupt():
+            rc, out = run_process(cmd, run_env(tmp), timeout, on_start=note_suite)
+    except subprocess.TimeoutExpired:
+        raise SuiteTimeout(timeout) from None  # lock and slot released, base copies back, folder removed
     results = {}
     if junit_path.exists():
         for tc in ET.parse(junit_path).getroot().iter("testcase"):
@@ -1574,20 +2707,23 @@ def run_tests(cfg):
             results[name] = outcome
     LAST_RESULTS.clear()
     LAST_RESULTS.update(results)
-    return r.returncode, (r.stdout + r.stderr), results
+    return rc, out, results
 
 
 SUITE_GATES = ("redgate", "verify", "baseline", "review")
 
 
 def record_suite_run(gate: str, *, duration_s, result: str | None, cache: str | None = None,
-                     key: str | None = None, scope: str = "full", env_failures: int = 0) -> None:
+                     key: str | None = None, scope: str = "full", env_failures: int = 0,
+                     slots=None, running=None, load_avg=None, wait_s=None) -> None:
     """Append one suite-run record (`suite` event, for `metrics`). Best effort: never raises, prints
     nothing, so recording can't change a gate's outcome. `scope` and `env_failures` are fixed for now and
-    exist for targeted runs and environment-failure detection (#12)."""
+    exist for targeted runs and environment-failure detection (#12). `slots`, `running`, `load_avg` and
+    `wait_s` describe the machine's load when the run took its slot (None, and so left out, when no slot
+    was taken)."""
     try:
         emit("suite", gate=gate, scope=scope, duration_s=duration_s, cache=cache, result=result,
-             env_failures=env_failures, key=key)
+             env_failures=env_failures, key=key, slots=slots, running=running, load_avg=load_avg, wait_s=wait_s)
     except Exception:  # noqa: BLE001 - metrics must never break a gate
         pass
 
@@ -1603,20 +2739,29 @@ def suite_result(rc) -> str | None:
 @contextlib.contextmanager
 def suite_timer(gate: str, cache: str | None = None, key: str | None = None):
     """Times its body with time.monotonic() (never negative, unlike the wall clock) and records one suite
-    run on exit; the body sets run["rc"]. Ctrl-C is recorded as `interrupted` with the time so far, then
-    re-raised; any other exception passes through unrecorded."""
+    run on exit; the body sets run["rc"]. Time spent waiting for a run slot isn't suite time. Ctrl-C is
+    recorded as `interrupted` with the time so far and a suite timeout as `timeout`, then re-raised; any
+    other exception passes through unrecorded."""
     run: dict = {}
+    RUN_LOAD.clear()
+    RUN_LOAD.update(gate=gate, slots=None, running=None, load_avg=None, wait_s=None)
     t0 = time.monotonic()
 
     def took():
-        return round(max(0.0, time.monotonic() - t0), 3)
+        return round(max(0.0, time.monotonic() - t0 - (RUN_LOAD.get("wait_s") or 0)), 3)
+
+    def load():
+        return {k: RUN_LOAD.get(k) for k in ("slots", "running", "load_avg", "wait_s")}
 
     try:
         yield run
     except KeyboardInterrupt:
-        record_suite_run(gate, duration_s=took(), result="interrupted", cache=cache, key=key)
+        record_suite_run(gate, duration_s=took(), result="interrupted", cache=cache, key=key, **load())
         raise
-    record_suite_run(gate, duration_s=took(), result=suite_result(run.get("rc")), cache=cache, key=key)
+    except SuiteTimeout:
+        record_suite_run(gate, duration_s=took(), result="timeout", cache=cache, key=key, **load())
+        raise
+    record_suite_run(gate, duration_s=took(), result=suite_result(run.get("rc")), cache=cache, key=key, **load())
 
 
 def run_suite(cfg: dict, gate: str) -> tuple[int, str, dict]:
@@ -2027,10 +3172,18 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
             reused = f"; cached, key {key[:SHORT_KEY]}, passed {hit.get('label', '?')}; `verify --fresh` re-runs"
             record_suite_run(gate, duration_s=0, result="pass", cache="hit", key=key)
         else:
-            with suite_timer(gate, cache, key) as run:
-                rc, out, results = run_tests(cfg)
-                probe_runs = run_probes(saved)
-                run["rc"] = rc
+            LEFTOVERS.clear()
+            try:
+                with suite_timer(gate, cache, key) as run:
+                    rc, out, results = run_tests(cfg)
+                    probe_runs = run_probes(saved)
+                    run["rc"] = rc
+            except SuiteTimeout:
+                drop_reuse()  # a timed-out run is a failing real run
+                raise
+            for label, n in LEFTOVERS:
+                warns.append(f"Suite cleanup: {label} left {n} entries in its temp folder (more than "
+                             f"{LEFTOVER_LIMIT}); the suite's own clean-up looks broken")
         TEL["reused"] = bool(hit)
         green = rc == 0
         if rc != 0:
@@ -3010,6 +4163,9 @@ def run_tracked(args):
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
         raise
+    except SuiteTimeout:
+        code = 124
+        raise
     except BaseException:
         code = 1
         raise
@@ -3116,10 +4272,13 @@ def main():
         if not wt:
             die(f"no task {args.task!r} in progress (see `light-harness tasks`)")
         set_root(wt)
-    if args.cmd in TRACKED:
-        run_tracked(args)
-    else:
-        args.f(args)
+    try:
+        if args.cmd in TRACKED:
+            run_tracked(args)
+        else:
+            args.f(args)
+    except SuiteTimeout as e:  # the run's tree was killed and its lock, slot and folder released
+        die(f"suite timed out after {e.seconds} s", 124)
 
 
 if __name__ == "__main__":

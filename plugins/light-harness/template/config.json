@@ -32,5 +32,6 @@
   ],
   "worktree_dir": ".tasks",
   "parallel": 3,
-  "probe_timeout": 600
+  "probe_timeout": 600,
+  "suite_timeout": 3600
 }

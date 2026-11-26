@@ -13,6 +13,8 @@ You are running **/light-harness:task-review**.
 - Tell every subagent the task folder, the task name and the contract path in its brief.
 - If this session was opened inside a task folder itself, paths are relative to it and `--task` is optional.
 
+**Slow suites.** `set-status Review`, `verify` and `verdict pass` (like `redgate`) run the project's whole suite, and may first wait for a machine-wide run slot while other tasks' suites run. When the suite takes more than a minute or two, run them in the background (Bash `run_in_background`) and wait for the notification, or give the Bash call a `timeout` above the expected suite time, and tell the reviewer the same. Don't let the tool kill a gate mid-run and retry in a loop. A suite past `suite_timeout` fails with exit 124.
+
 1. Run `light-harness status --task <name>`. Status must be **Build** (or **Review** if a previous review was interrupted). Otherwise stop and name the right command.
 
 2. If status is Build, run `light-harness set-status Review --task <name>`. This re-runs full verification (it reuses the implementer's passing run if the code hasn't changed since) and refuses to enter Review if it fails. On refusal, report the failures and tell the human to run `/light-harness:task-implement`.
