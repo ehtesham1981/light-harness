@@ -32,7 +32,6 @@ Telemetry never changes a gate's outcome: every failure in here is swallowed.
 from __future__ import annotations
 
 import datetime as dt
-import functools
 import json
 import math
 import os
@@ -41,7 +40,6 @@ import statistics
 import subprocess
 import sys
 import time
-import urllib.request
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -56,13 +54,28 @@ ENGINEER_KEY = "lightharness.engineer"
 
 # --- settings -----------------------------------------------------------------------------------
 @lru_cache(maxsize=None)
+def _config_all(cwd: str) -> dict:
+    """Every `lightharness.*` git config value for `cwd`, read in one git call (issue #24: a guard block reads
+    three keys). Keys are lowercased, and the last value of a multi-valued key wins, as `git config --get` gives."""
+    try:
+        r = subprocess.run(["git", "config", "-z", "--get-regexp", r"^lightharness\."], cwd=cwd, capture_output=True,
+                           encoding=UTF8, errors="replace")
+    except (OSError, ValueError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for item in r.stdout.split("\0"):
+        if item:
+            k, _, v = item.partition("\n")
+            out[k.lower()] = v
+    return out
 
-@functools.lru_cache(maxsize=None)
-def _config_all(cwd):
-    """Every lightharness.* git config key for `cwd`, read in one call (Q-9). Stub."""
-    raise NotImplementedError
 
+@lru_cache(maxsize=None)
 def git_config(key: str, cwd: str, scope: str = "") -> str:
+    if not scope:
+        return _config_all(cwd).get(key.lower(), "").strip()
     args = ["git", "config"] + ([f"--{scope}"] if scope else []) + ["--get", key]
     try:
         r = subprocess.run(args, cwd=cwd, capture_output=True, encoding=UTF8, errors="replace")
@@ -101,6 +114,7 @@ def set_engineer(cwd, nick, repo_only: bool):
         args = ["git", "config", scope, ENGINEER_KEY, nick]
     r = subprocess.run(args, cwd=str(cwd), capture_output=True, encoding=UTF8, errors="replace")
     git_config.cache_clear()
+    _config_all.cache_clear()
     if r.returncode not in (0, 5):  # 5: nothing to unset
         return r.stderr.strip() or f"git config exited {r.returncode}"
     return ""
@@ -217,6 +231,8 @@ def _export(rec: dict, cwd, background: bool = False):
 
 
 def _post(job: dict):
+    import urllib.request  # only here: importing it costs ~30 ms on every hook run (issue #24)
+
     req = urllib.request.Request(job["url"], data=json.dumps(job["body"]).encode(UTF8),
                                  headers=job["headers"], method="POST")
     try:
