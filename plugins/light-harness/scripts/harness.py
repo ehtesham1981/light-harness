@@ -1652,7 +1652,9 @@ def _json_or_raw(s: str):
 # and every probe. Only the slow parts are reused (the suite's results and the probes' exit codes), only
 # from a run where all of them passed, and only while everything that could change their outcome is the
 # same (the key: see reuse_parts). How old the run is plays no part. Every other check in verify() runs
-# each time.
+# each time. `verdict pass` reuses a pass only if it is also anchored in the audit trail (anchor_reuse),
+# so a cache file written by other means can get a task into Review but not through the final gate; a run
+# whose code is swapped and restored before it ends is still trusted. `verdict pass --fresh` always runs.
 SHORT_KEY = 12                         # hex chars of the key shown to users
 LAST_REUSE_PARTS = {}                  # key -> its per-part hashes, filled by reuse_key(), read by store_reuse()
 CACHE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".hypothesis", ".cache"}
@@ -1945,8 +1947,11 @@ def reuse_anchored(entry: dict) -> bool:
 
 
 def verdict_source(decision: dict) -> str:
-    """The §11.4 text for how the PASS verdict's suite run was obtained (stub)."""
-    return ""
+    """The §11.4 text for how the PASS verdict's suite run was obtained: the reused verify's label and key,
+    or a fresh run."""
+    if decision.get("cache") == "hit":
+        return f"reused verify {decision.get('label')} (key {str(decision.get('key'))[:SHORT_KEY]})"
+    return "fresh run"
 
 
 def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False) -> bool:
@@ -2847,6 +2852,8 @@ def cmd_verify(args):
 
 
 def cmd_verdict(args):
+    if args.fresh and args.result != "pass":
+        die("--fresh only applies to verdict pass")
     text = contract()
     if get_status(text) != "Review":
         die(f"status is {get_status(text)}; verdicts are recorded in Review")
@@ -2884,8 +2891,9 @@ def cmd_verdict(args):
             problems.append("ACs not ticked in §11.1: " + ", ".join(unchecked))
         if problems:
             die("PASS refused:\n  - " + "\n  - ".join(problems))
-        # The final gate never reuses a stored run: it runs the suite and the probes on the code it passes
-        if not verify(fresh=True):
+        # The final gate reuses the stored pass only if nothing in its key changed and the pass is anchored
+        # in the audit trail (so a cache file written by other means runs fresh); `--fresh` always runs
+        if not verify(fresh=args.fresh, require_anchor=True):
             die("PASS refused: verification fails on the current tree")
         # Everything passing now is the baseline for the next task built on this one
         extra = {"baseline.json": baseline_json(f"verdict pass ({task_slug()})")[0]}
@@ -2897,7 +2905,8 @@ def cmd_verdict(args):
     body = (f"**Verdict: {args.result.upper()}** by {args.by} — {now()}  \n"
             f"Issues: {len(rows)} logged, {len(unresolved)} unresolved"
             + (f" (blocking: {', '.join(blocking)})" if blocking else "")
-            + (f"; open Low: {', '.join(open_low)}" if open_low and args.result == "pass" else ""))
+            + (f"; open Low: {', '.join(open_low)}" if open_low and args.result == "pass" else "")
+            + (f"  \nSuite and probes: {verdict_source(LAST_VERIFY)}" if args.result == "pass" else ""))
     set_block("verdict", body)
     write_status(new, f"verdict {args.result} by {args.by}")
     earlier = trail()
