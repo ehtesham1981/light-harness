@@ -14,8 +14,8 @@ for W in python3 python py; do
   R=$(command -v "$W") || continue
   A=; [ "$W" = py ] && A=-3
   if [ -n "${LIGHT_HARNESS_PY:-}" ] && [ "$LIGHT_HARNESS_PY" = "$R" ]; then
-    # shellcheck disable=SC2086  # LIGHT_HARNESS_PY_ARGS is "-3" for py, or empty
-    exec "$R" ${LIGHT_HARNESS_PY_ARGS:-} "$DIR/../scripts/harness.py" "$@"
+    # shellcheck disable=SC2086  # A is "-3" for py, else empty
+    exec "$R" $A "$DIR/../scripts/harness.py" "$@"
   fi
   # shellcheck disable=SC2086
   if "$R" $A -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then

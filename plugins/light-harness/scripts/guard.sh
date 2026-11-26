@@ -24,18 +24,47 @@ case $DIR in /*) if [ -n "${MSYSTEM:-}" ] && [ -n "${MSYS_NO_PATHCONV:-}" ]; the
 PROJECT=${CLAUDE_PROJECT_DIR:-$PWD}
 CR=$(printf '\r')
 
+# oneline <file>: OL = the file's only line (one trailing CR dropped); fails if it's empty, unreadable or has a
+# second non-empty line. A gitfile and commondir are read this way, as git reads them.
+oneline() {
+  OL=; [ -f "$1" ] || return 1
+  n=0; x=
+  while IFS= read -r x || [ -n "$x" ]; do
+    x=${x%"$CR"}; n=$((n + 1))
+    if [ $n = 1 ]; then OL=$x; elif [ -n "$x" ]; then return 1; fi
+    x=
+  done < "$1"
+  [ -n "$OL" ]
+}
+# gitdir_ok <git dir> <common dir>: git would accept it: HEAD a plain file holding `ref: refs/…` or an object
+# id, and objects/ and refs/ folders in the common dir.
+gitdir_ok() {
+  [ -f "$1/HEAD" ] && ! [ -h "$1/HEAD" ] && oneline "$1/HEAD" || return 1
+  case $OL in
+    "ref: refs/"*) ;;
+    *[!0-9a-f]*) return 1;;
+    *) [ ${#OL} = 40 ] || [ ${#OL} = 64 ] || return 1;;
+  esac
+  [ -d "$2/objects" ] && [ -d "$2/refs" ]
+}
+# The common dir without git, only for a layout git accepts plainly; anything else asks git (BR-5)
 GD=
 if [ -z "${GIT_DIR:-}${GIT_COMMON_DIR:-}${GIT_WORK_TREE:-}${GIT_CEILING_DIRECTORIES:-}${GIT_DISCOVERY_ACROSS_FILESYSTEM:-}" ]; then
   if [ -d "$PROJECT/.git" ]; then
-    GD=$PROJECT/.git
-  elif [ -f "$PROJECT/.git" ]; then   # a worktree: `gitdir: <dir>`, and <dir>/commondir names the common dir
-    l=; IFS= read -r l < "$PROJECT/.git" || :
-    case $l in "gitdir: "*)
-      g=${l#gitdir: }; g=${g%"$CR"}
+    gitdir_ok "$PROJECT/.git" "$PROJECT/.git" && GD=$PROJECT/.git
+  elif oneline "$PROJECT/.git"; then   # a worktree: `gitdir: <dir>`, and <dir>/commondir names the common dir
+    case $OL in "gitdir: "?*)
+      g=${OL#gitdir: }
       case $g in /*|[A-Za-z]:*) ;; *) g=$PROJECT/$g;; esac
-      c=; [ -f "$g/commondir" ] && { IFS= read -r c < "$g/commondir" || :; }
-      c=${c%"$CR"}
-      case $c in "") GD=$g;; /*|[A-Za-z]:*) GD=$c;; *) GD=$g/$c;; esac;;
+      c=$g
+      if [ -e "$g/commondir" ]; then
+        if oneline "$g/commondir"; then
+          case $OL in /*|[A-Za-z]:*) c=$OL;; *) c=$g/$OL;; esac
+        else
+          c=
+        fi
+      fi
+      [ -n "$c" ] && [ -d "$g" ] && [ -d "$c" ] && gitdir_ok "$g" "$c" && GD=$c;;
     esac
   fi
   [ -n "$GD" ] && [ -d "$GD/light-harness" ] || GD=
@@ -86,11 +115,16 @@ if [ -n "$PY" ]; then
     done
   fi
   [ -n "$fast" ] && exit 0
-  LIGHT_HARNESS_GIT_COMMON=$GD "$PY" "$DIR/hook_guard.py" <<LH_GUARD_STDIN_EOF_24
+  # Its stderr is kept back and shown only for a judgement (exit 0 or 2): a record that can't start falls back
+  # to the search below without its own noise. Stdout goes straight through on fd 3.
+  # The group's own stderr is dropped too: a shell reports a child killed by a signal ("Killed") there.
+  exec 3>&1
+  { ERR=$(LIGHT_HARNESS_GIT_COMMON=$GD "$PY" "$DIR/hook_guard.py" 2>&1 >&3 3>&- <<LH_GUARD_STDIN_EOF_24
 $IN
 LH_GUARD_STDIN_EOF_24
-  rc=$?
-  case $rc in 0|2) exit $rc;; esac
+); rc=$?; } 2>/dev/null
+  exec 3>&-
+  case $rc in 0|2) [ -n "$ERR" ] && printf '%s\n' "$ERR" >&2; exit $rc;; esac
 fi
 
 for W in python3 python "py -3"; do
@@ -99,7 +133,7 @@ for W in python3 python "py -3"; do
     if [ -n "$SID" ]; then   # record it for the rest of the session, if session.sh didn't
       cur=; [ -f "$REC" ] && { IFS= read -r cur < "$REC" || :; }
       if ! usable "$cur" "$REC" && [ -f "$OUT" ]; then
-        mkdir -p "$GD/light-harness/py" 2>/dev/null && printf '%s' "$OUT" > "$REC" 2>/dev/null
+        { mkdir -p "$GD/light-harness/py" && printf '%s' "$OUT" > "$REC"; } 2>/dev/null
       fi
     fi
     # shellcheck disable=SC2086

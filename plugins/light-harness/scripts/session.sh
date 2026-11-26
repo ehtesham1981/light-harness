@@ -34,13 +34,12 @@ if [ -d "$GD/light-harness" ]; then
     if OUT=$($W -c 'import sys; ok = sys.version_info >= (3, 9); ok and sys.stdout.write(sys.executable); sys.exit(0 if ok else 1)' 2>/dev/null); then
       case $OUT in /*|[A-Za-z]:*) ;; *) continue;; esac
       if [ -n "$SID" ]; then
-        mkdir -p "$GD/light-harness/py" 2>/dev/null && printf '%s' "$OUT" > "$GD/light-harness/py/$SID" 2>/dev/null
+        { mkdir -p "$GD/light-harness/py" && printf '%s' "$OUT" > "$GD/light-harness/py/$SID"; } 2>/dev/null
       fi
       R=$(command -v "${W%% *}")
       if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "$R" ]; then
         case $R in *"'"*) ;; *)
-          printf "export LIGHT_HARNESS_PY='%s'\n" "$R" >> "$CLAUDE_ENV_FILE"
-          [ "$W" = "py -3" ] && printf "export LIGHT_HARNESS_PY_ARGS='-3'\n" >> "$CLAUDE_ENV_FILE";;
+          printf "export LIGHT_HARNESS_PY='%s'\n" "$R" >> "$CLAUDE_ENV_FILE";;
         esac
       fi
       break
