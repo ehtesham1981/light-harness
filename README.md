@@ -110,6 +110,7 @@ For another task, run `/light-harness:task-init <name>` in a new session in the 
 | Repo defaults | `.git/light-harness/config.json`, the last finished task's stack config, used to start the next task | no |
 | Telemetry events | `.git/light-harness/telemetry/events.jsonl`, one JSON line per event (see [Telemetry and KPIs](#telemetry-and-kpis)) | no (inside `.git`) |
 | Rules for the agent | the plugin's `rules.md`, added to the session's context by a SessionStart hook | no |
+| Session interpreter | `.git/light-harness/py/<session id>`: the Python 3.9+ the SessionStart hook found (also `LIGHT_HARNESS_PY` for the CLI), so later hooks and commands don't search again; deleted after 7 days | no (inside `.git`) |
 | Permission rules | enforced by the plugin's PreToolUse hook | no |
 
 ### Tasks and commands
