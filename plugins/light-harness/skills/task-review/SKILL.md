@@ -41,7 +41,7 @@ You are running **/light-harness:task-review**.
    - PASS: `light-harness verdict pass --by reviewer --task <name>`
    - FAIL: `light-harness verdict fail --by reviewer --task <name>`
 
-   The harness refuses PASS if any Critical/High/Medium issue is unresolved, any AC is unticked, or verification fails. `verdict pass` always runs the suite and the probes again, never reusing a stored run. If it refuses, record **FAIL**. Never edit issues to get a pass.
+   The harness refuses PASS if any Critical/High/Medium issue is unresolved, any AC is unticked, or verification fails. `verdict pass` reuses the stored verify pass when its reuse key is unchanged and the pass is anchored in the audit trail (the `verify-pass` lines in `light-harness log`), and runs the suite and the probes fresh otherwise; the §11.4 block says which (`Suite and probes: reused verify <label> (key <12 hex>)` or `fresh run`). Run `verdict pass --fresh` to force a run when the reviewer reports a flaky test, code that reads ignored files or outside state, anything odd in the audit trail, or the task is high-stakes. If it refuses, record **FAIL**. Never edit issues to get a pass.
 
 6. Report to the human:
    - **PASS** → status **Done**. Summarise the evidence and any open Low issues. Then offer the close-out:
