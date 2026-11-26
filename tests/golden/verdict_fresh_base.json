@@ -1,0 +1,265 @@
+{
+ "source": "base-commit harness.py (89b0318, 1.9.0), plain `verdict pass`",
+ "cells": {
+  "tree=unchanged|suite=pass|probes=none": {
+   "exit": 0,
+   "suite_runs": 1,
+   "probe_runs": 0,
+   "status": "Done",
+   "refusal": [],
+   "verify_block": "**Result: PASS** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Green gate: test suite passed (1 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests",
+   "verdict_block": "**Verdict: PASS** by reviewer — <when>\nIssues: 3 logged, 0 unresolved",
+   "status_log_last": "- <when>: Review → Done (verdict pass by reviewer)",
+   "new_subjects": [
+    "harness: verdict pass by reviewer"
+   ],
+   "baseline_passing": [
+    "tests.test_t::test_ac1"
+   ],
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "pass"
+    ]
+   ]
+  },
+  "tree=unchanged|suite=pass|probes=passing": {
+   "exit": 0,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Done",
+   "refusal": [],
+   "verify_block": "**Result: PASS** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Green gate: test suite passed (1 tests)\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests",
+   "verdict_block": "**Verdict: PASS** by reviewer — <when>\nIssues: 3 logged, 0 unresolved",
+   "status_log_last": "- <when>: Review → Done (verdict pass by reviewer)",
+   "new_subjects": [
+    "harness: verdict pass by reviewer"
+   ],
+   "baseline_passing": [
+    "tests.test_t::test_ac1"
+   ],
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "pass"
+    ]
+   ]
+  },
+  "tree=unchanged|suite=pass|probes=failing": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Green gate: test suite passed (1 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Saved probe: RV-1.1 (for RV-1) fails with exit 1: its defect class is still there\n```\n\n```",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "pass"
+    ]
+   ]
+  },
+  "tree=unchanged|suite=fail|probes=none": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 0,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\nF                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_ac1 ___________________________________\n\n    def test_ac1():\n        \"\"\"AC-1\"\"\"\n        with open(os.environ[\"ST_COUNT\"], \"a\") as f:\n            f.write(\"x\")\n        switch_on = os.path.exists(os.path.join(LAB, \"suite.fail\"))\n>       assert switch_on is False, \"the suite fail switch is on\"\nE       AssertionError: the suite fail switch is on\nE       assert True is False\n\ntests/test_t.py:12: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_t.py::test_ac1 - AssertionError: the suite fail switch is on\n1 failed in <t>s\n```\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "fail"
+    ]
+   ]
+  },
+  "tree=unchanged|suite=fail|probes=passing": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\nF                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_ac1 ___________________________________\n\n    def test_ac1():\n        \"\"\"AC-1\"\"\"\n        with open(os.environ[\"ST_COUNT\"], \"a\") as f:\n            f.write(\"x\")\n        switch_on = os.path.exists(os.path.join(LAB, \"suite.fail\"))\n>       assert switch_on is False, \"the suite fail switch is on\"\nE       AssertionError: the suite fail switch is on\nE       assert True is False\n\ntests/test_t.py:12: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_t.py::test_ac1 - AssertionError: the suite fail switch is on\n1 failed in <t>s\n```\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "fail"
+    ]
+   ]
+  },
+  "tree=unchanged|suite=fail|probes=failing": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\nF                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_ac1 ___________________________________\n\n    def test_ac1():\n        \"\"\"AC-1\"\"\"\n        with open(os.environ[\"ST_COUNT\"], \"a\") as f:\n            f.write(\"x\")\n        switch_on = os.path.exists(os.path.join(LAB, \"suite.fail\"))\n>       assert switch_on is False, \"the suite fail switch is on\"\nE       AssertionError: the suite fail switch is on\nE       assert True is False\n\ntests/test_t.py:12: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_t.py::test_ac1 - AssertionError: the suite fail switch is on\n1 failed in <t>s\n```\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1\n- ✗ Saved probe: RV-1.1 (for RV-1) fails with exit 1: its defect class is still there\n```\n\n```",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "fail"
+    ]
+   ]
+  },
+  "tree=changed|suite=pass|probes=none": {
+   "exit": 0,
+   "suite_runs": 1,
+   "probe_runs": 0,
+   "status": "Done",
+   "refusal": [],
+   "verify_block": "**Result: PASS** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Green gate: test suite passed (1 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests",
+   "verdict_block": "**Verdict: PASS** by reviewer — <when>\nIssues: 3 logged, 0 unresolved",
+   "status_log_last": "- <when>: Review → Done (verdict pass by reviewer)",
+   "new_subjects": [
+    "harness: verdict pass by reviewer"
+   ],
+   "baseline_passing": [
+    "tests.test_t::test_ac1"
+   ],
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "pass"
+    ]
+   ]
+  },
+  "tree=changed|suite=pass|probes=passing": {
+   "exit": 0,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Done",
+   "refusal": [],
+   "verify_block": "**Result: PASS** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Green gate: test suite passed (1 tests)\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests",
+   "verdict_block": "**Verdict: PASS** by reviewer — <when>\nIssues: 3 logged, 0 unresolved",
+   "status_log_last": "- <when>: Review → Done (verdict pass by reviewer)",
+   "new_subjects": [
+    "harness: verdict pass by reviewer"
+   ],
+   "baseline_passing": [
+    "tests.test_t::test_ac1"
+   ],
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "pass"
+    ]
+   ]
+  },
+  "tree=changed|suite=pass|probes=failing": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Green gate: test suite passed (1 tests)\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Saved probe: RV-1.1 (for RV-1) fails with exit 1: its defect class is still there\n```\n\n```",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "pass"
+    ]
+   ]
+  },
+  "tree=changed|suite=fail|probes=none": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 0,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\nF                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_ac1 ___________________________________\n\n    def test_ac1():\n        \"\"\"AC-1\"\"\"\n        with open(os.environ[\"ST_COUNT\"], \"a\") as f:\n            f.write(\"x\")\n        switch_on = os.path.exists(os.path.join(LAB, \"suite.fail\"))\n>       assert switch_on is False, \"the suite fail switch is on\"\nE       AssertionError: the suite fail switch is on\nE       assert True is False\n\ntests/test_t.py:12: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_t.py::test_ac1 - AssertionError: the suite fail switch is on\n1 failed in <t>s\n```\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "fail"
+    ]
+   ]
+  },
+  "tree=changed|suite=fail|probes=passing": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Saved probes: all 1 pass\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\nF                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_ac1 ___________________________________\n\n    def test_ac1():\n        \"\"\"AC-1\"\"\"\n        with open(os.environ[\"ST_COUNT\"], \"a\") as f:\n            f.write(\"x\")\n        switch_on = os.path.exists(os.path.join(LAB, \"suite.fail\"))\n>       assert switch_on is False, \"the suite fail switch is on\"\nE       AssertionError: the suite fail switch is on\nE       assert True is False\n\ntests/test_t.py:12: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_t.py::test_ac1 - AssertionError: the suite fail switch is on\n1 failed in <t>s\n```\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "fail"
+    ]
+   ]
+  },
+  "tree=changed|suite=fail|probes=failing": {
+   "exit": 1,
+   "suite_runs": 1,
+   "probe_runs": 1,
+   "status": "Review",
+   "refusal": [
+    "✗ PASS refused: verification fails on the current tree"
+   ],
+   "verify_block": "**Result: FAIL** — <when> (plan <hex>)\n\n- ✓ Plan approval: plan-approved by Human Approver [plan:<hex>]\n- ✓ Red gate: red gate at <hex>\n- ✓ Traceability: all 1 ACs referenced by this task's tests\n- ✗ Green gate: test suite failed (exit 1)\n```\nF                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_ac1 ___________________________________\n\n    def test_ac1():\n        \"\"\"AC-1\"\"\"\n        with open(os.environ[\"ST_COUNT\"], \"a\") as f:\n            f.write(\"x\")\n        switch_on = os.path.exists(os.path.join(LAB, \"suite.fail\"))\n>       assert switch_on is False, \"the suite fail switch is on\"\nE       AssertionError: the suite fail switch is on\nE       assert True is False\n\ntests/test_t.py:12: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_t.py::test_ac1 - AssertionError: the suite fail switch is on\n1 failed in <t>s\n```\n- ✗ Green gate: red-gate test is failed: tests.test_t::test_ac1\n- ✗ Saved probe: RV-1.1 (for RV-1) fails with exit 1: its defect class is still there\n```\n\n```",
+   "verdict_block": "_Pending._",
+   "status_log_last": "- <when>: Build → Review",
+   "new_subjects": [],
+   "baseline_passing": null,
+   "suite_events": [
+    [
+     "review",
+     "bypass",
+     "fail"
+    ]
+   ]
+  }
+ }
+}
