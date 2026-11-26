@@ -1893,7 +1893,31 @@ def verify_reuse_decision(key: str, fresh: bool) -> tuple[str, dict | None]:
     return ("hit", entry) if entry else ("miss", None)
 
 
-def verify(write: bool = True, fresh: bool = False) -> bool:
+VERIFY_ANCHOR = "verify-pass.json"   # file in the audit-trail commit tree that anchors a stored pass
+LAST_VERIFY: dict = {}               # filled by verify(): {"cache", "key", "label"} of its reuse decision
+
+
+def reuse_digest(entry: dict) -> str:
+    """sha256 hex of the stored pass's key, result and results (stub)."""
+    return ""
+
+
+def anchor_reuse(key: str, results: dict) -> None:
+    """Record the pass just stored under `key` in the task's audit trail (stub)."""
+    return None
+
+
+def reuse_anchored(entry: dict) -> bool:
+    """True iff the newest audit-trail commit anchors this stored pass (stub)."""
+    return False
+
+
+def verdict_source(decision: dict) -> str:
+    """The §11.4 text for how the PASS verdict's suite run was obtained (stub)."""
+    return ""
+
+
+def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False) -> bool:
     cfg = load_config()
     text = contract()
     fails, warns, info = [], [], []
@@ -2982,6 +3006,8 @@ def main():
     s.set_defaults(f=cmd_verify)
     s = sub.add_parser("verdict", help="record the review verdict (pass is gated)")
     s.add_argument("result", choices=["pass", "fail"]); s.add_argument("--by", default="reviewer")
+    s.add_argument("--fresh", action="store_true",
+                   help="run the suite and the probes even if the stored verify pass can be reused")
     s.set_defaults(f=cmd_verdict)
     s = sub.add_parser("start-task", help="start a task in its own worktree and branch (run in the main checkout)")
     s.add_argument("name"); s.add_argument("--from", dest="from_ref", metavar="REF",
