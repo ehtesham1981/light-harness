@@ -8,18 +8,41 @@
 # All but SessionEnd run async (hooks.json), so none of this delays the session.
 #   telemetry.sh tool   PostToolUse: runs on every tool call, so it leaves before starting Python
 #                       unless this session has an open turn to account for
+# The interpreter is the one recorded for this session (<common>/light-harness/py/<session id>, see
+# session.sh) when it's usable, so the search's version probe doesn't run on every event (issue #24).
 DIR=$(cd "$(dirname "$0")" && { pwd -W 2>/dev/null || pwd; })
 PROJECT=${CLAUDE_PROJECT_DIR:-$(pwd)}
 GD=$(git -C "$PROJECT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
 [ -d "$GD/light-harness" ] || exit 0
 IN=$(cat)
-if [ "$1" = "tool" ]; then
+SID=
+case $IN in
+  *'"session_id":"'*) t=${IN#*'"session_id":"'}; SID=${t%%'"'*};;
+  *'"session_id": "'*) t=${IN#*'"session_id": "'}; SID=${t%%'"'*};;
+esac
+case $SID in *[!A-Za-z0-9_-]*) SID=;; esac
+if [ -z "$SID" ]; then
   SID=$(printf '%s' "$IN" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]*"' | head -n 1 |
         sed 's/.*"\([A-Za-z0-9_-]*\)"$/\1/')
+fi
+if [ "$1" = "tool" ]; then
   [ -n "$SID" ] && [ -f "$GD/light-harness/telemetry/sessions/$SID.json" ] || exit 0
 fi
 LIGHT_HARNESS_GIT_COMMON=$GD
 export LIGHT_HARNESS_GIT_COMMON
+CR=$(printf '\r')
+REC=$GD/light-harness/py/$SID
+if [ -n "$SID" ] && [ ${#SID} -le 128 ] && [ -f "$REC" ]; then
+  P=; IFS= read -r P < "$REC" || :
+  case $P in /*|[A-Za-z]:/*|[A-Za-z]:\\*)
+    case $P in *"$CR"*) ;; *)
+      if [ -f "$P" ] && [ -x "$P" ] && ! [ "$P" -nt "$REC" ]; then
+        printf '%s' "$IN" | "$P" "$DIR/telemetry_hook.py" >/dev/null 2>&1
+        exit 0
+      fi;;
+    esac;;
+  esac
+fi
 for PY in python3 python "py -3"; do
   # shellcheck disable=SC2086  # "py -3" must word-split
   if $PY -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
