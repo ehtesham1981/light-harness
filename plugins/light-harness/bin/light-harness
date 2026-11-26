@@ -3,14 +3,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # light-harness: the harness command line. Finds a Python 3.9+ interpreter (python3, python or
 # py -3, so it works on macOS, Linux and Windows/Git Bash) and runs the plugin's harness.py.
-# The plugin's SessionStart hook puts this folder on the Bash tool's PATH.
+# The plugin's SessionStart hook puts this folder on the Bash tool's PATH, and in a task repo sets
+# LIGHT_HARNESS_PY to the interpreter it checked. The search order is unchanged; the version probe is
+# skipped only when the candidate found on PATH is that same interpreter (issue #24), so the harness
+# (and the test suite it runs) always uses the interpreter it would have picked anyway.
 # `pwd -W` gives a native path on Windows (Git Bash), so Windows Python can open the script even
 # when MSYS path conversion is off (MSYS_NO_PATHCONV=1); elsewhere it fails and `pwd` is used.
 DIR=$(cd "$(dirname "$0")" && { pwd -W 2>/dev/null || pwd; })
-for PY in python3 python "py -3"; do
-  # shellcheck disable=SC2086  # "py -3" must word-split
-  if $PY -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
-    exec $PY "$DIR/../scripts/harness.py" "$@"
+for W in python3 python py; do
+  R=$(command -v "$W") || continue
+  A=; [ "$W" = py ] && A=-3
+  if [ -n "${LIGHT_HARNESS_PY:-}" ] && [ "$LIGHT_HARNESS_PY" = "$R" ]; then
+    # shellcheck disable=SC2086  # LIGHT_HARNESS_PY_ARGS is "-3" for py, or empty
+    exec "$R" ${LIGHT_HARNESS_PY_ARGS:-} "$DIR/../scripts/harness.py" "$@"
+  fi
+  # shellcheck disable=SC2086
+  if "$R" $A -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    exec "$R" $A "$DIR/../scripts/harness.py" "$@"
   fi
 done
 echo "light-harness: Python 3.9+ not found (tried python3, python, py -3). Install it and put it on PATH." >&2
