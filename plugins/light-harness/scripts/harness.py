@@ -1950,6 +1950,7 @@ def verdict_source(decision: dict) -> str:
 
 
 def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False) -> bool:
+    LAST_VERIFY.clear()
     cfg = load_config()
     text = contract()
     fails, warns, info = [], [], []
@@ -2006,6 +2007,9 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
         saved = probes()
         key = reuse_key(cfg, saved, rg_state, appr[1] if appr else "")
         cache, hit = verify_reuse_decision(key, fresh)
+        if hit and require_anchor and not reuse_anchored(hit):  # downgrade only: an unanchored hit runs
+            cache, hit = "miss", None
+        LAST_VERIFY.update(cache=cache, key=key, label=hit.get("label", "?") if hit else None)
         gate = "review" if get_status(text) == "Review" else "verify"
         reused = ""
         if hit:
