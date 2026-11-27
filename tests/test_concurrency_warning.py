@@ -182,6 +182,29 @@ def test_ac6_redgate_prints_warning(snaps, tmp_path, tmp_path_factory):
     assert "Red gate passed" in out
 
 
+def test_ac6_failing_redgate_keeps_exit_code(snaps, tmp_path, tmp_path_factory):
+    """AC-6 BR-10: a redgate that refuses after running the suite (the new tests already pass: the
+    implementation is in place) still exits 1, and still records no red gate, with the warning printed."""
+    lab = _lab(snaps, "build", tmp_path, tmp_path_factory)
+    lab.code(AL.T.IMPL)
+    ref = lab.ref_sha()
+    rc, out = lab.drive("redgate")
+    assert rc == 1, out
+    assert "tests PASS before implementation" in out, out
+    assert _warn_lines(out), out
+    assert lab.ref_sha() == ref
+
+
+def test_ac6_redgate_no_warning_with_concurrency(snaps, tmp_path, tmp_path_factory):
+    """AC-6 BR-10: with `{concurrency}` in test_cmd, redgate prints no warning (and passes as before)."""
+    lab = _lab(snaps, "build", tmp_path, tmp_path_factory)
+    lab.change_cfg(test_cmd=AL.NODE_CONC)
+    rc, out = lab.drive("redgate")
+    assert rc == 0 and "Red gate passed" in out, out
+    assert not _warn_lines(out), out
+    assert re.fullmatch(r"--test-concurrency=[1-9][0-9]*", lab.suite_argvs()[-1][2]), lab.suite_argvs()[-1]
+
+
 def test_ac6_verify_report_has_warning_line(snaps, tmp_path, tmp_path_factory):
     """AC-6 BR-10: verify's report on a `node --test` task has a `- ⚠` line with the warning; the result is
     still PASS (exit 0), as without it."""

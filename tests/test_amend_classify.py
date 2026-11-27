@@ -5,7 +5,8 @@ AC-2 (BR-4 [sweep]), AC-2a (BR-4.1 position bypasses) and AC-3 (BR-4.2 `parallel
 
 The classifier is called in-process. Its answer is compared with an independent oracle written here from the
 text of BR-4 (no harness helper is used apart from DEFAULT_CONFIG, which BR-4 names). A refused field must be
-named in one of the `refused` entries; an accepted test_cmd change must be named in one of the `changes`.
+named in one of the `refused` entries, and every refused entry must be about (name first) a field the oracle refuses;
+an accepted test_cmd change must be named in one of the `changes`.
 
 Sweep choices (spec ambiguities kept out of the generated space, see the report): only one concurrency unit
 per list; no case where a key is added or removed with a value equal to its default (other than test_cmd and
@@ -59,9 +60,12 @@ def _basename(item: str) -> str:
 def _runner(tc: list):
     """(family, marker index) per BR-4.1, or (None, None)."""
     if tc and _basename(tc[0]) in ("node", "node.exe"):
+        # node is the runner only with `--test` before its first non-option item; `node <script> ...` (even a
+        # jest or vitest script) is not a recognised runner: nothing is removable (decision on review)
         first_non_option = next((i for i in range(1, len(tc)) if not tc[i].startswith("-")), len(tc))
         if "--test" in tc[1:first_non_option]:
             return "node", tc.index("--test", 1)
+        return None, None
     for i, item in enumerate(tc):
         if _basename(item) in ("pytest", "py.test", "pytest.exe"):
             return "pytest", i
@@ -193,6 +197,14 @@ def mismatch(approved: dict, plan_approved: dict, live: dict):
         for f in want["refused"]:
             if f not in refused_text:
                 why.append(f"refused field {f} not named in {got['refused']}")
+        # each refused entry is about the first config key it names (explanations may mention other keys
+        # later, e.g. "only concurrency, parallel and timeouts can be amended"): that key must be refused
+        keys = set(H.DEFAULT_CONFIG) | set(approved) | set(live) | {"junit_path"}
+        for entry in map(str, got["refused"]):
+            hits = [(m.start(), f) for f in keys
+                    for m in [re.search(rf"(?<![\w-]){re.escape(f)}(?![\w-])", entry)] if m]
+            if hits and min(hits)[1] not in want["refused"]:
+                why.append(f"refused entry {entry!r} is about {min(hits)[1]}, which the oracle doesn't refuse")
     if not why:
         return None
     return f"approved={approved!r}\n  live={live!r}\n  got={got!r}\n  " + "; ".join(why)
@@ -213,6 +225,7 @@ BASES = [
     ("bin-jest", ["./node_modules/.bin/jest"], "jest"),
     ("vitest-run", ["npx", "vitest", "run"], "jest"),
     ("vitest", ["vitest"], "jest"),
+    ("node-jest-script", ["node", "node_modules/jest/bin/jest.js"], None),
     ("non-runner", ["python3", "run_toy.py"], None),
     ("npm-test", ["npm", "test"], None),
 ]
@@ -458,6 +471,10 @@ BYPASSES = [
     ("node-zero", ["node", "--test"], ["node", "--test", "--test-concurrency=0"]),
     ("jest-zero", ["npx", "jest"], ["npx", "jest", "--maxWorkers=0"]),
     ("swap-value-for-path", ["pytest", "-n", "2", "tests/a.py"], ["pytest", "-n", "tests/a.py", "2"]),
+    ("node-jest-script", ["node", "node_modules/jest/bin/jest.js"],
+     ["node", "node_modules/jest/bin/jest.js", "--maxWorkers=2"]),
+    ("node-jest-script-mid", ["node", "node_modules/jest/bin/jest.js", "--ci"],
+     ["node", "node_modules/jest/bin/jest.js", "--maxWorkers=2", "--ci"]),
 ]
 
 
@@ -577,3 +594,22 @@ def test_ac3_parallel_added_and_removed_summary():
     got = H.classify_config_change(appr, appr, no_par)
     assert got["ok"] is True, got
     assert any("parallel" in c and "one at a time" in c for c in got["changes"]), got
+
+
+# --- malformed test_cmd -------------------------------------------------------------------------------
+@pytest.mark.parametrize("live_tc", [
+    "node --test --test-concurrency=2",
+    ["node", "--test", 2],
+    ["node", "--test", None],
+    ["node", "--test", ["--test-concurrency=2"]],
+    {"cmd": ["node", "--test"]},
+    None,
+], ids=["string", "int-item", "null-item", "list-item", "object", "null"])
+def test_ac2_malformed_test_cmd_refused(live_tc):
+    """AC-2 BR-4: a live test_cmd that is not a list of strings (a string, an object, null, a list with a
+    non-string item) is not a concurrency change: refused, naming test_cmd (and nothing raises)."""
+    appr = _cfg(["node", "--test"])
+    live = dict(appr, test_cmd=live_tc)
+    got = H.classify_config_change(copy.deepcopy(appr), copy.deepcopy(appr), live)
+    assert got["ok"] is False, got
+    assert any("test_cmd" in str(r) for r in got["refused"]), got

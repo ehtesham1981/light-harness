@@ -43,6 +43,14 @@ def test_ac8_readme_slots_vs_concurrency_and_warning():
     assert hits, "no README paragraph explains lightharness.slots vs {concurrency} together with the warning"
 
 
+def test_ac8_plugin_readme_slots_vs_concurrency():
+    """AC-8 BR-10: the plugin README explains slots and `{concurrency}` in one place (the warning there is
+    optional)."""
+    paras = paragraphs(read(PLUGIN / "README.md"))
+    hits = [b for b in paras if re.search(r"lightharness\.slots|\bslots?\b", b) and "{concurrency}" in b]
+    assert hits, "no plugin README paragraph mentions slots together with {concurrency}"
+
+
 def test_ac8_reviewer_checks_raised_timeouts():
     """AC-8 BR-9: the reviewer prompt tells the reviewer to check probes/tests that rely on a timeout raised
     by `amend-config`."""

@@ -14,6 +14,8 @@ named by `LHT_ARGV`, so a test can count suite runs and see the argv the harness
 `human=True` additionally no-ops `require_human` (only inside pytest's temp folder); prompts are answered
 from stdin (`input()` reads the piped text). `swap=<path>`: `input()` overwrites the task's config.json
 with that file's bytes before returning the typed answer (a config changed while the prompt waited).
+`swap_at_record=<path>`: the config.json file is overwritten with that file's bytes just before `record()`
+writes the `config-amended` event (to show the recorded config is the checked one, not re-read).
 
 Snapshots (built once per pytest session, memoised in the base temp folder): `plan` (approved, status Plan),
 `build` (Build, baseline recorded, task test + stub committed, before the red gate) and `green` (red gate
@@ -56,6 +58,17 @@ if _swap:
             f.write(data)
         return answer
     builtins.input = _swapping_input
+_swap_at_record = os.environ.get("LHT_SWAP_AT_RECORD")
+if _swap_at_record:
+    _real_record = harness.record
+    def _swapping_record(msg, *a, **kw):
+        if str(msg).startswith("harness: config-amended"):
+            with open(_swap_at_record, "rb") as f:
+                data = f.read()
+            with open(str(harness.CONFIG), "wb") as f:
+                f.write(data)
+        return _real_record(msg, *a, **kw)
+    harness.record = _swapping_record
 _real_run_process = harness.run_process
 def _run_process(cmd, env, timeout, *a, **kw):
     cmd = list(cmd)
@@ -86,7 +99,8 @@ class Lab(T.Toy):
         self.argv_log = self.root / "argv.log"
 
     def drive(self, *args: str, human: bool = False, stdin: str = "", extra: dict | None = None,
-              swap: Path | None = None, task: bool = True, timeout: float = 300) -> tuple:
+              swap: Path | None = None, swap_at_record: Path | None = None, task: bool = True,
+              timeout: float = 300) -> tuple:
         """(exit code, stdout + stderr) of a harness command run through DRIVER."""
         if human:
             assert T.under(self.repo, self.sandbox), f"refusing a human-only command outside {self.sandbox}"
@@ -97,6 +111,8 @@ class Lab(T.Toy):
             env["LHT_HUMAN"] = "1"
         if swap is not None:
             env["LHT_SWAP"] = str(swap)
+        if swap_at_record is not None:
+            env["LHT_SWAP_AT_RECORD"] = str(swap_at_record)
         cmd = [sys.executable, "-c", DRIVER, str(self.scripts), *args] + (["--task", SLUG] if task else [])
         r = subprocess.run(cmd, cwd=str(self.repo), env=env, capture_output=True,
                            input=stdin.encode("utf-8"), timeout=timeout)
@@ -152,12 +168,16 @@ class Lab(T.Toy):
         rc, out = self.run(["git", "show", f"{sha}:{name}"], cwd=self.repo)
         return out if rc == 0 else None
 
-    def drop_from_newest_event(self, name: str) -> str:
-        """Test set-up only: re-write the newest audit-trail event without the file `name` in its tree (same
-        parents and message) and move the task's ref to it. Returns the new sha."""
+    def replace_in_newest_event(self, name: str, content: str | None) -> str:
+        """Test set-up only: re-write the newest audit-trail event with the file `name` in its tree replaced by
+        `content` (None: removed), same parents and message, and move the task's ref to it. Returns the new sha."""
         sha = self.ref_sha()
         entries = [e for e in self.git("ls-tree", sha, cwd=self.repo).splitlines()
                    if e and e.split("\t", 1)[1] != name]
+        if content is not None:
+            blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=str(self.repo), env=self.env(),
+                                  capture_output=True, input=content.encode("utf-8"), check=True).stdout.decode().strip()
+            entries.append(f"100644 blob {blob}\t{name}")
         tree = subprocess.run(["git", "mktree"], cwd=str(self.repo), env=self.env(), capture_output=True,
                               input=("\n".join(entries) + "\n").encode("utf-8"), check=True).stdout.decode().strip()
         parents = self.git("log", "-1", "--format=%P", sha, cwd=self.repo).split()
@@ -168,6 +188,12 @@ class Lab(T.Toy):
         new = self.git(*args, cwd=self.repo).strip()
         self.git("update-ref", REF, new, sha, cwd=self.repo)
         return new
+
+    def drop_from_newest_event(self, name: str) -> str:
+        return self.replace_in_newest_event(name, None)
+
+    def status_out(self) -> str:
+        return self.must("status")
 
     def suite_argvs(self) -> list:
         if not self.argv_log.exists():

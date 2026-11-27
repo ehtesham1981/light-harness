@@ -104,6 +104,9 @@ def test_ac1_amend_concurrency_end_to_end(make):
     assert any("--test-concurrency={concurrency}" in c for c in meta["changes"]), meta
     assert meta["raised_timeouts"] == [], meta
 
+    status = lab.status_out()
+    assert [l for l in status.splitlines() if f"config-amended by {NAME}" in l], status
+
     approval = lab.block("approval")
     assert "**Approved by:** Human Approver" in approval, approval
     assert f"**Config amended** by {NAME}" in approval and REASON in approval, approval
@@ -161,6 +164,7 @@ def test_ac3_no_raised_line_for_concurrency_or_lower(make):
     rc, out = lab.drive("verify")
     assert rc == 0, out
     assert not [l for l in out.splitlines() if "raised" in l.lower() and "reviewer" in l.lower()], out
+    assert not _timeout_warn_lines(out), out
 
 
 def test_ac3_raise_over_cap_refused_end_to_end(make):
@@ -172,22 +176,38 @@ def test_ac3_raise_over_cap_refused_end_to_end(make):
     assert_refused(lab, rc, out, ref, text, "probe_timeout", "re-approval")
 
 
+def _timeout_warn_lines(out: str) -> list:
+    return [l for l in out.splitlines() if l.startswith("- ⚠") and ("probe_timeout" in l or "suite_timeout" in l)]
+
+
 def test_ac3_chained_amendments_capped_by_plan(make):
-    """AC-3 BR-4.3 BR-5: two amendments stack (both notes in the approval block); the second can't raise
-    probe_timeout beyond 3x the plan-approved value although it is within 3x of the first amendment."""
+    """AC-3 BR-4.3 BR-5 BR-9: amendments stack (each note appended to the approval block); a later amendment
+    that changes only `parallel` keeps verify's ⚠ for the still-raised `probe_timeout 600 → 1800`; amending
+    probe_timeout back to 600 removes the ⚠; no amendment can raise probe_timeout beyond 3x the plan-approved
+    value although it is within 3x of an earlier amendment."""
     lab = make("green")
     lab.change_cfg(probe_timeout=1800)
     assert lab.amend(NAME, "first")[0] == 0
-    lab.change_cfg(probe_timeout=1500, parallel=2)
+    lab.change_cfg(parallel=2)
     rc, out = lab.amend("Sam Human", "second")
     assert rc == 0, out
     approval = lab.block("approval")
     assert f"**Config amended** by {NAME}" in approval and "**Config amended** by Sam Human" in approval, approval
     assert approval.index(NAME) < approval.index("Sam Human")
+    rc, out = lab.drive("verify")
+    assert rc == 0, out
+    lines = _timeout_warn_lines(out)
+    assert any("probe_timeout 600 → 1800" in l for l in lines), out
     ref, text = lab.ref_sha(), lab.text()
     lab.change_cfg(probe_timeout=2400)
     rc, out = lab.amend("Sam Human", "third")
     assert_refused(lab, rc, out, ref, text, "probe_timeout", "re-approval")
+    lab.change_cfg(probe_timeout=600)
+    rc, out = lab.amend("Sam Human", "back to the approved timeout")
+    assert rc == 0, out
+    rc, out = lab.drive("verify")
+    assert rc == 0, out
+    assert not _timeout_warn_lines(out), out
 
 
 # --- AC-4: refusals -----------------------------------------------------------------------------------------
@@ -209,7 +229,40 @@ def test_ac4_refused_in_plan(make):
     ref, text = lab.ref_sha(), lab.text()
     lab.change_cfg(parallel=2)
     rc, out = lab.amend()
-    assert_refused(lab, rc, out, ref, text, "approve")
+    assert_refused(lab, rc, out, ref, text, "config.json")
+    assert "`approve`" in out or "approve again" in out.lower(), out
+
+
+def test_ac4_refused_in_initialize(make):
+    """AC-4 BR-1: before Plan (Initialize: nothing approved yet for this plan round) it refuses."""
+    lab = make("plan")
+    lab.must("set-status", "Initialize")
+    ref, text = lab.ref_sha(), lab.text()
+    lab.change_cfg(parallel=2)
+    rc, out = lab.amend()
+    assert_refused(lab, rc, out, ref, text, "Initialize")
+
+
+def test_ac4_refused_in_draft(make):
+    """AC-4 BR-1: in Draft (a contract whose status line says Draft) it refuses."""
+    lab = make("plan")
+    AL.T.write(lab.contract, re.sub(r"^Status:\s*\S+", "Status: Draft", lab.text(), count=1, flags=re.M))
+    ref, text = lab.ref_sha(), lab.text()
+    lab.change_cfg(parallel=2)
+    rc, out = lab.amend()
+    assert_refused(lab, rc, out, ref, text, "Draft")
+
+
+def test_ac1_amend_in_rework(make):
+    """AC-1 BR-1: amend-config runs in Rework (after `verdict fail`, approval still valid)."""
+    lab = make("green")
+    lab.must("set-status", "Review")
+    lab.must("verdict", "fail")
+    assert lab.status() == "Rework"
+    lab.change_cfg(parallel=2)
+    rc, out = lab.amend()
+    assert rc == 0, out
+    assert len(_amend_rows(lab)) == 1
 
 
 def test_ac4_refused_in_plan_before_approval(make):
@@ -251,7 +304,7 @@ def test_ac4_not_typing_amend(make, answer):
     ref, text = lab.ref_sha(), lab.text()
     lab.change_cfg(parallel=2)
     rc, out = lab.amend(answer=answer)
-    assert_refused(lab, rc, out, ref, text, "AMEND")
+    assert_refused(lab, rc, out, ref, text, "not amended")
 
 
 @pytest.mark.parametrize("kind", ["missing", "invalid-json", "array", "string", "number"])
@@ -300,6 +353,36 @@ def test_ac4_config_changed_while_waiting(make, tmp_path):
     assert lab.cfg()["parallel"] == 1, "the swap did not happen (the prompt was never reached)"
 
 
+def test_ac4_config_reindented_while_waiting(make, tmp_path):
+    """AC-4 BR-5: a swap during the prompt to the same JSON value with different bytes (re-indented) is still
+    a change of the checked bytes: refused (`changed`), nothing recorded."""
+    lab = make("green")
+    ref, text = lab.ref_sha(), lab.text()
+    cfg = lab.change_cfg(parallel=2)
+    swap = tmp_path / "swapped.json"
+    swap.write_text(json.dumps(cfg, indent=4, sort_keys=True) + "\n", encoding="utf-8")
+    rc, out = lab.amend(swap=swap)
+    assert_refused(lab, rc, out, ref, text, "changed")
+
+
+def test_ac1_recorded_config_is_the_checked_bytes(make, tmp_path):
+    """AC-1 AC-4 BR-5: the config.json in the config-amended event is the bytes that were checked, even if
+    the file changes between the check and the write of the event (simulated just before record())."""
+    lab = make("green")
+    lab.change_cfg(parallel=2)
+    checked = lab.config.read_bytes()
+    swap = tmp_path / "late.json"
+    swap.write_text(json.dumps(dict(lab.cfg(), parallel=1, red_exit_codes=[1, 2])) + "\n", encoding="utf-8")
+    rc, out = lab.amend(swap_at_record=swap)
+    assert lab.config.read_bytes() == swap.read_bytes(), "the late swap did not happen"
+    assert rc == 0, out
+    rows = _amend_rows(lab)
+    assert len(rows) == 1, rows
+    recorded = lab.trail_file(rows[0][0], "config.json")
+    assert recorded is not None, "no config.json in the event"
+    assert recorded == checked.decode("utf-8").replace("\r\n", "\n"), recorded
+
+
 @pytest.mark.parametrize("field,change", [
     ("test_globs", {"test_globs": ["tests/**", "spec/**"]}),
     ("protected_globs", {"protected_globs": []}),
@@ -308,8 +391,10 @@ def test_ac4_config_changed_while_waiting(make, tmp_path):
     ("test_cmd", {"test_cmd": ["node", "--test", "--test-concurrency=0"]}),
     ("parallel", {"parallel": 9}),
     ("worktree_dir", {"worktree_dir": ".wt", "parallel": 2}),
+    ("test_cmd", {"test_cmd": "node --test --test-concurrency=2"}),
+    ("test_cmd", {"test_cmd": ["node", "--test", 2]}),
 ], ids=["test_globs", "protected_globs", "red_exit_codes", "test_cmd-filter", "test_cmd-zero", "parallel-9",
-        "worktree_dir-with-allowed"])
+        "worktree_dir-with-allowed", "test_cmd-string", "test_cmd-int-item"])
 def test_ac4_refused_field_named(make, field, change):
     """AC-2 AC-4 BR-4: a change outside the allowed ones is refused end to end, naming the field and pointing
     back at Plan / re-approval; nothing is recorded."""
@@ -329,6 +414,21 @@ def test_ac4_approved_snapshot_without_config(make):
     assert newest.startswith("harness: plan-approved"), newest
     lab.drop_from_newest_event("config.json")
     assert lab.trail_file(lab.ref_sha(), "config.json") is None
+    lab.must("set-status", "Build")
+    lab.change_cfg(parallel=2)
+    ref, text = lab.ref_sha(), lab.text()
+    rc, out = lab.amend()
+    assert_refused(lab, rc, out, ref, text, "config.json")
+
+
+@pytest.mark.parametrize("content", ["[1, 2]\n", '"node --test"\n', "null\n", "{not json\n"],
+                         ids=["array", "string", "null", "invalid"])
+def test_ac4_approved_snapshot_config_not_object(make, content):
+    """AC-4 BR-2a: when the plan-approved snapshot's config.json is not a JSON object (or not JSON), amend-config
+    refuses, naming config.json, and records nothing."""
+    lab = make("plan")
+    assert lab.trail_rows()[0][1].startswith("harness: plan-approved")
+    lab.replace_in_newest_event("config.json", content)
     lab.must("set-status", "Build")
     lab.change_cfg(parallel=2)
     ref, text = lab.ref_sha(), lab.text()
@@ -371,10 +471,13 @@ def test_ac5_reapproval_discards_amendments(make):
     lab = make("green")
     lab.change_cfg(probe_timeout=300)
     assert lab.amend()[0] == 0
+    assert "config-amended by" in lab.status_out()
     amended = lab.config.read_text(encoding="utf-8")
     lab.must("set-status", "Plan")
     lab.change_cfg(probe_timeout=450)
     lab.must("approve", "--name", "Human Approver", human=True, stdin="APPROVE\n")
+    status = lab.status_out()
+    assert "config-amended" not in status, status
     lab.must("set-status", "Build")
     rc, out = lab.drive("verify")
     assert CHANGED_MSG not in out, out
@@ -432,6 +535,7 @@ def test_ac5_verdict_pass_after_amendment(make):
 def test_ac7a_human_commands_in_step():
     """AC-7a BR-5: telemetry.HUMAN_COMMANDS holds `amend-config`, in step with harness HUMAN_ONLY."""
     assert "amend-config" in telemetry.HUMAN_COMMANDS
+    assert "amend-config" in H.HUMAN_ONLY and "amend-config" in H.TRACKED
     assert H.HUMAN_ONLY <= telemetry.HUMAN_COMMANDS
 
 
