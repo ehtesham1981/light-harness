@@ -104,86 +104,9 @@ def git_common(d: Path):
     return (p if p.is_absolute() else d / p).resolve()
 
 
-GIT_DISCOVERY = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES",
-                 "GIT_DISCOVERY_ACROSS_FILESYSTEM")
-
-
-HEX_OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-
-
-def _one_line(f: Path):
-    """The file's only line with trailing CR/LF removed, as git reads a gitfile or `commondir`; None when it can't
-    be read, is empty, or has more than one line."""
-    try:
-        s = f.read_bytes().decode(H.UTF8)
-    except (OSError, UnicodeDecodeError):
-        return None
-    s = s.rstrip("\r\n")
-    return s if s and "\n" not in s and "\r" not in s else None
-
-
-def _git_dir(gd: Path, common: Path) -> bool:
-    """True when git accepts `gd` as a git dir whose objects and refs live in `common`: a HEAD that is a plain
-    file holding `ref: refs/…` or an object id, and `objects/` and `refs/` folders. Anything else (a HEAD symlink,
-    an odd HEAD) is left to git."""
-    head = gd / "HEAD"
-    if head.is_symlink() or not head.is_file():
-        return False
-    line = _one_line(head)
-    if line is None or not (line.startswith("ref: refs/") or HEX_OID.fullmatch(line)):
-        return False
-    return (common / "objects").is_dir() and (common / "refs").is_dir()
-
-
-def walk_common(d: Path):
-    """`d`'s git common dir, found from the `.git` entries above it without running git (BR-5). It answers only
-    for the layouts git itself accepts plainly: a valid `.git` folder, or a gitfile holding exactly `gitdir: <dir>`
-    whose folder is a valid git dir, with that folder's `commondir` (one line, only CR/LF trimmed) naming the
-    common dir. It returns None, so the caller asks git, for anything else: a malformed or invalid entry, no repo,
-    a start inside a git dir (`.git/…`, `.git/modules/<sub>/…`, a bare repo), or a start whose nearest existing
-    ancestor isn't a folder (git can't even run there)."""
-    d = existing(Path(d).resolve())
-    if not d.is_dir():
-        return None
-    for x in (d, *d.parents):
-        if x.name == ".git" or _git_dir(x, x):
-            return None   # inside a git dir: git's own rules for that are left to git
-        g = x / ".git"
-        if g.is_dir():
-            return g.resolve() if _git_dir(g, g) else None
-        if g.exists():
-            if not g.is_file():
-                return None
-            line = _one_line(g)
-            if line is None or not line.startswith("gitdir: ") or len(line) == len("gitdir: "):
-                return None
-            gd = Path(line[len("gitdir: "):])
-            gd = gd if gd.is_absolute() else x / gd
-            common = gd
-            cf = gd / "commondir"
-            if cf.exists():
-                c = _one_line(cf) if cf.is_file() else None
-                if c is None:
-                    return None
-                common = Path(c) if Path(c).is_absolute() else gd / c
-            if not gd.is_dir() or not common.is_dir() or not _git_dir(gd, common):
-                return None
-            return common.resolve()
-    return None
-
-
-def common_from_env(d: Path):
-    """The common dir guard.sh found (LIGHT_HARNESS_GIT_COMMON), when `walk_common` agrees that `d` is in that
-    repo and no GIT_* variable changes how git finds it; else None (BR-5)."""
-    v = os.environ.get("LIGHT_HARNESS_GIT_COMMON")
-    if not v or any(os.environ.get(k) for k in GIT_DISCOVERY):
-        return None
-    w = walk_common(d)
-    return Path(v).resolve() if w is not None and H.same_path(w, Path(v)) else None
-
 def active(d: Path):
     """The repo's git common dir if Light Harness has started a task in it, else None."""
-    c = common_from_env(d) or git_common(d)
+    c = git_common(d)
     return c if c and (c / H.STATE).is_dir() else None
 
 
@@ -534,7 +457,8 @@ def main():
             if m:
                 CTX["task"] = re.sub(r"[^a-z0-9]+", "-", m.group(1).lower()).strip("-")
             else:
-                CTX["task_fn"] = lambda: task_of(H.task_root_for(cwd))
+                root = H.task_root_for(cwd)   # where base found it: it raises on an unencodable cwd, as base did
+                CTX["task_fn"] = lambda: task_of(root)
             bash_rules(cmd)
         sys.exit(0)
 

@@ -11,7 +11,7 @@
 #       guard and telemetry hooks read it, since hooks don't see $CLAUDE_ENV_FILE. Agents can't change it: the
 #       guard blocks edits inside .git and Bash commands naming .git/light-harness.
 #   LIGHT_HARNESS_PY in $CLAUDE_ENV_FILE  for bin/light-harness in the Bash tool (`command -v` of the winner).
-# Records older than 7 days are deleted.
+# Records older than 7 days, and the guard's .run.* output files older than an hour, are deleted.
 DIR=$(cd "$(dirname "$0")" && pwd)
 BIN=$(cd "$DIR/../bin" && pwd)
 INPUT=""
@@ -45,6 +45,8 @@ if [ -d "$GD/light-harness" ]; then
       break
     fi
   done
-  [ -d "$GD/light-harness/py" ] && find "$GD/light-harness/py" -type f -mtime +7 -exec rm -f {} + 2>/dev/null
+  # Records older than 7 days, and the guard's output files (.run.*) older than an hour
+  [ -d "$GD/light-harness/py" ] &&
+    find "$GD/light-harness/py" -type f \( -mtime +7 -o -name '.run.*' -mmin +60 \) -exec rm -f {} + 2>/dev/null
 fi
 exit 0

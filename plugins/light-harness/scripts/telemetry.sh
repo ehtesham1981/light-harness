@@ -30,17 +30,14 @@ if [ "$1" = "tool" ]; then
 fi
 LIGHT_HARNESS_GIT_COMMON=$GD
 export LIGHT_HARNESS_GIT_COMMON
-CR=$(printf '\r')
 REC=$GD/light-harness/py/$SID
 if [ -n "$SID" ] && [ ${#SID} -le 128 ] && [ -f "$REC" ]; then
-  P=; IFS= read -r P < "$REC" || :
-  case $P in /*|[A-Za-z]:/*|[A-Za-z]:\\*)
-    case $P in *"$CR"*) ;; *)
-      if [ -f "$P" ] && [ -x "$P" ] && ! [ "$P" -nt "$REC" ]; then
-        printf '%s' "$IN" | "$P" "$DIR/telemetry_hook.py" >/dev/null 2>&1
-        exit 0
-      fi;;
-    esac;;
+  P=; { IFS= read -r P < "$REC"; } 2>/dev/null || :
+  case $P in /*|[A-Za-z]:/*|[A-Za-z]:\\*)   # a path ending in CR fails -f
+    if [ -f "$P" ] && [ -x "$P" ] && ! [ "$P" -nt "$REC" ]; then
+      printf '%s' "$IN" | "$P" "$DIR/telemetry_hook.py" >/dev/null 2>&1
+      exit 0
+    fi;;
   esac
 fi
 for PY in python3 python "py -3"; do
