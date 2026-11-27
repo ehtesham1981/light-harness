@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -54,6 +55,17 @@ def strip_allowed(obs: dict) -> tuple[dict, int]:
     return obs, len(anchors)
 
 
+SUITE_OUTPUT = re.compile(r"^```\n.*?^```$", re.M | re.S)
+
+
+def without_suite_output(block: str) -> str:
+    """The §10.4 block with the fenced test-runner output replaced by a placeholder. That output is pytest's own
+    (separator widths follow the terminal, the short summary differs between pytest versions), so it differs
+    between the machine that wrote the golden file and the one running the test; the harness's own lines around
+    it are still compared."""
+    return SUITE_OUTPUT.sub("<suite output>", block)
+
+
 def test_br7_sweep_fresh_verdict_matches_base(template, tmp_path):
     """AC-3 BR-7 [sweep] BR-2 BR-5: 2 trees x 2 suite outcomes x 3 probe states = 12 cells; per cell the current
     `verdict pass --fresh` matches the base commit's `verdict pass` in suite runs, probe runs, exit code,
@@ -73,6 +85,10 @@ def test_br7_sweep_fresh_verdict_matches_base(template, tmp_path):
         want = golden[name]
         got, anchors = strip_allowed(obs)
         for k in want:
+            if k == "verify_block":
+                if without_suite_output(got.get(k) or "") != without_suite_output(want[k]):
+                    bad.append(f"{name}: {k}: got {got.get(k)!r}, base {want[k]!r}")
+                continue
             if got.get(k) != want[k]:
                 bad.append(f"{name}: {k}: got {got.get(k)!r}, base {want[k]!r}")
         want_anchors = 1 if (want["exit"] == 0 and cell["tree"] == "changed") else 0

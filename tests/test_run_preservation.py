@@ -7,12 +7,15 @@ from the base-commit harness in tests/base_harness/ (see tests/run_scenarios.py 
 
 Allowed differences, and only these: the per-run TEMP/TMP/TMPDIR in the suite's environment (BR-8), the
 load fields of suite-run records (BR-12) and the leftover-files warning line (BR-10). The allowed changes
-themselves are checked by the example tests of AC-5, AC-6 and AC-8.
+themselves are checked by the example tests of AC-5, AC-6 and AC-8. Issue #39, merged later, also changed a
+fresh `verdict pass` (its `Suite and probes: fresh run` line and its suite record's `miss`); the gate sweep
+undoes exactly those two before comparing (tests/test_verdict_reuse.py checks them).
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -39,6 +42,18 @@ def _first_diff(a: dict, b: dict) -> str:
         if a.get(k) != b.get(k):
             return f"{k}: new {json.dumps(a.get(k), ensure_ascii=False)[:400]} != base {json.dumps(b.get(k), ensure_ascii=False)[:400]}"
     return "?"
+
+
+def _without_issue39_changes(rec: dict) -> dict:
+    """Undo the two changes issue #39 made to a fresh `verdict pass`, which postdate this golden file:
+    the verdict block's `Suite and probes: fresh run` line, and the review-gate suite record's cache field,
+    now `miss` where the base harness, which never reused a run for the verdict, wrote `bypass`."""
+    blocks = dict(rec["blocks"])
+    # The line is appended as a Markdown line break: two spaces end the line before it.
+    blocks["verdict"] = re.sub(r" *\nSuite and probes: fresh run$", "", blocks["verdict"])
+    suite = [dict(e, cache="bypass") if e.get("gate") == "review" and e.get("cache") == "miss" else e
+             for e in rec["suite"]]
+    return dict(rec, blocks=blocks, suite=suite)
 
 
 def test_br7_run_tests_sweep(tmp_path):
@@ -87,6 +102,8 @@ def test_br7_gates_sweep(tmp_path, tmp_path_factory):
     diffs = []
     for k in keys:
         a, b = RS.comparable_gate(got[k]), RS.comparable_gate(GOLDEN["gates"][k])
+        if k.startswith("verdict pass |"):
+            a = _without_issue39_changes(a)
         if a != b:
             diffs.append(f"{k}: {_first_diff(a, b)}")
     print(f"BR-7 gates sweep: {len(diffs)} of {len(keys)} gate runs differ from the base harness")
