@@ -26,7 +26,9 @@ NUL_WARNING = "warning: command substitution: ignored null byte in input"
 def table() -> dict:
     g = json.loads(G.GOLDEN.read_text(encoding="utf-8"))
     assert G.PLATFORM in g, f"tests/golden/guard_sh_base.json has no {G.PLATFORM} table; run gen_guard_sh_golden.py"
-    return g[G.PLATFORM]
+    t = g[G.PLATFORM]
+    t["strings"] = [G.unversion(s) for s in t["strings"]]
+    return t
 
 
 def decode(t: dict, o: list) -> tuple:

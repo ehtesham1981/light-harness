@@ -68,9 +68,15 @@ def _git(*args, cwd, env):
     return r.stdout
 
 
+def unversion(s: str) -> str:
+    """A golden event string with the harness release version as <V>, as normalise() writes live events."""
+    return re.sub(r'"harness": "[^"]*"', '"harness": "<V>"', s)
+
+
 def _write(p: Path, text: str):
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8", newline="\n")
+    with open(p, "w", encoding="utf-8", newline="\n") as f:   # Path.write_text has newline= only from 3.10
+        f.write(text)
 
 
 def info(root: Path) -> dict:
@@ -383,6 +389,8 @@ def normalise(out: Outcome, fx: dict, sid=None) -> tuple:
     evs = []
     for e in out.events:
         e = {k: v for k, v in e.items() if k != "ts"}
+        if "harness" in e:   # the release version, not the guard's behaviour (goldens: unversion())
+            e["harness"] = "<V>"
         if sid is not None and e.get("session") == sid:
             e["session"] = "<S>"
         evs.append(_norm_value(e, fx))
