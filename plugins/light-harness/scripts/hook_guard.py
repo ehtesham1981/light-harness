@@ -32,7 +32,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import harness as H  # noqa: E402
+# Claude Code runs hooks with PYTHONDONTWRITEBYTECODE=1, so without this harness.py (200 KB) is compiled from
+# source on every guarded call. HARNESS_ROOT, set for the import only, keeps the import from running git to find
+# the repo: the guard sets the root itself before using it (issue #24).
+_DWB, _ROOT_UNSET = sys.dont_write_bytecode, "HARNESS_ROOT" not in os.environ
+sys.dont_write_bytecode = False
+if _ROOT_UNSET:
+    os.environ["HARNESS_ROOT"] = os.getcwd()
+try:
+    import harness as H  # noqa: E402
+finally:
+    if _ROOT_UNSET:
+        del os.environ["HARNESS_ROOT"]
+    sys.dont_write_bytecode = _DWB
 
 PRE_APPROVAL = ("Draft", "Initialize", "Plan")
 OWNED_RE = re.compile(r"harness:(" + "|".join(map(re.escape, H.OWNED_BLOCKS)) + r")\b|^Status:", re.M)
@@ -41,10 +53,19 @@ OWNED_RE = re.compile(r"harness:(" + "|".join(map(re.escape, H.OWNED_BLOCKS)) + 
 CTX: dict = {}  # this tool call: common dir, task, session, tool, agent type (for telemetry)
 
 
+def task_name():
+    """The task for telemetry and messages. Finding it can run git, and only a block, an ask or a message needs
+    it, so it's worked out on first use (issue #24): from CTX["task"] when known, else CTX["task_fn"]."""
+    if "task" not in CTX:
+        f = CTX.get("task_fn")
+        CTX["task"] = f() if f else None
+    return CTX["task"]
+
+
 def note(decision: str, rule: str):
     c = CTX.get("common")
     if c:
-        H.telemetry.emit(c, "guard", cwd=c, task=CTX.get("task"), session=CTX.get("session"), actor="agent",
+        H.telemetry.emit(c, "guard", cwd=c, task=task_name(), session=CTX.get("session"), actor="agent",
                          decision=decision, rule=rule, tool=CTX.get("tool"), agent_type=CTX.get("agent_type"))
 
 
@@ -115,7 +136,7 @@ BLOCK_BASH = [  # (pattern, why, only if this also matches, rule id for telemetr
      r"|\bprobe\b[^\n;&|]*?(?:^|\s)['\"\\]*d[\\'\"]*r[\\'\"]*o[\\'\"]*p['\"]*(?=\s|$)",
      "approve, unlock-tests, forget, uninstall, telemetry opt-in/opt-out and probe drop are human-only. Ask the "
      "human to run it in their own terminal.", r"light-harness|harness\.py", "human-only"),
-    (r"\bLIGHT_HARNESS_(OTLP\w*|TELEMETRY|SESSION_ID|HUMAN_GAP_CAP|GIT_COMMON)=|(^|[\s;&|(])(unset|-u)\s+[^\n;&|]*\bLIGHT_HARNESS_|"
+    (r"\bLIGHT_HARNESS_(OTLP\w*|TELEMETRY|SESSION_ID|HUMAN_GAP_CAP|GIT_COMMON|PY)=|(^|[\s;&|(])(unset|-u)\s+[^\n;&|]*\bLIGHT_HARNESS_|"
      + GIT + r"config\b[^\n;&|]*\b(?i:lightharness)\.",
      "telemetry settings and the engineer's opt-in belong to the human. Ask them to change it.", None,
      "telemetry-settings"),
@@ -295,7 +316,7 @@ def live_rules(cmd: str):
     """Block Bash commands that change the task's contract or config; reads pass (issue #23)."""
     if not names_live(cmd):
         return
-    task = CTX.get("task")
+    task = task_name()
     if not task:
         m = re.search(r"\.tasks[/\\]([^/\\\s'\"]+)[/\\]" + re.escape(H.LIVE), cmd)
         task = m.group(1) if m else "<name>"
@@ -355,7 +376,8 @@ def edit_rules(tool: str, ti: dict, p: Path, common: Path):
                   "own folders (.tasks/<name>/), not in the main checkout.", "main-checkout")
         sys.exit(0)
 
-    CTX["task"] = task_of(root)
+    CTX.pop("task", None)
+    CTX["task_fn"] = lambda: task_of(root)
     H.set_root(root)
     rel = p.resolve().relative_to(H.ROOT).as_posix()
     current = H.CONTRACT.read_text(encoding=H.UTF8)
@@ -431,8 +453,12 @@ def main():
         if common:
             cmd = ti.get("command", "") or ""
             m = re.search(r"--task[\s=]+[\"']?([^\s\"';&|]+)", cmd)
-            CTX.update(common=common, task=re.sub(r"[^a-z0-9]+", "-", m.group(1).lower()).strip("-") if m
-                       else task_of(H.task_root_for(cwd)))
+            CTX.update(common=common)
+            if m:
+                CTX["task"] = re.sub(r"[^a-z0-9]+", "-", m.group(1).lower()).strip("-")
+            else:
+                root = H.task_root_for(cwd)   # where base found it: it raises on an unencodable cwd, as base did
+                CTX["task_fn"] = lambda: task_of(root)
             bash_rules(cmd)
         sys.exit(0)
 

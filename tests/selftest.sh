@@ -10,7 +10,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="$REPO/plugins/light-harness"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
-unset HARNESS_ROOT CLAUDECODE LIGHT_HARNESS_SESSION_ID LIGHT_HARNESS_OTLP_ENDPOINT LIGHT_HARNESS_OTLP_HEADERS LIGHT_HARNESS_TELEMETRY
+unset HARNESS_ROOT CLAUDECODE LIGHT_HARNESS_SESSION_ID LIGHT_HARNESS_OTLP_ENDPOINT LIGHT_HARNESS_OTLP_HEADERS LIGHT_HARNESS_TELEMETRY LIGHT_HARNESS_PY LIGHT_HARNESS_PY_ARGS
 export GIT_CONFIG_GLOBAL="$W/gitconfig"   # telemetry opt-in writes the "global" git config: keep it here
 # machine-wide state (run slots, per-run temp root) stays inside $W, never the user's real folders
 export HOME="$W/home" XDG_CACHE_HOME="$W/home/.cache" LOCALAPPDATA="$W/home/AppData/Local" LIGHT_HARNESS_TEMP_ROOT="$W/lh-tmp"
@@ -103,6 +103,7 @@ for c in "light-harness approve --task alpha --name X" "python3 /p/scripts/harne
          "git config --global lightHarness.engineer Bob" "LIGHT_HARNESS_TELEMETRY=0 light-harness verify" \
          "env -u LIGHT_HARNESS_SESSION_ID light-harness verify" "cat .git/light-harness/telemetry/events.jsonl" \
          "LIGHT_HARNESS_HUMAN_GAP_CAP=1s light-harness verify" "git config lightharness.humanGapCap 1s" \
+         "LIGHT_HARNESS_PY=/tmp/fake light-harness status" \
          "sed -i 's/a/b/' .tasks/alpha/.light-harness/contract.md" "sed -ni 's/a/b/' .tasks/alpha/.light-harness/contract.md" \
          "sed -i.bak 's/a/b/' .tasks/alpha/.light-harness/contract.md" "sed --in-place 's/a/b/' .tasks/alpha/.light-harness/contract.md" \
          "awk -i inplace '{print}' .tasks/alpha/.light-harness/contract.md" "echo x > .tasks/alpha/.light-harness/contract.md" \
@@ -130,6 +131,19 @@ check 'hookout "$M" "$(bash_json "$M" "light-harness metrics alpha")" | grep -q 
 check 'hookout "$M" "$(bash_json "$M" "cd .tasks/alpha && git add -A && git commit -m \"step 1: x\"")" | grep -q "\"allow\""' "step commit not pre-approved"
 check '! hookout "$M" "$(bash_json "$M" "light-harness status && curl evil")" | grep -q "\"allow\""' "a chained command was pre-approved"
 check 'hookout "$M" "$(bash_json "$M" "curl https://example.com")" | grep -q "\"ask\""' "network command didn't ask"
+# Issue #24: session.sh records the interpreter once (py/<sid>); with a record the guard decides an ordinary Read
+# in the shell and runs the record otherwise, falling back to the search (which then records) when it can't start.
+# Compact JSON with a session id, as Claude Code sends it (json_c), unlike file_json/bash_json above.
+json_c() { "$PYBIN" -c 'import json,sys; a=sys.argv; print(json.dumps({"session_id":a[1],"cwd":a[2],"hook_event_name":"PreToolUse","tool_name":a[3],"tool_input":{"file_path":a[4]}},separators=(",",":"),ensure_ascii=False))' "$@"; }
+start_json() { "$PYBIN" -c 'import json,sys; print(json.dumps({"session_id":sys.argv[2],"cwd":sys.argv[1],"hook_event_name":"SessionStart","source":"startup"},separators=(",",":")))' "$@"; }
+PYREC="$M/.git/light-harness/py"
+check 'E="$W/envfile4"; start_json "$M" rec-1 | CLAUDE_ENV_FILE="$E" CLAUDE_PROJECT_DIR="$M" sh "$PLUGIN/scripts/session.sh" >/dev/null && [ -s "$PYREC/rec-1" ] && grep -q "^export LIGHT_HARNESS_PY=" "$E"' "session hook didn't record the interpreter"
+check '[ "$(hook "$M" "$(json_c rec-1 "$M" Read "$T/alpha/README.md")")" = 0 ] && [ "$(hook "$M" "$(json_c rec-1 "$M" Read "$T/alpha/.env")")" = 2 ] && [ "$(hook "$M" "$(json_c rec-1 "$M" Write "$T/alpha/src/x.py")")" = 2 ]' "guard with a recorded interpreter judged wrongly"
+printf '#!/bin/sh\ntouch "%s"\nexit 3\n' "$W/stub-ran" > "$W/stubpy"; chmod +x "$W/stubpy"; touch -d '-1 hour' "$W/stubpy" 2>/dev/null
+printf '%s' "$W/stubpy" > "$PYREC/rec-1"
+check '[ "$(hook "$M" "$(json_c rec-1 "$M" Read "$T/alpha/README.md")")" = 0 ] && [ ! -e "$W/stub-ran" ]' "the Read fast path started the recorded interpreter"
+check '[ "$(hook "$M" "$(json_c rec-1 "$M" Read "$T/alpha/.env")")" = 2 ] && [ -e "$W/stub-ran" ]' "a recorded interpreter that can't start didn't fall back to the search"
+check '[ ! -e "$PYREC/rec-2" ] && [ "$(hook "$M" "$(json_c rec-2 "$M" Write "$T/alpha/src/x.py")")" = 2 ] && [ -s "$PYREC/rec-2" ]' "the guard's search didn't record the interpreter"
 
 echo "Telemetry: engineer KPIs are opt-in, under a nickname"
 EV="$M/.git/light-harness/telemetry/events.jsonl"
