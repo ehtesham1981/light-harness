@@ -30,6 +30,9 @@ import sys
 import warnings
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lh_machine import relink_worktrees  # noqa: E402
+
 TASK_DIR = Path(__file__).resolve().parents[1]
 PLUGIN_SRC = TASK_DIR / "plugins" / "light-harness"
 HARNESS_SRC = PLUGIN_SRC / "scripts" / "harness.py"
@@ -244,7 +247,7 @@ class Lab:
         shutil.copytree(self.root, dest, symlinks=True)
         lab = Lab(dest, self.sandbox, self.gitconfig)
         lab.extra_env = dict(self.extra_env)
-        lab.git("worktree", "repair", str(lab.task), cwd=lab.repo)
+        relink_worktrees(lab.repo, [lab.task], lab.env())
         return lab
 
     # --- switches and counters -------------------------------------------------------------------

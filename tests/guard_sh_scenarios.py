@@ -28,6 +28,8 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 PLUGIN = REPO / "plugins" / "light-harness"
 LIVE_SCRIPTS = (PLUGIN / "scripts").resolve()
+sys.path.insert(0, str(HERE))
+from lh_machine import relink_worktrees  # noqa: E402
 GOLDEN = HERE / "golden" / "guard_sh_base.json"
 GOLDEN_RV9 = HERE / "golden" / "guard_sh_rv9_base.json"
 PLATFORM = "nt" if os.name == "nt" else "posix"
@@ -133,7 +135,7 @@ def copy_fixture(src_root, dest) -> dict:
     """A working copy of a fixture at `dest` (the worktree links repaired)."""
     shutil.copytree(src_root, dest, symlinks=True)
     fx = info(dest)
-    _git("worktree", "repair", *[str(fx["T"][s]) for s in STATUSES], cwd=fx["M"], env=git_env(fx["root"]))
+    relink_worktrees(fx["M"], [fx["T"][s] for s in STATUSES], git_env(fx["root"]))
     return fx
 
 

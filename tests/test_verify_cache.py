@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lh_machine import machine_env  # noqa: E402
+from lh_machine import machine_env, relink_worktrees  # noqa: E402
 
 TASK_DIR = Path(__file__).resolve().parents[1]
 PLUGIN_SRC = TASK_DIR / "plugins" / "light-harness"
@@ -260,7 +260,7 @@ def lab(template, tmp_path, tmp_path_factory) -> Lab:
     shutil.copytree(template, root, symlinks=True)
     lab = Lab(root, tmp_path_factory.getbasetemp())
     lab.counter.write_text("", encoding="utf-8")
-    lab.git("worktree", "repair", str(lab.task), cwd=lab.repo)
+    relink_worktrees(lab.repo, [lab.task], lab.env())
     assert lab.cache.exists() is False
     return lab
 

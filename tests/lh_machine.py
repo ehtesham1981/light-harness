@@ -83,3 +83,41 @@ def under(path, root) -> bool:
         return True
     except ValueError:
         return False
+
+
+def relink_worktrees(main: Path, worktrees, env: dict | None = None) -> None:
+    """Re-link linked worktrees copied (with their main checkout) from another folder, so the copy is independent.
+
+    A copied worktree's `.git` file still names the original's admin folder `<orig>/.git/worktrees/<name>`, which
+    exists, so `git worktree repair` alone does the wrong thing: it rewrites the ORIGINAL admin folder's `gitdir`
+    to point at the copy and leaves the copy using the original's common dir (its refs, index and harness state).
+    Point both links at the copy first, let git check them, then assert the worktree resolves to the copy."""
+    import subprocess
+
+    main = Path(main)
+    common = main / ".git"
+    wts = [Path(w) for w in worktrees]
+
+    def git(*args, cwd):
+        r = subprocess.run(["git", *args], cwd=str(cwd), env=env, capture_output=True, encoding="utf-8",
+                           errors="replace")
+        assert r.returncode == 0, f"git {' '.join(args)} failed in {cwd}:\n{r.stdout}{r.stderr}"
+        return r.stdout
+
+    for wt in wts:
+        link = wt / ".git"
+        text = link.read_text(encoding="utf-8").strip()
+        assert text.startswith("gitdir:"), f"{link} is not a worktree link: {text!r}"
+        name = Path(text[len("gitdir:"):].strip().replace("\\", "/")).name
+        admin = common / "worktrees" / name
+        assert admin.is_dir(), f"no worktree admin folder {admin}"
+        link.write_text(f"gitdir: {admin.as_posix()}\n", encoding="utf-8")
+        (admin / "gitdir").write_text(f"{link.as_posix()}\n", encoding="utf-8")
+    if wts:
+        git("worktree", "repair", *[str(w) for w in wts], cwd=main)
+    want = Path(os.path.realpath(common))
+    for wt in wts:
+        got = git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=wt).strip()
+        assert Path(os.path.realpath(got)) == want, f"worktree {wt} not re-linked: common dir {got}, want {want}"
+        top = git("rev-parse", "--show-toplevel", cwd=wt).strip()
+        assert Path(os.path.realpath(top)) == Path(os.path.realpath(wt)), f"worktree {wt} resolves to {top}"

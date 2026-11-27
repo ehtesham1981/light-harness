@@ -34,7 +34,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from lh_machine import machine_env, machine_paths, write_gitconfig  # noqa: E402
+from lh_machine import machine_env, machine_paths, relink_worktrees, write_gitconfig  # noqa: E402
 
 TASK_DIR = HERE.parent
 PLUGIN_SRC = TASK_DIR / "plugins" / "light-harness"
@@ -467,5 +467,5 @@ def clone(snapshot, dest: Path, sandbox: Path, machine: Path | None = None, repo
     for extra in ("probe_toy.py",):
         if (snapshot / extra).exists():
             shutil.copyfile(snapshot / extra, dest / extra)
-    toy.git("worktree", "repair", str(toy.task), cwd=toy.repo)
+    relink_worktrees(toy.repo, [toy.task], toy.env())
     return toy
