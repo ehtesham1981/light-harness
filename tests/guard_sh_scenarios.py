@@ -29,6 +29,7 @@ REPO = HERE.parent
 PLUGIN = REPO / "plugins" / "light-harness"
 LIVE_SCRIPTS = (PLUGIN / "scripts").resolve()
 GOLDEN = HERE / "golden" / "guard_sh_base.json"
+GOLDEN_RV9 = HERE / "golden" / "guard_sh_rv9_base.json"
 PLATFORM = "nt" if os.name == "nt" else "posix"
 STATUSES = ["Draft", "Plan", "Build", "Review", "Rework"]
 SID = "sweep-r"                      # the session id of every recorded-mode stdin
@@ -293,6 +294,50 @@ def run_guard(scripts_dir, stdin: bytes, env: dict, events=None, cwd=None) -> Ou
 def run_hook_guard(scripts_dir, stdin: bytes, env: dict, events=None, cwd=None) -> Outcome:
     """The interpreter run directly on <scripts_dir>/hook_guard.py (the BR-4 oracle)."""
     return run_cmd([REAL_PY, str(Path(scripts_dir) / "hook_guard.py")], stdin, env, events, cwd)
+
+
+def run_raw(argv, stdin: bytes, env: dict, cwd=None, timeout=180) -> tuple:
+    """(exit, stdout bytes, stderr bytes), nothing decoded or stripped."""
+    r = subprocess.run(argv, input=stdin, env=env, cwd=cwd, capture_output=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
+
+
+def run_guard_raw(scripts_dir, stdin: bytes, env: dict, cwd=None) -> tuple:
+    """`sh <scripts_dir>/guard.sh` with raw output: (exit, stdout bytes, stderr bytes), for the byte-exact tests
+    (RV-11, F-13: CRLF line ends are kept)."""
+    return run_raw([SH, fwd(Path(scripts_dir) / "guard.sh")], stdin, env, cwd)
+
+
+def run_hook_guard_raw(scripts_dir, stdin: bytes, env: dict, cwd=None, python=None) -> tuple:
+    """`python` (default the real interpreter) run directly on <scripts_dir>/hook_guard.py, raw output."""
+    return run_raw([python or REAL_PY, str(Path(scripts_dir) / "hook_guard.py")], stdin, env, cwd)
+
+
+def git_logger(d: Path) -> Path:
+    """A `git` wrapper in folder `d` (put it first on PATH): appends its arguments ("$*", one line) to $GITLOG,
+    when set, then execs the real git. Returns the wrapper's path."""
+    real = shutil.which("git")
+    assert real, "no git on PATH"
+    return script(Path(d) / "git", '[ -n "$GITLOG" ] && printf \'%s\\n\' "$*" >> "$GITLOG"\n'
+                                   f'exec "{fwd(real)}" "$@"\n')
+
+
+# A sitecustomize.py (put its folder on PYTHONPATH) that, when $SUBPROC_LOG is set, logs "started", then
+# `env LIGHT_HARNESS_GIT_COMMON=<value>` (or `=<unset>`) as this Python sees it, then every subprocess's argv
+# as one JSON list per line.
+SITECUSTOMIZE = '''import json, os, subprocess
+_log = os.environ.get("SUBPROC_LOG")
+if _log:
+    with open(_log, "a", encoding="utf-8") as f:
+        f.write("started\\n")
+        f.write("env LIGHT_HARNESS_GIT_COMMON=" + os.environ.get("LIGHT_HARNESS_GIT_COMMON", "<unset>") + "\\n")
+    _init = subprocess.Popen.__init__
+    def _logged(self, args, *a, **k):
+        with open(_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps([str(x) for x in (args if isinstance(args, (list, tuple)) else [args])]) + "\\n")
+        _init(self, args, *a, **k)
+    subprocess.Popen.__init__ = _logged
+'''
 
 
 # --- normalising ------------------------------------------------------------------------------------------
@@ -772,3 +817,52 @@ def render_shape(spec: dict, fx: dict, sid=SID) -> bytes:
 
 def br4_sid(spec: dict, sid=SID):
     return {"rec": sid, "other": f"o-{spec['i']}", "missing": None, "bad": "a/b"}[spec["sid"]]
+
+
+# --- BR-1 [sweep] part (4): unencodable paths (RV-9's class, F-15) ----------------------------------------------
+
+# A NUL everywhere; lone surrogates only on POSIX (Windows paths are UTF-16, so they aren't unencodable there)
+UNENC_CHARS = ["0000"] + (["d800", "dfff", "dc80"] if PLATFORM == "posix" else [])
+# where the bad character goes in a task-folder path; `?` marks it
+UNENC_POSITIONS = {"after_env_local": ".env.local?", "after_env": ".env?", "in_name": "src/a?.py",
+                   "in_folder": "s?/a.py", "in_env_folder": ".env?/x"}
+UNENC_FILE_TOOLS = ["Read", "Edit", "Write"]
+UNENC_STATUSES = ["Draft", "Build"]
+HUMAN_ONLY_CMD = SELFTEST_CMDS[0]   # a human-only harness command with --task build
+UNENC_BASH_CMDS = [HUMAN_ONLY_CMD, "git status", "light-harness status --task build", "git push",
+                   "cp x .light-harness/contract.md"]
+
+
+def scenarios_unencodable() -> list:
+    """BR-1 [sweep] part (4), a full cross product: Read, Edit and Write of a task-folder path holding a bad
+    character (a NUL; on POSIX also the lone surrogates U+D800, U+DFFF, U+DC80) at 5 positions, and Bash with cwd
+    `<task>/s?` x 5 commands, each in Draft and in Build. The bad character reaches the hook as a JSON `\\u` escape,
+    as Claude Code would send it."""
+    out = [{"part": "unenc", "tool": tool, "char": c, "pos": pos, "status": s}
+           for c in UNENC_CHARS for s in UNENC_STATUSES for tool in UNENC_FILE_TOOLS for pos in UNENC_POSITIONS]
+    out += [{"part": "unenc", "tool": "Bash", "char": c, "cmd": cmd, "status": s}
+            for c in UNENC_CHARS for s in UNENC_STATUSES for cmd in UNENC_BASH_CMDS]
+    return out
+
+
+def render_unencodable(sc: dict, fx: dict, sid=SID) -> bytes:
+    """The hook stdin for a part (4) scenario: the Claude Code shape, every non-ASCII character \\u-escaped."""
+    t = fx["T"][sc["status"]]
+    bad = chr(int(sc["char"], 16))
+    if sc["tool"] == "Bash":
+        cwd, ti = str(t / "s") + bad, {"command": sc["cmd"], "description": "run it"}
+    else:
+        path = str(t / UNENC_POSITIONS[sc["pos"]].replace("?", bad))
+        cwd, ti = str(t), tool_input(sc["tool"], "src", path, sc["status"])
+    d = cc_payload(fx, sid, cwd, sc["tool"], ti)
+    return json.dumps(d, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+
+
+def triple(out: Outcome) -> list:
+    """[exit, permissionDecision or None, the first guard event's rule or None]: part (4)'s comparison."""
+    return [out.exit, out.decision, out.rule]
+
+
+def run_unencodable(scripts_dir, fx: dict, sc: dict, sid=SID, env=None) -> list:
+    out = run_guard(scripts_dir, render_unencodable(sc, fx, sid), env or guard_env(fx), fx["events"], cwd=fx["M"])
+    return triple(out)

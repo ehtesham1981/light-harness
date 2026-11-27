@@ -8,7 +8,8 @@ session's interpreter with the new session.sh, then times `sh guard.sh < input` 
 an allowed Edit (Build), a blocked Edit (Draft, `stage`) and Bash `git status`, base and new interleaved, in the
 hook environment Claude Code gives (PYTHONDONTWRITEBYTECODE=1, CLAUDECODE=1, CLAUDE_PROJECT_DIR). Calls run one at a
 time, never in parallel, after one untimed warm-up call per case and version; base and new alternate call by
-call. Prints a Markdown table: mean (BR-7's measure), median and min milliseconds per case. Targets: Read under 100 ms, Edit and Bash under ~200 ms.
+call. Prints a Markdown table: mean, median (BR-7's measure, Q-16) and min milliseconds per case. Targets
+(medians): Read under 100 ms, Edit and Bash under ~250 ms (BR-7, re-plan).
 
 Not collected by pytest (timing is machine-dependent); run it by hand. It never runs a guard in a repo it didn't
 create (R-12): guard calls append telemetry events to the repo they judge.
@@ -103,10 +104,10 @@ def main(argv=None):
                 times[(name, "base")].append(time_one(base, stdin, env, fx["M"]))
                 times[(name, "new")].append(time_one(G.LIVE_SCRIPTS, stdin, env, fx["M"]))
         print(f"Guard latency over {args.n} calls each (ms), {G.PLATFORM}, record {'yes' if recorded else 'no'}\n")
-        print("| Call | Base mean | Base median | Base min | New mean | New median | New min | Target (mean) |")
-        print("|------|-----------|-------------|----------|----------|------------|---------|---------------|")
+        print("| Call | Base mean | Base median | Base min | New mean | New median | New min | Target (median) |")
+        print("|------|-----------|-------------|----------|----------|------------|---------|-----------------|")
         for name, _ in cases(fx):
-            target = "< 100" if name.startswith("Read") else "~200"
+            target = "< 100" if name.startswith("Read") else "~250"
             cols = []
             for which in ("base", "new"):
                 xs = times[(name, which)]

@@ -174,12 +174,104 @@ def test_ac1_br1_sweep_matches_base(tmp_path_factory):
                        f"stricter, {len(other)} other; first 12:\n" + "\n".join(diffs[:12]))
 
 
+# --- AC-1 / BR-1 part (4): unencodable paths (RV-9's class) ------------------------------------------------
+
+def rv9_golden() -> tuple:
+    g = json.loads(G.GOLDEN_RV9.read_text(encoding="utf-8"))
+    assert G.PLATFORM in g, f"tests/golden/guard_sh_rv9_base.json has no {G.PLATFORM} table; run gen_guard_sh_golden.py"
+    t = g[G.PLATFORM]
+    scs = G.scenarios_unencodable()
+    assert t["count"] == len(scs) == len(t["outcomes"]), (t["count"], len(scs))
+    assert t["sha256"] == G.sha256(scs)
+    return scs, {G.key(sc): t["outcomes"][i] for i, sc in enumerate(scs)}
+
+
+def unenc(tool, status, char="0000", pos=None, cmd=None) -> dict:
+    sc = {"part": "unenc", "tool": tool, "char": char, "status": status}
+    sc.update({"cmd": cmd} if tool == "Bash" else {"pos": pos})
+    return sc
+
+
+def unenc_run(fx, sc, mode) -> list:
+    if mode == "record":
+        G.write_record(fx, G.SID, G.REAL_PY)
+    else:
+        G.clear_record(fx, G.SID)
+    try:
+        return G.run_unencodable(G.LIVE_SCRIPTS, fx, sc)
+    finally:
+        G.clear_record(fx, G.SID)
+
+
+def test_ac1_br1_rv9_golden_in_step(tmp_path_factory):
+    """AC-1 BR-1 (RV-9, F-15): the unencodable-path golden has one base outcome per scenario that
+    scenarios_unencodable() builds (count and hash), and RV-9's base facts sit at the right keys: a Read of
+    `.env.local\\u0000` is blocked as `env-file` (Draft and Build); a human-only `light-harness` command with
+    `--task build` and a NUL in the cwd is blocked as `human-only`; `light-harness status --task build` there gets
+    an explicit allow; `git status` there crashed base hook_guard.py (exit 1, kept: no allowed change). The new
+    guard.sh gives exactly those outcomes for those cases, with a usable record and with none."""
+    scs, at = rv9_golden()
+    n_chars = 4 if G.PLATFORM == "posix" else 1
+    assert len(scs) == n_chars * 2 * (3 * 5 + 5) and len({G.key(sc) for sc in scs}) == len(scs)
+    facts = {}
+    for status in G.UNENC_STATUSES:
+        facts[G.key(unenc("Read", status, pos="after_env_local"))] = [2, None, "env-file"]
+        facts[G.key(unenc("Bash", status, cmd=G.HUMAN_ONLY_CMD))] = [2, None, "human-only"]
+        facts[G.key(unenc("Bash", status, cmd="light-harness status --task build"))] = [0, "allow", None]
+        facts[G.key(unenc("Bash", status, cmd="git status"))] = [1, None, None]
+    for k, want in facts.items():
+        assert at[k] == want, (k, at[k], want)
+    fx = G.copy_fixture(G.template(tmp_path_factory)["root"], tmp_path_factory.mktemp("rv9facts") / "fx")
+    by_key = {G.key(sc): sc for sc in scs}
+    got = {(k, mode): unenc_run(fx, by_key[k], mode) for k in facts for mode in ("record", "none")}
+    wrong = [f"[{mode}] {k}: base {facts[k]}, now {v}" for (k, mode), v in got.items() if v != facts[k]]
+    assert not wrong, f"{len(wrong)} of {len(got)} RV-9 fact runs differ:\n" + "\n".join(wrong)
+
+
+def test_ac1_br1_sweep_unencodable_paths(tmp_path_factory):
+    """AC-1 BR-1 [sweep] (part 4, RV-9's class, F-15, R-15): calls whose path or cwd can't be encoded keep their
+    base-commit outcome (exit code, permissionDecision, rule). Full cross product (scenarios_unencodable()):
+    Read, Edit and Write `file_path` x bad character {\\u0000 everywhere; \\ud800, \\udfff, \\udc80 on POSIX} x
+    position {after `.env.local`, after `.env`, inside `src/a?.py`, in a folder `s?/a.py`, in a `.env?/x` folder}
+    x status {Draft, Build}; Bash with cwd `<task>/s?` x {a human-only `light-harness` command with --task build,
+    `git status`, `light-harness status --task build`, `git push`, `cp x .light-harness/contract.md`} x status
+    {Draft, Build}. Every case runs with a usable record and again with none (fallback search): 80 runs on
+    Windows, 320 on POSIX. Oracle: tests/golden/guard_sh_rv9_base.json (base guard.sh, from the baseline
+    export). No allowed change: base's exit 1 crashes stay exit 1, base's blocks stay blocks. Both directions are
+    reported."""
+    scs, at = rv9_golden()
+    pool = make_pool(tmp_path_factory, "rv9pool")
+    jobs = [(i, mode) for i in range(len(scs)) for mode in ("record", "none")]
+    t0 = time.time()
+    results = pool.map(lambda fx, job: unenc_run(fx, scs[job[0]], job[1]), jobs)
+
+    def strict3(o):   # exit 2 blocks; any other non-zero exit is a non-blocking error to Claude Code
+        if o[0] == 2:
+            return 3
+        return {None: 0, "allow": 1, "ask": 2}.get(o[1], 2) if o[0] == 0 else 0
+
+    looser, other = [], []
+    for (i, mode), now in zip(jobs, results):
+        base = at[G.key(scs[i])]
+        if now != base:
+            line = f"[{mode}] {G.key(scs[i])}: base {base}, now {now}"
+            (looser if strict3(now) < strict3(base) else other).append(line)
+    diffs = looser + other
+    print(f"BR-1 part (4) sweep: {len(diffs)} of {len(jobs)} runs differ ({len(looser)} less strict) in "
+          f"{time.time() - t0:.0f}s")
+    assert not diffs, (f"{len(diffs)} of {len(jobs)} runs differ from base ({len(looser)} less strict); first 12:\n"
+                       + "\n".join(diffs[:12]))
+
+
 # --- AC-2 / BR-2 -----------------------------------------------------------------------------------------
 
 BR2_TOOLS = ["Read", "Edit", "Bash", "Glob"]
 BR2_TARGETS = ["task_file", "task_env", "notask", "outside"]
-BR2_STATES = ["usable", "deleted", "not_executable", "stub_exit_1", "stub_exit_127", "stub_exit_3", "other_os",
-              "not_recorded", "empty", "crlf", "modified"]
+# not_executable, unreadable and py_readonly need POSIX file modes (Git Bash doesn't follow chmod for them)
+BR2_STATES = (["usable", "deleted"] + (["not_executable"] if G.PLATFORM == "posix" else []) +
+              ["stub_exit_1", "stub_exit_127", "stub_exit_3", "other_os", "not_recorded", "empty", "crlf", "modified"] +
+              (["unreadable", "py_readonly"] if G.PLATFORM == "posix" else []) +
+              ["stub_stdout_exit1", "stub_judge_exit1", "stub_killed"])
 BR2_PATHS = ["py39", "old_only", "none"]
 OTHER_OS = "/usr/bin/python3" if G.PLATFORM == "nt" else "C:\\Python39\\python.exe"
 
@@ -192,6 +284,11 @@ def br2_setup(fx: dict) -> dict:
         G.recording_python(d / "newer" / "python3", mtime_offset=+1000)
         for code in (1, 127, 3):
             G.stub(d / f"stub{code}" / "python3", code)
+        # RV-11: a record that writes to stdout and then fails; one that judges (runs the real hook_guard.py) and
+        # then fails; one killed by SIGKILL after writing to stdout and stderr
+        G.script(d / "junk1" / "python3", "printf 'junk\\n'\nexit 1\n")
+        G.script(d / "judge1" / "python3", f'"{G.fwd(G.REAL_PY)}" "$@"\nexit 1\n')
+        G.script(d / "killed" / "python3", "printf 'partial\\n'\nprintf 'noise\\n' >&2\nkill -9 $$\n")
         ne = d / "noexec" / "python3"
         ne.parent.mkdir(parents=True, exist_ok=True)
         ne.write_text("not an interpreter\n", encoding="utf-8")
@@ -207,10 +304,26 @@ def br2_record(fx: dict, d: Path, state: str):
                "not_executable": str(d / "noexec" / "python3"), "stub_exit_1": str(d / "stub1" / "python3"),
                "stub_exit_127": str(d / "stub127" / "python3"), "stub_exit_3": str(d / "stub3" / "python3"),
                "other_os": OTHER_OS, "not_recorded": None, "empty": "", "crlf": str(d / "ok" / "python3") + "\r\n",
-               "modified": str(d / "newer" / "python3")}[state]
+               "modified": str(d / "newer" / "python3"), "unreadable": str(d / "ok" / "python3"),
+               "py_readonly": str(d / "ok" / "python3"), "stub_stdout_exit1": str(d / "junk1" / "python3"),
+               "stub_judge_exit1": str(d / "judge1" / "python3"), "stub_killed": str(d / "killed" / "python3")}[state]
+    br2_restore(fx)
     G.clear_record(fx, "br2")
     if content is not None:
-        G.write_record(fx, "br2", content)
+        rec = G.write_record(fx, "br2", content)
+        if state == "unreadable":    # RV-12: the record exists but can't be read (POSIX)
+            rec.chmod(0)
+        if state == "py_readonly":   # F-18: py/ is read-only, so the recorded run's .run.* files can't be made
+            rec.parent.chmod(0o555)
+
+
+def br2_restore(fx: dict):
+    """Undo br2_record's file modes, so the next run in this fixture can write the record."""
+    py = fx["state"] / "py"
+    if py.is_dir():
+        py.chmod(0o755)
+        if (py / "br2").exists():
+            (py / "br2").chmod(0o644)
 
 
 def br2_stdin(fx: dict, tool: str, target: str) -> tuple:
@@ -231,52 +344,87 @@ def br2_stdin(fx: dict, tool: str, target: str) -> tuple:
     return G.compact(G.cc_payload(fx, "br2", where, tool, ti)).encode("utf-8"), where, None
 
 
+def events_set(o: tuple) -> frozenset:
+    return frozenset(json.dumps(e, sort_keys=True, ensure_ascii=False) for e in json.loads(o[3]))
+
+
+def br2_view(o: tuple, events: bool = True) -> tuple:
+    """What BR-2's oracle compares: exit code, stdout and normalised stderr, and the guard events as a set (R-2's
+    fallback may log a judged-then-failed call twice), or no events."""
+    return (o[0], o[1], o[2], events_set(o) if events else None)
+
+
+def br2_expected(tool, target, state, path, gkey, at) -> tuple:
+    """(allowed outcomes, compare events?) for one BR-2 run in a task repo."""
+    golden = at[gkey]
+    if state == "usable" or path == "py39":
+        return {br2_view(golden)}, True
+    if state == "py_readonly":
+        # a usable record whose run can't capture its output: the fast path still decides an ordinary Read;
+        # anything else may fall back to the search (which finds no 3.9+ here) but never exits 2 unexplained
+        if tool == "Read" and target == "task_file":
+            return {br2_view(golden)}, True
+        return {br2_view(golden), br2_view(BLOCKED_NO_PY)}, True
+    if state.startswith("stub") and tool == "Read" and target == "task_file":
+        return {br2_view(SILENT), br2_view(BLOCKED_NO_PY)}, True   # Q-5
+    # no usable interpreter: exit 2, base's message, nothing on stdout. A record that judged before failing may
+    # have logged its event, so events are compared only when the record can't have judged.
+    events = state != "stub_judge_exit1"
+    return {br2_view(BLOCKED_NO_PY, events)}, events
+
+
 def test_ac2_br2_sweep_fail_closed(tmp_path_factory):
-    """AC-2 BR-2 [sweep]: the guard fails closed. Full cross product: tool {Read, Edit, Bash, Glob} x target
-    {ordinary file in a task, `.env` in a task, a repo with no task, a folder outside any repo} x interpreter
-    state {usable record, recorded then deleted, not executable, stubs exiting 1 / 127 / 3, another OS's path,
-    not recorded, empty record, record ending in CRLF, interpreter modified after the record} x PATH {python3
-    3.9+, only old Pythons, none} (528 runs). Oracle (property): in a task repo with no usable record and no 3.9+
-    on PATH, exit 2 with base's exact message; outside a task repo, exit 0 with no output and no interpreter
-    started; otherwise the BR-1 golden outcome. Allowed change (Q-5): an ordinary Read with an unchanged
-    executable record that can't start (the stubs) may exit 0."""
+    """AC-2 BR-2 [sweep] EX-6 EX-8: the guard fails closed. Full cross product: tool {Read, Edit, Bash, Glob} x
+    target {ordinary file in a task, `.env` in a task, a repo with no task, a folder outside any repo} x
+    interpreter state {usable record, recorded then deleted, not executable (POSIX), stubs exiting 1 / 127 / 3,
+    another OS's path, not recorded, empty record, record ending in CRLF, interpreter modified after the record;
+    re-plan: record unreadable (mode 000, POSIX, RV-12), py/ read-only so the .run.* files can't be created
+    (POSIX, F-18), a stub that prints `junk` and exits 1, a stub that runs the real hook_guard.py and then exits 1
+    (RV-11), a stub killed by SIGKILL after writing stdout and stderr} x PATH {python3 3.9+, only old Pythons,
+    none} (768 runs on POSIX, 624 on Windows). Oracle (property): in a task repo with no usable interpreter and no
+    3.9+ on PATH, exit 2, base's exact message on stderr and empty stdout; outside a task repo, exit 0 with no
+    output and no interpreter started; otherwise the BR-1 golden outcome, compared on exit code, stdout and
+    normalised stderr (so a failing record never adds stdout or stderr), with events as a set. Allowed change
+    (Q-5): an ordinary Read with an unchanged executable record that can't start (the stubs) may exit 0."""
     _, at = br1_golden()
     pool = make_pool(tmp_path_factory, "br2pool")
     jobs = [(tool, target, state, path) for tool in BR2_TOOLS for target in BR2_TARGETS for state in BR2_STATES
             for path in BR2_PATHS]
-    assert len(jobs) == 528
+    assert len(BR2_STATES) == (16 if G.PLATFORM == "posix" else 13)
+    assert len(jobs) == (768 if G.PLATFORM == "posix" else 624)
 
     def run(fx, job):
         tool, target, state, path = job
         s = br2_setup(fx)
         d = s["dir"]
         br2_record(fx, d, state)
-        stdin, project, gkey = br2_stdin(fx, tool, target)
-        front = {"py39": [d / "wrap"], "old_only": [d / "old"], "none": []}[path]
-        env_path = G.path_with(*front) if path == "py39" else G.path_with(*front, rest=s["tools"])
-        log = fx["root"] / "br2.log"
-        log.unlink(missing_ok=True)
-        env = G.guard_env(fx, project=project, PATH=env_path, FAKEPY_LOG=log)
-        out = G.run_guard(G.LIVE_SCRIPTS, stdin, env, fx["events"], cwd=project)
-        started = log.exists() and log.read_text(encoding="utf-8").strip() != ""
-        return G.normalise(out, fx, "br2"), started, gkey
+        try:
+            stdin, project, gkey = br2_stdin(fx, tool, target)
+            front = {"py39": [d / "wrap"], "old_only": [d / "old"], "none": []}[path]
+            env_path = G.path_with(*front) if path == "py39" else G.path_with(*front, rest=s["tools"])
+            log = fx["root"] / "br2.log"
+            log.unlink(missing_ok=True)
+            env = G.guard_env(fx, project=project, PATH=env_path, FAKEPY_LOG=log)
+            out = G.run_guard(G.LIVE_SCRIPTS, stdin, env, fx["events"], cwd=project)
+            started = log.exists() and log.read_text(encoding="utf-8").strip() != ""
+            return G.normalise(out, fx, "br2"), started, gkey
+        finally:
+            br2_restore(fx)
 
     t0 = time.time()
     results = pool.map(run, jobs)
     bad = []
     for (tool, target, state, path), (now, started, gkey) in zip(jobs, results):
+        label = f"{tool} {target} {state} {path}"
         if gkey is None:
-            ok = {SILENT}
             if started:
-                bad.append(f"{tool} {target} {state} {path}: an interpreter started outside a task repo")
-        elif state == "usable" or path == "py39":
-            ok = {at[gkey]}
-        elif state.startswith("stub") and tool == "Read" and target == "task_file":
-            ok = {SILENT, BLOCKED_NO_PY}   # Q-5
-        else:
-            ok = {BLOCKED_NO_PY}
-        if now not in ok:
-            bad.append(f"{tool} {target} {state} {path}: expected one of {[show(o) for o in ok]}, got {show(now)}")
+                bad.append(f"{label}: an interpreter started outside a task repo")
+            if now != SILENT:
+                bad.append(f"{label}: expected {show(SILENT)}, got {show(now)}")
+            continue
+        ok, events = br2_expected(tool, target, state, path, gkey, at)
+        if br2_view(now, events) not in ok:
+            bad.append(f"{label}: expected one of {sorted(str(o[:3]) for o in ok)}, got {show(now)}")
     print(f"BR-2 sweep: {len(bad)} of {len(jobs)} runs wrong in {time.time() - t0:.0f}s")
     assert not bad, f"{len(bad)} of {len(jobs)} runs wrong; first 12:\n" + "\n".join(bad[:12])
 

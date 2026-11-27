@@ -1,5 +1,6 @@
-"""Issue #24 (guard latency): examples and behaviour tests. EX-1..EX-9, AC-2..AC-5, the BR-5 [sweep], the R-4
-stdin fidelity test and Q-9's batched config read.
+"""Issue #24 (guard latency): examples and behaviour tests. EX-1..EX-9, AC-1..AC-5: the R-4 stdin fidelity and
+RV-11 byte-exact output tests, the held-back output of a failing record (RV-11), git asked for the common dir as
+at base (BR-5), lazy urllib (BR-6) and Q-9's batched config read.
 
 Every run happens in a temp fixture repo (never this repo: guard runs append telemetry), and every environment
 variable goes through a Python env dict, never a shell command line (R-11).
@@ -29,8 +30,6 @@ import hook_guard  # noqa: E402
 import telemetry  # noqa: E402
 
 SILENT = (0, "", "", "[]")
-GIT_DISCOVERY = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES",
-                 "GIT_DISCOVERY_ACROSS_FILESYSTEM")
 
 
 @pytest.fixture
@@ -90,6 +89,11 @@ def sh_command_v(env: dict, word="python3") -> str:
 
 def record_text(fx, sid) -> str:
     return (fx["state"] / "py" / sid).read_bytes().decode("utf-8")
+
+
+def records(fx) -> list:
+    """The session records in <common>/light-harness/py/, without dot-files (the guard's .run.<pid>.o/.e, R-14)."""
+    return sorted(p.name for p in (fx["state"] / "py").iterdir() if not p.name.startswith("."))
 
 
 # --- AC-4: the Read fast path (EX-1, EX-2, EX-3) ---------------------------------------------------------
@@ -241,11 +245,11 @@ def test_ac3_session_records_once(fx):
     assert probes(log) == [] and not (fx["N"] / ".git" / "light-harness").exists()
     assert not any("LIGHT_HARNESS_PY" in line for line in env_file2.read_text(encoding="utf-8").splitlines())
     # Unsafe session ids
-    before = sorted(p.name for p in (fx["state"] / "py").iterdir())
+    before = records(fx)
     for sid in ("..", "a/b", 'x";rm', "a b", "x" * 129):
         out = run_session(fx, sid, fx["root"] / "envfile3", env)
         assert out.exit == 0
-    assert sorted(p.name for p in (fx["state"] / "py").iterdir()) == before == ["abc-123"]
+    assert records(fx) == before == ["abc-123"]
     assert not (fx["state"] / "a").exists() and not (fx["state"] / "b").exists()
 
 
@@ -274,7 +278,7 @@ def test_ac3_guard_uses_record(fx):
     assert log_lines(log) == []
     # An unsafe session id is never used as a file name
     assert norm(fx, guard(fx, edit_json(fx, "../g3", t / "src" / "a.py"), env), "../g3") == SILENT
-    assert sorted(p.name for p in (fx["state"] / "py").iterdir()) == ["g1", "g2"]
+    assert records(fx) == ["g1", "g2"]
 
 
 def test_ac3_telemetry_uses_record(fx):
@@ -390,15 +394,91 @@ def test_ac1_r4_stdin_fidelity(fx):
     assert not bad, f"{len(bad)} inputs changed on the way to hook_guard.py:\n" + "\n".join(bad[:10])
 
 
-# --- AC-5: the common dir is passed, not looked up (BR-5); lazy urllib (BR-6); one config read (Q-9) ---------
+def test_ac1_recorded_run_bytes_exact(fx):
+    """AC-1 BR-1 (RV-11, F-13, R-13): with a usable record, guard.sh's raw stdout and stderr bytes and exit code
+    equal those of the same interpreter running hook_guard.py directly with the same stdin and environment:
+    an allow JSON (Bash `git status`), an ask JSON (`git push`), a `.env` Read block, a Draft Edit block (`stage`)
+    and an allowed 100 KB Write. On Git Bash that includes the `\\r\\n` line ends Windows Python writes."""
+    env = G.guard_env(fx)
+    G.write_record(fx, "bx", G.REAL_PY)
+    t, draft = fx["T"]["Build"], fx["T"]["Draft"]
+    big = G.compact(G.cc_payload(fx, "bx", t, "Write", {"file_path": str(t / "src" / "big.py"),
+                                                         "content": "x = 'ü💥'\n" * 10_000})).encode("utf-8")
+    assert len(big) > 100_000
+    cases = {"allow": (bash_json(fx, "bx", "git status"), 0, "allow"),
+             "ask": (bash_json(fx, "bx", "git push"), 0, "ask"),
+             ".env block": (read_json(fx, "bx", t / ".env"), 2, None),
+             "Draft Edit block": (edit_json(fx, "bx", draft / "src" / "a.py", draft), 2, None),
+             "100 KB Write": (big, 0, None)}
+    nl = b"\r\n" if os.name == "nt" else b"\n"
+    bad = []
+    for name, (stdin, code, decision) in cases.items():
+        want = G.run_hook_guard_raw(G.LIVE_SCRIPTS, stdin, env, cwd=fx["M"])
+        got = G.run_guard_raw(G.LIVE_SCRIPTS, stdin, env, cwd=fx["M"])
+        # the direct run is the reference: check it is the call we mean
+        assert want[0] == code, (name, want)
+        if decision:
+            assert want[1].endswith(b"}" + nl) and want[2] == b""
+            assert json.loads(want[1])["hookSpecificOutput"]["permissionDecision"] == decision, (name, want)
+        elif code == 2:
+            assert want[1] == b"" and want[2].startswith(b"[light-harness] Blocked: ") and want[2].endswith(nl), want
+        else:
+            assert want == (0, b"", b""), (name, want)
+        if got != want:
+            bad.append(f"{name}: guard.sh gave {got[0]}, {got[1][-80:]!r}, {got[2][-80:]!r}; "
+                       f"hook_guard.py gave {want[0]}, {want[1][-80:]!r}, {want[2][-80:]!r}")
+    assert not bad, f"{len(bad)} of {len(cases)} outputs differ in their bytes:\n" + "\n".join(bad)
+
+
+def test_ac2_rv11_output_held_back(fx):
+    """AC-2 BR-2 BR-1 (RV-11, R-2, R-13): a recorded interpreter that fails (any exit but 0 or 2) shows nothing:
+    the record points at {a stub printing `junk` and exiting 1; a stub running the real hook_guard.py and then
+    exiting 1; a stub writing to stderr and exiting 3}, for Bash `git push` (ask), a Read of `.env.example` and an
+    Edit in Draft, with PATH {a 3.9+ python3, none}. The raw stdout and stderr bytes and the exit code equal those
+    of the same call with no record; with no Python on PATH that is exit 2, empty stdout and base's "Python 3.9+
+    not found" message."""
+    d = fx["root"] / "rv11"
+    stubs = {"junk then exit 1": G.script(d / "junk" / "python3", "printf 'junk\\n'\nexit 1\n"),
+             "hook_guard.py then exit 1": G.script(d / "judge" / "python3", f'"{G.fwd(G.REAL_PY)}" "$@"\nexit 1\n'),
+             "stderr then exit 3": G.script(d / "noise" / "python3", "printf 'noise\\n' >&2\nexit 3\n")}
+    t, draft = fx["T"]["Build"], fx["T"]["Draft"]
+    calls = {"git push": bash_json(fx, "rv11", "git push"),
+             "Read .env.example": read_json(fx, "rv11", t / ".env.example"),
+             "Edit in Draft": edit_json(fx, "rv11", draft / "src" / "a.py", draft)}
+    paths = {"python3 3.9+": G.path_with(G.wrap_dir(d / "wrap")),
+             "none": os.pathsep.join(G.tools_path(fx["root"]))}
+    bad, n = [], 0
+    for pname, path in paths.items():
+        env = G.guard_env(fx, PATH=path)
+        for cname, stdin in calls.items():
+            G.clear_record(fx, "rv11")
+            ref = G.run_guard_raw(G.LIVE_SCRIPTS, stdin, env, cwd=fx["M"])
+            if pname == "none":
+                assert (ref[0], ref[1], ref[2].decode("utf-8").strip()) == (2, b"", G.NOT_FOUND), (cname, ref)
+            else:
+                assert ref[0] in (0, 2) and G.NOT_FOUND.encode() not in ref[2], (cname, ref)
+            for sname, stub in stubs.items():
+                G.clear_record(fx, "rv11")
+                G.write_record(fx, "rv11", str(stub))
+                got = G.run_guard_raw(G.LIVE_SCRIPTS, stdin, env, cwd=fx["M"])
+                n += 1
+                if got != ref:
+                    bad.append(f"{sname} / {cname} / PATH {pname}: got {got[0]}, {got[1][:120]!r}, "
+                               f"{got[2][:160]!r}; with no record {ref[0]}, {ref[1][:120]!r}, {ref[2][:160]!r}")
+    G.clear_record(fx, "rv11")
+    assert not bad, f"{len(bad)} of {n} calls differ from the same call with no record:\n" + "\n".join(bad)
+
+
+# --- AC-5: git finds the common dir as at base (BR-5); lazy urllib (BR-6); one config read (Q-9) -------------
 
 class SubprocessLog:
     def __init__(self, monkeypatch):
-        self.calls = []
+        self.calls, self.cwds = [], []
         real = subprocess.run
 
         def run(args, *a, **k):
             self.calls.append([str(x) for x in (args if isinstance(args, (list, tuple)) else [args])])
+            self.cwds.append(k.get("cwd"))
             return real(args, *a, **k)
 
         monkeypatch.setattr(subprocess, "run", run)
@@ -421,70 +501,261 @@ def git_run(*args, cwd, env=None):
     return r.stdout
 
 
-def test_ac5_no_common_dir_lookup(fx, monkeypatch):
-    """AC-5 BR-5: with LIGHT_HARNESS_GIT_COMMON set to the repo's common dir, `active()` on paths in that repo (a
-    task file, a file in another task, a main-checkout file, a missing file) returns it without running `git
-    rev-parse --git-common-dir`; for another repo's path, a nested repo in the task folder, or with the
-    variable unset, it runs git as before and returns git's answer."""
+REAL_RUN = subprocess.run
+
+
+def git_says(d: Path, env=None):
+    """Base's own lookup at folder `d`: `git rev-parse --git-common-dir` there, made absolute and resolved; None
+    when git fails or can't run there."""
+    try:
+        r = REAL_RUN(["git", "rev-parse", "--git-common-dir"], cwd=d, env=env, capture_output=True,
+                     encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    q = Path(r.stdout.strip())
+    return (q if q.is_absolute() else Path(d) / q).resolve()
+
+
+def same(a, b) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def test_ac5_hook_guard_asks_git_as_base(fx, monkeypatch):
+    """AC-5 BR-5 (Q-18, R-5): in-process, `active()` on a task file, a missing file, a main-checkout file, another
+    repo's file and a nested repo's file each runs exactly one `git rev-parse --git-common-dir`, with cwd =
+    `existing(p)`, and returns git's answer when it holds `light-harness/` (else None). That holds with
+    LIGHT_HARNESS_GIT_COMMON unset, set to the right repo's common dir and set to another repo's: nothing reads it.
+    hook_guard has no `walk_common` or `common_from_env`, and with `git_common` answering None, `active()` is
+    None: no other lookup stands in for git."""
     isolate_env(monkeypatch, fx["root"])
-    nested = fx["T"]["Build"] / "nested"
+    t = fx["T"]["Build"]
+    nested = t / "nested"
     nested.mkdir()
     git_run("init", "-q", cwd=nested)
     (nested / ".git" / "light-harness").mkdir()
+    (nested / "a.py").write_text("x\n", encoding="utf-8")
+    assert not hasattr(hook_guard, "walk_common") and not hasattr(hook_guard, "common_from_env")
+    paths = {"task file": t / "src" / "a.py", "missing file": t / "new" / "z.py", "main checkout": fx["M"] / "src" / "x.py",
+             "other repo": fx["N"] / "a.py", "nested repo": nested / "a.py"}
+    want = {}
+    for label, p in paths.items():
+        g = git_says(hook_guard.existing(p))
+        assert g is not None, label
+        want[label] = g if (g / "light-harness").is_dir() else None
+    assert same(want["task file"], fx["common"]) and same(want["nested repo"], nested / ".git")
+    assert want["other repo"] is None
     log = SubprocessLog(monkeypatch)
+    bad = []
+    for passed in (None, fx["common"], fx["N"] / ".git"):
+        if passed is None:
+            monkeypatch.delenv("LIGHT_HARNESS_GIT_COMMON", raising=False)
+        else:
+            monkeypatch.setenv("LIGHT_HARNESS_GIT_COMMON", str(passed))
+        for label, p in paths.items():
+            log.calls.clear()
+            log.cwds.clear()
+            got = hook_guard.active(p)
+            lookups = [(c, w) for c, w in zip(log.calls, log.cwds) if "--git-common-dir" in c]
+            if len(lookups) != 1 or lookups[0][0][-2:] != ["rev-parse", "--git-common-dir"] \
+                    or not same(lookups[0][1], hook_guard.existing(p)):
+                bad.append(f"{label}, passed {passed}: git lookups {lookups}")
+            if not same(got, want[label]):
+                bad.append(f"{label}, passed {passed}: active() gave {got}, git gives {want[label]}")
+    assert not bad, "\n".join(bad)
+    monkeypatch.setattr(hook_guard, "git_common", lambda d: None)
     monkeypatch.setenv("LIGHT_HARNESS_GIT_COMMON", str(fx["common"]))
+    assert [hook_guard.active(p) for p in paths.values()] == [None] * len(paths)
+
+
+def test_ac5_guard_asks_git_end_to_end(fx):
+    """AC-5 BR-5 (Q-18): end to end through guard.sh with a usable record, a logging git first on PATH
+    (git_logger) and a sitecustomize logging every subprocess. A Read of `.env` (blocked), an ordinary Read (fast
+    path), an allowed Edit and Bash `git status` each run `git -C <PROJECT> rev-parse --path-format=absolute
+    --git-common-dir` exactly once in the shell, as base guard.sh does. Each call that starts Python starts it once
+    and runs `git rev-parse --git-common-dir` exactly once there, as base hook_guard.py does, and Python sees no
+    LIGHT_HARNESS_GIT_COMMON. The fast-path Read starts no Python."""
+    sc = fx["root"] / "sc"
+    sc.mkdir()
+    (sc / "sitecustomize.py").write_text(G.SITECUSTOMIZE, encoding="utf-8")
+    gitlog, pylog = fx["root"] / "gitlog", fx["root"] / "pylog"
+    wrapper = G.git_logger(fx["root"] / "gitwrap")
+    env = G.guard_env(fx, PATH=G.path_with(wrapper.parent), PYTHONPATH=sc, GITLOG=gitlog, SUBPROC_LOG=pylog)
+    G.write_record(fx, "e2e", G.REAL_PY)
     t = fx["T"]["Build"]
-    for p in (t / "src" / "a.py", fx["T"]["Draft"] / "README.md", fx["M"] / "src" / "x.py", t / "new" / "z.py", t):
-        log.calls.clear()
-        got = hook_guard.active(p)
-        assert got is not None and hook_guard.H.same_path(got, fx["common"]), (p, got)
-        assert log.common_lookups() == [], (p, log.calls)
-    log.calls.clear()
-    assert hook_guard.active(fx["N"] / "a.py") is None and log.common_lookups(), log.calls
-    log.calls.clear()
-    got = hook_guard.active(nested / "a.py")
-    assert got is not None and hook_guard.H.same_path(got, nested / ".git") and log.common_lookups()
-    monkeypatch.delenv("LIGHT_HARNESS_GIT_COMMON")
-    log.calls.clear()
-    got = hook_guard.active(t / "src" / "a.py")
-    assert got is not None and hook_guard.H.same_path(got, fx["common"]) and log.common_lookups()
+    shell_call = f"-C {fx['M']} rev-parse --path-format=absolute --git-common-dir"
+    allow = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+    cases = [("Read .env", read_json(fx, "e2e", t / ".env"), True),
+             ("Read README.md", read_json(fx, "e2e", t / "README.md"), False),
+             ("Edit", edit_json(fx, "e2e", t / "src" / "a.py"), True),
+             ("Bash git status", bash_json(fx, "e2e", "git status"), True)]
+    bad = []
+    for name, stdin, starts_python in cases:
+        gitlog.unlink(missing_ok=True)
+        pylog.unlink(missing_ok=True)
+        code, so, se, ev = norm(fx, guard(fx, stdin, env), "e2e")
+        if name == "Read .env":
+            assert code == 2 and [e["rule"] for e in json.loads(ev)] == ["env-file"], (code, se, ev)
+        elif name == "Bash git status":
+            d = json.loads(so)
+            assert code == 0 and d["hookSpecificOutput"]["permissionDecision"] == "allow", (code, so, se)
+            assert {k: v for k, v in d["hookSpecificOutput"].items() if k != "permissionDecisionReason"} == \
+                allow["hookSpecificOutput"]
+        else:
+            assert (code, so, se, ev) == SILENT, (name, code, so, se)
+        shell = [x for x in log_lines(gitlog) if x.startswith("-C ") and "--git-common-dir" in x]
+        if shell != [shell_call]:
+            bad.append(f"{name}: shell common-dir lookups {shell}, want exactly [{shell_call!r}]")
+        py = log_lines(pylog)
+        if not starts_python:
+            if py:
+                bad.append(f"{name}: Python started: {py}")
+            continue
+        lookups = [json.loads(x) for x in py if x.startswith("[") and "--git-common-dir" in x]
+        envs = [x for x in py if x.startswith("env ")]
+        if py.count("started") != 1:
+            bad.append(f"{name}: Python started {py.count('started')} times")
+        if len(lookups) != 1 or lookups[0][-2:] != ["rev-parse", "--git-common-dir"]:
+            bad.append(f"{name}: Python common-dir lookups {lookups}, want exactly one")
+        if envs != ["env LIGHT_HARNESS_GIT_COMMON=<unset>"]:
+            bad.append(f"{name}: Python saw {envs}")
+    assert not bad, "\n".join(bad)
 
 
-SITECUSTOMIZE = '''import json, os, subprocess
-_log = os.environ.get("SUBPROC_LOG")
-if _log:
-    with open(_log, "a", encoding="utf-8") as f:
-        f.write("started\\n")
-    _init = subprocess.Popen.__init__
-    def _logged(self, args, *a, **k):
-        with open(_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps([str(x) for x in (args if isinstance(args, (list, tuple)) else [args])]) + "\\n")
-        _init(self, args, *a, **k)
-    subprocess.Popen.__init__ = _logged
+LAYOUT_CHILD = r'''
+import json, os, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import hook_guard
+out = []
+for p in json.loads(sys.argv[2]):
+    p = Path(p)
+    d = hook_guard.existing(p)
+    try:
+        r = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=d, capture_output=True, encoding="utf-8",
+                           errors="replace")
+        g = r.stdout.strip() if r.returncode == 0 else ""
+    except OSError:
+        g = ""
+    g = str((Path(g) if Path(g).is_absolute() else d / g).resolve()) if g else None
+    try:
+        a = hook_guard.active(p)
+        a = None if a is None else str(Path(a).resolve())
+    except Exception as e:
+        a = "raised " + type(e).__name__
+    out.append({"git": g, "active": a})
+print(json.dumps(out))
 '''
 
 
-def test_ac5_guard_end_to_end_no_common_dir_lookup(fx):
-    """AC-5 BR-5 (Q-7): end to end through guard.sh with a recorded interpreter, a Read of `.env` (blocked), an
-    allowed Edit and Bash `git status` run no `git rev-parse --git-common-dir`, neither in the shell (a logging
-    git first on PATH) nor in hook_guard.py (a sitecustomize logging every subprocess)."""
-    sc = fx["root"] / "sc"
-    sc.mkdir()
-    (sc / "sitecustomize.py").write_text(SITECUSTOMIZE, encoding="utf-8")
-    gitlog, pylog = fx["root"] / "gitlog", fx["root"] / "pylog"
-    G.script(fx["root"] / "gitwrap" / "git", f'printf \'%s\\n\' "$*" >> "$GITLOG"\nexec "{G.fwd(shutil.which("git"))}" "$@"\n')
-    env = G.guard_env(fx, PATH=G.path_with(fx["root"] / "gitwrap"), PYTHONPATH=sc, GITLOG=gitlog, SUBPROC_LOG=pylog)
-    G.write_record(fx, "e2e", G.REAL_PY)
-    t = fx["T"]["Build"]
-    code, so, se, ev = norm(fx, guard(fx, read_json(fx, "e2e", t / ".env"), env), "e2e")
-    assert code == 2 and json.loads(ev)[0]["rule"] == "env-file"
-    assert norm(fx, guard(fx, edit_json(fx, "e2e", t / "src" / "a.py"), env), "e2e") == SILENT
-    code, so, se, ev = norm(fx, guard(fx, bash_json(fx, "e2e", "git status"), env), "e2e")
-    assert code == 0 and json.loads(so)["hookSpecificOutput"]["permissionDecision"] == "allow"
-    py_lines = log_lines(pylog)
-    assert "started" in py_lines, py_lines   # the logging sitecustomize ran
-    lookups = [x for x in log_lines(gitlog) + py_lines if "--git-common-dir" in x]
-    assert lookups == [], lookups
+def br5_layouts(root: Path) -> tuple:
+    """The layouts that broke the no-git shortcut (RV-2, RV-3, RV-4, RV-10), plus two plain controls. Returns
+    (env, candidates {label: common dir}, layouts [(name, project dir, target path, extra env)]). Every candidate
+    common dir holds `light-harness/`, so whichever one git names is a task repo."""
+    env = G.git_env(root)
+    (root / "gitconfig").write_text("[user]\n\tname = F\n\temail = f@x\n[init]\n\tdefaultBranch = main\n",
+                                    encoding="utf-8")
+    a = root / "A"
+    git_run("init", "-q", str(a), cwd=root, env=env)
+    (a / "src").mkdir()
+    (a / "src" / "a.py").write_text("x\n", encoding="utf-8")
+    git_run("add", "-A", cwd=a, env=env)
+    git_run("commit", "-qm", "i", cwd=a, env=env)
+    git_run("worktree", "add", "-q", str(a / ".tasks" / "t"), "-b", "task/t", cwd=a, env=env)
+    # .git/modules/sub: a submodule-style git dir inside A's .git
+    (a / ".git" / "modules").mkdir()
+    git_run("init", "-q", "--separate-git-dir", str(a / ".git" / "modules" / "sub"), str(root / "subwt"), cwd=root,
+            env=env)
+    (a / ".git" / "modules" / "sub" / "x").mkdir()
+    # a gitfile `gitdir:<abs>` with no space (git rejects it), inside A's work tree
+    git_run("init", "-q", "--separate-git-dir", str(root / "gd_c"), str(a / "gf"), cwd=root, env=env)
+    (a / "gf" / ".git").unlink()
+    (a / "gf" / ".git").write_bytes(("gitdir:" + G.fwd(root / "gd_c") + "\n").encode("utf-8"))
+    (a / "gf" / "a.py").write_text("x\n", encoding="utf-8")
+    # a .git folder holding a commondir file that names another repo
+    b = root / "B"
+    git_run("init", "-q", str(b), cwd=root, env=env)
+    v = root / "v"
+    git_run("init", "-q", str(v), cwd=root, env=env)
+    (v / ".git" / "commondir").write_bytes((G.fwd(b / ".git") + "\n").encode("utf-8"))
+    (v / "a.py").write_text("x\n", encoding="utf-8")
+    # a bare-style folder in A's work tree whose HEAD is `ref:<tab>refs/heads/main` (git accepts it)
+    bare = a / "bare"
+    for sub in ("objects", "refs"):
+        (bare / sub).mkdir(parents=True)
+    (bare / "HEAD").write_bytes(b"ref:\trefs/heads/main\n")
+    (bare / "x.py").write_text("x\n", encoding="utf-8")
+    cands = {"A": a / ".git", "sub": a / ".git" / "modules" / "sub", "gd_c": root / "gd_c", "B": b / ".git",
+             "v": v / ".git", "bare": bare}
+    for c in cands.values():
+        (c / "light-harness").mkdir()
+    layouts = [("plain (control)", a, a / "src" / "a.py", {}),
+               ("task worktree (control)", a / ".tasks" / "t", a / ".tasks" / "t" / "src" / "a.py", {}),
+               (".git/modules/sub/x", a / ".git" / "modules" / "sub" / "x", a / ".git" / "modules" / "sub" / "x" / "f.py",
+                {}),
+               ("gitfile gitdir:/abs", a / "gf", a / "gf" / "a.py", {}),
+               (".git folder with commondir", v, v / "a.py", {}),
+               ("bare-style HEAD ref:<tab>", bare, bare / "x.py", {}),
+               ('GIT_DIR=""', a, a / "src" / "a.py", {"GIT_DIR": ""}),
+               ("GIT_OBJECT_DIRECTORY=/nonexistent", a, a / "src" / "a.py", {"GIT_OBJECT_DIRECTORY": "/nonexistent"})]
+    if G.PLATFORM == "posix":   # Windows normalises `..` before the kernel sees it
+        dd = Path(str(a / "src" / "a.py") + "/../x")
+        layouts.append(("src/a.py/../x", dd, dd, {}))
+    return env, cands, layouts
+
+
+def test_ac5_br5_layouts_follow_git(tmp_path):
+    """AC-5 BR-5 (RV-2, RV-3, RV-4, RV-10): on the layouts that broke the no-git shortcut, both guard.sh and
+    hook_guard.active() use exactly the common dir git names at the same place in the same environment:
+    `.git/modules/sub/x`; a gitfile `gitdir:/abs` with no space; a `.git` folder holding a `commondir` file; a
+    bare-style folder whose HEAD is `ref:<tab>refs/heads/main`; `src/a.py/../x` (POSIX); `GIT_DIR=""`;
+    `GIT_OBJECT_DIRECTORY=/nonexistent`; and two plain controls. Every candidate common dir gets a
+    `light-harness/py/<sid>` record pointing at a marker interpreter that logs its own name, so the marker shows
+    which common dir guard.sh used (none when git names no task repo). `active()` runs in a child Python, with
+    LIGHT_HARNESS_GIT_COMMON unset and set to the outer repo's common dir (a stale value nothing may trust)."""
+    root = tmp_path.resolve()
+    env, cands, layouts = br5_layouts(root)
+    marklog = root / "marks"
+    for label, c in cands.items():
+        m = G.script(root / "markers" / label / "python3", f'printf \'%s\\n\' {label} >> "$MARKLOG"\nexit 0\n')
+        (c / "light-harness" / "py").mkdir()
+        (c / "light-harness" / "py" / "lay").write_bytes(str(m).encode("utf-8"))
+    bad, seen = [], set()
+    for name, project, target, extra in layouts:
+        e = dict(env, **extra)
+        r = REAL_RUN(["git", "-C", str(project), "rev-parse", "--path-format=absolute", "--git-common-dir"], env=e,
+                     capture_output=True, encoding="utf-8", errors="replace")
+        truth = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+        want = next((label for label, c in cands.items() if same(c, truth)), None)
+        assert truth is None or want is not None, f"{name}: git names {truth}, not a candidate"
+        seen.add(want)
+        marklog.unlink(missing_ok=True)
+        stdin = G.compact({"session_id": "lay", "cwd": str(project), "hook_event_name": "PreToolUse",
+                           "tool_name": "Bash", "tool_input": {"command": "git status"}}).encode("utf-8")
+        genv = dict(e, CLAUDECODE="1", CLAUDE_PROJECT_DIR=str(project), MARKLOG=str(marklog))
+        out = G.run_guard_raw(G.LIVE_SCRIPTS, stdin, genv, cwd=root)
+        marks = log_lines(marklog)
+        if marks != ([want] if want else []) or out != (0, b"", b""):
+            bad.append(f"{name}: git names {want or 'no task repo'} ({truth}); guard.sh used {marks or 'none'}, "
+                       f"output {out}")
+        for passed in (None, cands["A"]):
+            cenv = dict(e)
+            if passed is not None:
+                cenv["LIGHT_HARNESS_GIT_COMMON"] = str(passed)
+            c = REAL_RUN([G.REAL_PY, "-c", LAYOUT_CHILD, str(G.LIVE_SCRIPTS), json.dumps([str(target)])], env=cenv,
+                         cwd=root, capture_output=True, encoding="utf-8", errors="replace")
+            assert c.returncode == 0, c.stderr
+            got = json.loads(c.stdout.strip().splitlines()[-1])[0]
+            g = got["git"]
+            expect = g if g is not None and (Path(g) / "light-harness").is_dir() else None
+            if got["active"] != expect and not same(got["active"], expect):
+                bad.append(f"{name} (LIGHT_HARNESS_GIT_COMMON={passed}): active() gave {got['active']}, git at "
+                           f"existing(target) gives {g}")
+    assert {"A", "sub", "B", "bare", None} <= seen, f"the layouts no longer exercise their cases: {seen}"
+    assert not bad, f"{len(bad)} of {len(layouts) * 3} checks differ from git:\n" + "\n".join(bad)
 
 
 IMPORT_CHILD = r'''
@@ -627,119 +898,6 @@ def test_ac5_q9_config_batch_equals_get(tmp_path, monkeypatch):
     # set_engineer clears both caches
     assert telemetry.set_engineer(bare, "Carol", repo_only=True) == ""
     assert telemetry.engineer(bare) == "Carol" and telemetry.engineer_scope(bare) == "this repo"
-
-
-# --- BR-5 [sweep] ---------------------------------------------------------------------------------------
-
-BR5_LOCATIONS = ["main", "task", "dotgit", "dotgit_state", "dotgit_worktree", "nested", "submodule", "broken",
-                 "empty_dotgit", "outside"]
-
-
-def br5_layout(root: Path) -> dict:
-    env = G.git_env(root)
-    (root / "gitconfig").write_text("[user]\n\tname = F\n\temail = f@x\n", encoding="utf-8")
-    m = root / "m"
-    m.mkdir(parents=True)
-    git_run("init", "-q", cwd=m, env=env)
-    (m / "a.py").write_text("x\n", encoding="utf-8")
-    git_run("add", "-A", cwd=m, env=env)
-    git_run("commit", "-qm", "i", cwd=m, env=env)
-    git_run("worktree", "add", "-q", str(m / ".tasks" / "t"), "-b", "task/t", cwd=m, env=env)
-    (m / ".git" / "light-harness").mkdir()
-    t = m / ".tasks" / "t"
-    git_run("init", "-q", str(t / "nested"), cwd=root, env=env)
-    (root / "gitdirs").mkdir()
-    git_run("init", "-q", "--separate-git-dir", str(root / "gitdirs" / "sub"), str(t / "sub"), cwd=root, env=env)
-    (t / "sub" / ".git").unlink()   # git marks it hidden on Windows, which can't be opened for writing
-    (t / "sub" / ".git").write_text("gitdir: " + os.path.relpath(root / "gitdirs" / "sub", t / "sub").replace("\\", "/")
-                                    + "\n", encoding="utf-8")
-    (t / "broken").mkdir()
-    (t / "broken" / ".git").write_text("garbage\n", encoding="utf-8")
-    (root / "empty" / ".git").mkdir(parents=True)
-    (root / "outside").mkdir()
-    other = root / "other"
-    other.mkdir()
-    git_run("init", "-q", cwd=other, env=env)
-    dirs = {"main": m, "task": t, "dotgit": m / ".git", "dotgit_state": m / ".git" / "light-harness",
-            "dotgit_worktree": m / ".git" / "worktrees" / "t", "nested": t / "nested", "submodule": t / "sub",
-            "broken": t / "broken", "empty_dotgit": root / "empty", "outside": root / "outside"}
-    for d in dirs.values():
-        (d / "x.py").write_text("x\n", encoding="utf-8")
-    return {"dirs": dirs, "other": other / ".git", "env": env}
-
-
-def git_common_at(p: Path, env: dict):
-    d = hook_guard.existing(p)
-    r = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=d, env=env, capture_output=True,
-                       encoding="utf-8", errors="replace")
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    q = Path(r.stdout.strip())
-    return (q if q.is_absolute() else d / q).resolve()
-
-
-def test_ac5_br5_sweep_common_dir(tmp_path, monkeypatch):
-    """AC-5 BR-5 [sweep]: whenever `common_from_env` takes the shortcut, its answer equals `git rev-parse
-    --git-common-dir` at that path. Full cross product: location {main checkout, task worktree, .git/,
-    .git/light-harness/, .git/worktrees/t/, a nested repo in the task folder, a submodule-style gitfile with a
-    relative gitdir, a broken gitfile, an empty .git folder, outside any repo} x {existing, missing file} x
-    passed value {correct (git's answer, or the nearest .git entry where git has none), another repo's, unset} x
-    env {none, GIT_DIR set} (120). The shortcut must be taken for main-checkout and task files with the correct
-    value, and never with the variable unset or GIT_DIR set."""
-    root = tmp_path.resolve()
-    lay = br5_layout(root)
-    isolate_env(monkeypatch, root)
-    combos = [(loc, exists, passed, genv) for loc in BR5_LOCATIONS for exists in (True, False)
-              for passed in ("correct", "other", "unset") for genv in ("none", "GIT_DIR")]
-    assert len(combos) == 120
-    bad, taken = [], 0
-    for loc, exists, passed, genv in combos:
-        d = lay["dirs"][loc]
-        p = d / ("x.py" if exists else "missing/zz.py")
-        clean = dict(lay["env"])
-        truth = git_common_at(p, clean)
-        value = {"correct": truth or (d / ".git"), "other": lay["other"], "unset": None}[passed]
-        monkeypatch.delenv("LIGHT_HARNESS_GIT_COMMON", raising=False)
-        monkeypatch.delenv("GIT_DIR", raising=False)
-        envd = dict(clean)
-        if value is not None:
-            monkeypatch.setenv("LIGHT_HARNESS_GIT_COMMON", str(value))
-        if genv == "GIT_DIR":
-            monkeypatch.setenv("GIT_DIR", str(lay["other"]))
-            envd["GIT_DIR"] = str(lay["other"])
-        got = hook_guard.common_from_env(p)
-        label = f"{loc} {'existing' if exists else 'missing'} passed={passed} env={genv}"
-        if got is None:
-            if loc in ("main", "task") and passed == "correct" and genv == "none":
-                bad.append(f"{label}: shortcut not taken")
-            continue
-        taken += 1
-        if passed == "unset" or genv == "GIT_DIR":
-            bad.append(f"{label}: shortcut taken ({got})")
-            continue
-        git_says = git_common_at(p, envd)
-        if git_says is None or not hook_guard.H.same_path(got, git_says):
-            bad.append(f"{label}: shortcut gave {got}, git gives {git_says}")
-    print(f"BR-5 sweep: shortcut taken in {taken} of {len(combos)} cases; {len(bad)} wrong")
-    assert not bad, f"{len(bad)} of {len(combos)} cases wrong:\n" + "\n".join(bad)
-
-
-def test_ac5_br5_walk_common_layouts(tmp_path):
-    """AC-5 BR-5: `walk_common` (no git) finds what git finds: a `.git` folder, a worktree's gitfile + commondir,
-    a submodule-style relative gitdir with no commondir; None for a broken gitfile; outside any repo it finds no
-    repo of its own."""
-    root = tmp_path.resolve()
-    lay = br5_layout(root)
-    for loc in ("main", "task", "nested", "submodule"):
-        for name in ("x.py", "missing/zz.py"):
-            p = lay["dirs"][loc] / name
-            got = hook_guard.walk_common(p)
-            want = git_common_at(p, lay["env"])
-            assert got is not None and hook_guard.H.same_path(got, want), (loc, name, got, want)
-    assert hook_guard.walk_common(lay["dirs"]["broken"] / "x.py") is None
-    outside = lay["dirs"]["outside"] / "x.py"
-    assert git_common_at(outside, lay["env"]) is None
-    assert hook_guard.walk_common(outside) is None
 
 
 def test_ac7_selftest_keeps_guard_checks():

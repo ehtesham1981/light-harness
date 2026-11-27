@@ -11,6 +11,13 @@ then
 on Windows (Git Bash: the `nt` table) and in WSL or Linux (the `posix` table). Each run rewrites only its own
 platform's table and keeps the other. Tests never read .light-harness-base/; they read the golden this writes.
 
+It also writes this platform's table of tests/golden/guard_sh_rv9_base.json: the base guard.sh outcome of every
+BR-1 [sweep] part (4) scenario (guard_sh_scenarios.scenarios_unencodable(), RV-9's class) as [exit code,
+permissionDecision or null, the first guard event's rule or null]. With `--rv9-only` it writes only that file,
+leaving guard_sh_base.json as it is:
+    python tests/gen_guard_sh_golden.py --rv9-only .light-harness-base/plugins/light-harness/scripts
+RV-9 golden shape: {"source", "<platform>": {"count", "sha256", "outcomes"}}.
+
 Golden shape: {"source", "<platform>": {"strings": [...], "br1": {"count", "sha256", "outcomes"},
 "br4": {"count", "sha256", "outcomes"}}}. An outcome is [exit code, stdout, stderr, events] with the three
 texts as indexes into "strings" (normalised by guard_sh_scenarios.normalise: fixture paths <F>, session <S>,
@@ -82,16 +89,47 @@ def write(dest: Path, golden: dict):
     dest.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
+def write_rv9(table: dict):
+    golden = json.loads(G.GOLDEN_RV9.read_text(encoding="utf-8")) if G.GOLDEN_RV9.exists() else {}
+    golden["source"] = SOURCE
+    golden[G.PLATFORM] = table
+    lines = ["{", f'"source": {json.dumps(golden["source"])},']
+    plats = [p for p in ("nt", "posix") if p in golden]
+    for pi, plat in enumerate(plats):
+        t = golden[plat]
+        lines.append(f'"{plat}": {{"count": {t["count"]}, "sha256": "{t["sha256"]}", "outcomes": [')
+        lines.append(",\n".join(json.dumps(o) for o in t["outcomes"]))
+        lines.append("]}" + ("," if pi < len(plats) - 1 else ""))
+    lines.append("}")
+    G.GOLDEN_RV9.parent.mkdir(parents=True, exist_ok=True)
+    G.GOLDEN_RV9.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    print(f"wrote the {G.PLATFORM} table to {G.GOLDEN_RV9}")
+
+
+def rv9_table(scripts_dir: Path, pool) -> dict:
+    scs = G.scenarios_unencodable()
+    res = pool.map(lambda f, sc: G.run_unencodable(scripts_dir, f, sc), scs)
+    return {"count": len(scs), "sha256": G.sha256(scs), "outcomes": res}
+
+
 def main(argv):
-    if len(argv) != 2:
-        sys.exit("usage: gen_guard_sh_golden.py <scripts dir holding the base-commit guard.sh and hook_guard.py>")
-    scripts_dir = Path(argv[1]).resolve()
+    rv9_only = "--rv9-only" in argv[1:]
+    args = [a for a in argv[1:] if a != "--rv9-only"]
+    if len(args) != 1:
+        sys.exit("usage: gen_guard_sh_golden.py [--rv9-only] <scripts dir holding the base-commit guard.sh and "
+                 "hook_guard.py>")
+    scripts_dir = Path(args[0]).resolve()
     check_base(scripts_dir)
     tmp = Path(tempfile.mkdtemp(prefix="gshgold"))
     try:
         t0 = time.time()
         fx = G.fixture(tmp / "fx")
         pool = G.Pool(fx["root"], tmp / "pool")
+        rv9 = rv9_table(scripts_dir, pool)
+        print(f"BR-1 part (4): {rv9['count']} unencodable-path scenarios in {time.time() - t0:.0f}s")
+        if rv9_only:
+            write_rv9(rv9)
+            return
         strings = Strings()
         br1 = G.br1_scenarios()
         res1 = pool.map(lambda f, sc: G.run_br1(scripts_dir, f, sc), br1)
@@ -105,6 +143,7 @@ def main(argv):
         table["strings"] = strings.items
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    write_rv9(rv9)
     golden = json.loads(G.GOLDEN.read_text(encoding="utf-8")) if G.GOLDEN.exists() else {}
     golden["source"] = SOURCE
     golden[G.PLATFORM] = table
