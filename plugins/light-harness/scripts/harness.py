@@ -3110,9 +3110,10 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
     rg_ok, rg_msg, rg_state = redgate_state()
     (info if rg_ok else fails).append(f"Red gate: {rg_msg}")
 
-    appr = effective_approved_row()
+    appr = latest("harness: plan-approved")  # the code baseline for the scans below, even after config amendments
+    cfg_row = effective_approved_row()        # the config to compare with: the latest amendment, else the approval
     if ok and appr:
-        approved_cfg = _json_or_raw(state_file(appr[1], "config.json"))
+        approved_cfg = _json_or_raw(state_file(cfg_row[1], "config.json"))
         live_cfg = _json_or_raw(CONFIG.read_text(encoding=UTF8)) if CONFIG.exists() else None
         if approved_cfg != live_cfg:
             fails.append(f"Anti-gaming: {LIVE}/config.json changed after the plan was approved")

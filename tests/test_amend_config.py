@@ -12,6 +12,7 @@ and the contract are byte-identical before and after.
 from __future__ import annotations
 
 import json
+import subprocess
 import re
 import sys
 from pathlib import Path
@@ -553,3 +554,24 @@ def test_ac7a_command_event_human_without_name(make):
     assert e.get("actor") == "human" and e.get("ok") is True, e
     assert name not in lab.events.read_text(encoding="utf-8")
     assert "Zelda" not in line
+
+
+# --- review CR-7 (Codex P1): an amendment must not move the code baseline -----------------------------------
+def test_br6_amendment_keeps_plan_approved_code_baseline(make):
+    """BR-6 BR-7 (review CR-7): an amendment changes only the config verify compares with. The anti-gaming and
+    anti-drift scans still diff against the plan-approved snapshot, so an out-of-scope file committed before the
+    amendment still fails verify afterwards, and committing it afterwards fails too."""
+    lab = make("green")
+    (lab.task / "outside_scope.txt").write_text("not in scope\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(lab.task), check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                    "commit", "-qm", "out of scope"], cwd=str(lab.task), check=True, capture_output=True)
+    rc, out = lab.drive("verify")
+    assert rc == 1 and "outside_scope.txt" in out, out
+    lab.change_cfg(parallel=2)
+    rc, out = lab.amend()
+    assert rc == 0, out
+    rc, out = lab.drive("verify")
+    assert rc == 1, out
+    assert "Anti-drift" in out and "outside_scope.txt" in out, out
+    assert CHANGED_MSG not in out, out
