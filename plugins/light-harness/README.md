@@ -20,6 +20,8 @@ Parallel tasks share the machine (2.0):
 - Each run gets its own empty TEMP folder (`<drive>:\lh-tmp\…` on Windows, `$TMPDIR/lh/…` elsewhere), removed afterwards (one user per machine in this version; see the README).
 Verdict reuse (2.1):
 - `verdict pass` reuses the stored pass when its key is unchanged and the pass is anchored in the audit trail, and runs fresh otherwise; `verdict pass --fresh` forces a run.
+Guard speed (2.1.1):
+- The session start records the Python interpreter once, so the guard and the CLI skip the version probe on every call; a plain `Read` is decided in the shell without starting Python. Guard decisions are unchanged.
 CLI (on PATH in Claude Code sessions): `light-harness`. KPIs: `light-harness metrics`, including each task's time split into agent, human and idle time and its test-suite cost: suite runs, cache hit rate and suite minutes (engineer KPIs are opt-in, under a nickname).
 
 Full documentation: see the repository README.
