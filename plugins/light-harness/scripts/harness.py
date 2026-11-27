@@ -3913,6 +3913,33 @@ def cmd_unlock_tests(args):
     print("✓ Tests unlocked. The test-author may revise tests; the red gate must be passed again.")
 
 
+TIMEOUT_RAISE_CAP = 3  # amend-config may raise a timeout up to this multiple of its plan-approved value
+AMEND_EVENT = "harness: config-amended"
+
+
+def classify_config_change(approved: dict, plan_approved: dict, live: dict) -> dict:
+    """Classify the difference between the effective approved config and the live one for `amend-config`.
+    Returns {"ok": bool, "changes": [str], "raised": [str], "refused": [str]}. STUB (issue #50)."""
+    raise NotImplementedError("classify_config_change")
+
+
+def effective_approved_row():
+    """The audit row whose config.json verify compares with: the newest config-amended event newer than the
+    current plan-approved event, else plan-approved; None when not approved. STUB (issue #50)."""
+    return latest("harness: plan-approved")
+
+
+def parallel_runner_warning(cfg: dict) -> str | None:
+    """A warning when test_cmd's runner runs test files in parallel by default and has no `{concurrency}`.
+    STUB (issue #50)."""
+    return None
+
+
+def cmd_amend_config(args):
+    require_human("amend-config")
+    die("amend-config is not implemented yet")
+
+
 def cmd_redgate(args):
     cfg = load_config()
     text = contract()
@@ -4150,9 +4177,9 @@ def cmd_telemetry(args):
 
 
 # Commands whose outcome is a telemetry event: gates, stage moves and task lifecycle
-TRACKED = {"check", "set-status", "approve", "unlock-tests", "redgate", "verify", "verdict",
+TRACKED = {"check", "set-status", "approve", "unlock-tests", "amend-config", "redgate", "verify", "verdict",
            "start-task", "finish-task", "telemetry", "probe"}
-HUMAN_ONLY = {"approve", "unlock-tests", "telemetry"}
+HUMAN_ONLY = {"approve", "unlock-tests", "amend-config", "telemetry"}
 
 
 def run_tracked(args):
@@ -4202,6 +4229,8 @@ def main():
     s.add_argument("--name", required=True); s.set_defaults(f=cmd_approve)
     s = sub.add_parser("unlock-tests", help="HUMAN ONLY: unlock red-gate tests for revision")
     s.add_argument("--name", required=True); s.add_argument("--reason", required=True); s.set_defaults(f=cmd_unlock_tests)
+    s = sub.add_parser("amend-config", help="HUMAN ONLY: record a concurrency/timeout change to the approved config")
+    s.add_argument("--name", required=True); s.add_argument("--reason", required=True); s.set_defaults(f=cmd_amend_config)
     s = sub.add_parser("redgate", help="run the red gate and lock the tests")
     s.add_argument("--allow-passing", metavar="REASON", default=""); s.set_defaults(f=cmd_redgate)
     s = sub.add_parser("verify", help="green gate + anti-gaming + anti-drift + traceability")
