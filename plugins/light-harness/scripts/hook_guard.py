@@ -136,6 +136,9 @@ BLOCK_BASH = [  # (pattern, why, only if this also matches, rule id for telemetr
      r"|\bprobe\b[^\n;&|]*?(?:^|\s)['\"\\]*d[\\'\"]*r[\\'\"]*o[\\'\"]*p['\"]*(?=\s|$)",
      "approve, unlock-tests, forget, uninstall, telemetry opt-in/opt-out and probe drop are human-only. Ask the "
      "human to run it in their own terminal.", r"light-harness|harness\.py", "human-only"),
+    (r"\bamend-config\b",
+     "amend-config is human-only: it records a config change to the approved plan. Ask the human to edit the "
+     "config and run it in their own terminal.", r"light-harness|harness\.py", "human-only"),
     (r"\bLIGHT_HARNESS_(OTLP\w*|TELEMETRY|SESSION_ID|HUMAN_GAP_CAP|GIT_COMMON|PY)=|(^|[\s;&|(])(unset|-u)\s+[^\n;&|]*\bLIGHT_HARNESS_|"
      + GIT + r"config\b[^\n;&|]*\b(?i:lightharness)\.",
      "telemetry settings and the engineer's opt-in belong to the human. Ask them to change it.", None,

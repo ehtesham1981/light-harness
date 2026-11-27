@@ -342,7 +342,7 @@ def _interval(e, start_key, len_key):
 
 
 # A person's decisions, not machine work: keep in step with HUMAN_ONLY (and `probe drop`) in harness.py
-HUMAN_COMMANDS = {"approve", "unlock-tests", "telemetry"}
+HUMAN_COMMANDS = {"approve", "unlock-tests", "amend-config", "telemetry"}
 
 
 def _background(ev: list[dict]) -> list:

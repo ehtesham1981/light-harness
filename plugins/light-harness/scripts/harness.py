@@ -3110,9 +3110,10 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
     rg_ok, rg_msg, rg_state = redgate_state()
     (info if rg_ok else fails).append(f"Red gate: {rg_msg}")
 
-    appr = latest("harness: plan-approved")
+    appr = latest("harness: plan-approved")  # the code baseline for the scans below, even after config amendments
+    cfg_row = effective_approved_row()        # the config to compare with: the latest amendment, else the approval
     if ok and appr:
-        approved_cfg = _json_or_raw(state_file(appr[1], "config.json"))
+        approved_cfg = _json_or_raw(state_file(cfg_row[1], "config.json"))
         live_cfg = _json_or_raw(CONFIG.read_text(encoding=UTF8)) if CONFIG.exists() else None
         if approved_cfg != live_cfg:
             fails.append(f"Anti-gaming: {LIVE}/config.json changed after the plan was approved")
@@ -3306,6 +3307,12 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
     # 6. over-fit: a rework regression test whose inputs all come from its issue's text
     warns += overfit_warnings(issue_rows(text), texts)
 
+    if ok:
+        warns += [f"Config amended after approval: {r} raised (reviewer: check probes and tests that rely on "
+                  "the timeout)" for r in raised_timeouts()]
+    runner_warn = parallel_runner_warning(cfg)
+    if runner_warn:
+        warns.append(runner_warn)
     passed = not fails
     TEL.update(failures=len(fails), warnings=len(warns),
                fail_kinds=dict(collections.Counter(f.split(":", 1)[0] for f in fails)))
@@ -3331,6 +3338,7 @@ def ensure_baseline():
     cfg = load_config()
     if baseline_tests() is not None or not test_files(cfg):
         return
+    print_runner_warning(cfg)
     rc, out, results = run_suite(cfg, "baseline")
     if not results:
         print(f"⚠ Couldn't read per-test results from the existing suite (exit {rc}); no baseline "
@@ -3816,12 +3824,16 @@ def cmd_status(args):
     if base:
         print(f"Base:      {snap_of(base[1])[:8]} {base[2].removeprefix('harness: ')}")
     swept = [f"{b} [{s['kind']}]" for b, s in rule_specs(text).items() if s["kind"] in SPACE_KINDS]
+    amended = effective_approved_row() if ok else None
+    amended = amended if amended and amended[2].startswith(AMEND_EVENT) else None
     try:
         cache = reuse_report(load_config())
     except Exception as e:  # status must never fail on this line
         cache = f"unknown ({e})"
     print(f"Status:    {st}\nPlan hash: {plan_hash(text)}\nApproval:  {'✓ ' if ok else '✗ '}{msg}\n"
-          f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\nVerify:    {cache}\n"
+          f"Red gate:  {'✓ ' if rg_ok else '✗ '}{rg_msg}\n"
+          + (f"Config:    {amended[2].removeprefix('harness: ')}\n" if amended else "")
+          + f"Verify:    {cache}\n"
           f"ACs:       {', '.join(acs(text)) or 'none'}\n"
           + (f"Sweeps:    {', '.join(swept)} (each needs an independent sweep; up to "
              f"{parallel_limit(load_config())} sweepers at once)\n" if swept else "")
@@ -3832,6 +3844,13 @@ def cmd_check(args):
     text = contract()
     probs = check_plan(text) if args.stage == "plan" else check_init(text)
     hints = rule_hints(text)
+    if args.stage == "plan":
+        try:
+            runner_warn = parallel_runner_warning(load_config())
+        except (OSError, ValueError, TypeError):  # a broken config is the plan gate's business, not this hint's
+            runner_warn = None
+        if runner_warn:
+            hints.append(runner_warn)
     TEL.update(problems=len(probs), hints=len(hints))
     if probs:
         TEL["reason"] = probs[0][:200]
@@ -3913,6 +3932,302 @@ def cmd_unlock_tests(args):
     print("✓ Tests unlocked. The test-author may revise tests; the red gate must be passed again.")
 
 
+TIMEOUT_RAISE_CAP = 3  # amend-config may raise a timeout up to this multiple of its plan-approved value
+AMEND_EVENT = "harness: config-amended"
+CONC = "{concurrency}"
+TIMEOUT_KEYS = ("suite_timeout", "probe_timeout")
+_ABSENT = object()
+
+
+def _argv_name(item) -> str:
+    """An argv item's program name: its last path part, without a launcher suffix (.exe, .cmd, .js, .mjs)."""
+    name = re.split(r"[\\/]", str(item))[-1]
+    return re.sub(r"\.(exe|cmd|js|mjs|cjs)$", "", name, flags=re.I)
+
+
+def test_runner(cmd: list) -> tuple[str | None, int | None]:
+    """The test runner `cmd` starts, and the index of its marker item (the item concurrency arguments follow):
+    ("node", index of `--test`) when cmd[0] is node and `--test` comes before the first non-option item;
+    ("pytest", index of `pytest`/`py.test` or of `pytest` in `-m pytest`); ("jest"|"vitest", index).
+    (None, None) for anything else, including npm-script wrappers."""
+    items = [str(x) for x in cmd]
+    if items and _argv_name(items[0]).lower() == "node":
+        first = next((i for i in range(1, len(items)) if not items[i].startswith("-")), len(items))
+        if "--test" in items[1:first]:
+            return "node", items.index("--test", 1)
+        return None, None
+    for i, x in enumerate(items):
+        if _argv_name(x).lower() in ("pytest", "py.test") or (x == "pytest" and i and items[i - 1] == "-m"):
+            return "pytest", i
+    for i, x in enumerate(items):
+        if _argv_name(x) in ("jest", "vitest"):
+            return _argv_name(x), i
+    return None, None
+
+
+def _conc_value_ok(runner: str, v: str) -> bool:
+    if v == CONC:
+        return True
+    if runner == "node":
+        return bool(re.fullmatch(r"[1-9][0-9]*", v))
+    if runner == "pytest":
+        return bool(re.fullmatch(r"0|[1-9][0-9]*", v)) or v in ("auto", "logical")
+    return bool(re.fullmatch(r"[1-9][0-9]*%?", v))  # jest, vitest
+
+
+def _conc_unit(runner: str, items: list[str], i: int) -> int:
+    """How many items starting at `i` form one concurrency argument of `runner` with an allowed value (0: none)."""
+    if i >= len(items):
+        return 0
+    t = items[i]
+    nxt = items[i + 1] if i + 1 < len(items) else None
+    if runner == "node":
+        flags_sep, flags_eq = (), ("--test-concurrency=",)
+    elif runner == "pytest":
+        flags_sep, flags_eq = ("-n", "--numprocesses"), ("--numprocesses=", "-n=")
+    else:
+        flags_sep, flags_eq = ("--maxWorkers",), ("--maxWorkers=",)
+    if t in flags_sep:
+        return 2 if nxt is not None and _conc_value_ok(runner, nxt) else 0
+    for f in flags_eq:
+        if t.startswith(f):
+            return 1 if _conc_value_ok(runner, t[len(f):]) else 0
+    if runner == "pytest" and t.startswith("-n") and len(t) > 2 and not t.startswith("-n="):
+        return 1 if _conc_value_ok(runner, t[2:]) else 0
+    return 0
+
+
+def strip_concurrency(cmd: list) -> tuple[list, list]:
+    """(cmd without its runner's concurrency arguments, the removed items). Only arguments in an allowed
+    position are removed: one after another right after the runner's marker item, or (pytest, jest, vitest,
+    with no `--` in cmd) the last argument of cmd. Anything else stays, so it shows up as a difference."""
+    items = [str(x) for x in cmd]
+    runner, marker = test_runner(items)
+    if runner is None:
+        return list(cmd), []
+    drop: set[int] = set()
+    i = marker + 1
+    while (k := _conc_unit(runner, items, i)):
+        drop.update(range(i, i + k))
+        i += k
+    if runner != "node" and "--" not in items and len(items) - 1 not in drop:
+        n = len(items)
+        if n - 2 > marker and _conc_unit(runner, items, n - 2) == 2:
+            drop.update((n - 2, n - 1))
+        elif n - 1 > marker and _conc_unit(runner, items, n - 1) == 1:
+            drop.add(n - 1)
+    return [x for j, x in enumerate(cmd) if j not in drop], [items[j] for j in sorted(drop)]
+
+
+def _pos_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _same(a, b) -> bool:
+    """Equal as JSON values (1 and true, or 600 and 600.0, are different config values)."""
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def classify_config_change(approved: dict, plan_approved: dict, live: dict) -> dict:
+    """The difference between the effective approved config and the live one, for `amend-config` (BR-4).
+    Allowed: the test runner's concurrency arguments in test_cmd (position and value rules in
+    strip_concurrency), `parallel` (1..4 or removed), and the two timeouts (lowered freely; raised up to
+    TIMEOUT_RAISE_CAP x the plan-approved value). Anything else is refused, naming the field.
+    Returns {"ok", "changes", "raised", "refused"}."""
+    changes, raised, refused = [], [], []
+    for key in sorted(set(approved) | set(live)):
+        a, l = approved.get(key, _ABSENT), live.get(key, _ABSENT)
+        if key == "test_cmd":
+            a = DEFAULT_CONFIG["test_cmd"] if a is _ABSENT else a
+            l = DEFAULT_CONFIG["test_cmd"] if l is _ABSENT else l
+            if _same(a, l):
+                continue
+            if isinstance(a, list) and isinstance(l, list):
+                rest_a, gone = strip_concurrency(a)
+                rest_l, new = strip_concurrency(l)
+                if _same(rest_a, rest_l):
+                    changes.append("test_cmd " + " ".join([f"-{x}" for x in gone] + [f"+{x}" for x in new]))
+                    continue
+            refused.append("test_cmd: only the test runner's concurrency argument may change (e.g. "
+                           "--test-concurrency=…, -n …, --maxWorkers=…, right after the runner)")
+            continue
+        if a is not _ABSENT and l is not _ABSENT and _same(a, l):
+            continue
+        if key == "parallel":
+            if l is not _ABSENT and not (_pos_int(l) and l <= PARALLEL_MAX):
+                refused.append(f"parallel: {json.dumps(l)} is not a whole number from 1 to {PARALLEL_MAX}")
+            else:
+                old = "(absent)" if a is _ABSENT else json.dumps(a)
+                changes.append(f"parallel {old} → " + ("(absent: probes one at a time)" if l is _ABSENT else str(l)))
+        elif key in TIMEOUT_KEYS:
+            default = DEFAULT_CONFIG[key]
+            if l is not _ABSENT and not _pos_int(l):
+                refused.append(f"{key}: {json.dumps(l)} is not a positive whole number of seconds")
+                continue
+            new_v = default if l is _ABSENT else l
+            pv = plan_approved.get(key, default) if isinstance(plan_approved, dict) else default
+            plan_v = pv if _pos_int(pv) else default
+            if new_v > TIMEOUT_RAISE_CAP * plan_v:
+                refused.append(f"{key} {plan_v} → {new_v} raises it past {TIMEOUT_RAISE_CAP}x its approved value; "
+                               "that needs re-approval")
+                continue
+            av = default if a is _ABSENT else a
+            changes.append(f"{key} {av if _pos_int(av) else default} → {new_v}")
+            if new_v > plan_v:
+                raised.append(f"{key} {plan_v} → {new_v}")
+        else:
+            refused.append(f"{key} changed: only concurrency, parallel and timeouts can be amended")
+    return {"ok": not refused, "changes": changes, "raised": raised, "refused": refused}
+
+
+def effective_approved_row():
+    """The audit row whose config.json verify compares with (BR-2): the newest config-amended event newer than
+    the current plan-approved event, else plan-approved; None when not approved."""
+    appr = latest("harness: plan-approved")
+    if not appr:
+        return None
+    for row in harness_log():
+        if row[0] >= appr[0]:
+            break
+        if row[2].startswith(AMEND_EVENT):
+            return row
+    return appr
+
+
+def _config_at(sha: str):
+    """The config.json object recorded at an audit event, or None if it's missing or not a JSON object."""
+    raw = state_file(sha, "config.json")
+    try:
+        v = json.loads(raw) if raw.strip() else None
+    except ValueError:
+        return None
+    return v if isinstance(v, dict) else None
+
+
+def raised_timeouts() -> list[str]:
+    """Timeouts the latest config amendment raised above their plan-approved values (BR-9)."""
+    appr, eff = latest("harness: plan-approved"), effective_approved_row()
+    if not appr or not eff or eff[0] == appr[0]:
+        return []
+    plan, amended = _config_at(appr[1]) or {}, _config_at(eff[1]) or {}
+    out = []
+    for key in TIMEOUT_KEYS:
+        p, n = plan.get(key, DEFAULT_CONFIG[key]), amended.get(key, DEFAULT_CONFIG[key])
+        p = p if _pos_int(p) else DEFAULT_CONFIG[key]
+        if _pos_int(n) and n > p:
+            out.append(f"{key} {p} → {n}")
+    return out
+
+
+def parallel_runner_warning(cfg: dict) -> str | None:
+    """A warning when test_cmd's runner runs test files in parallel by default and test_cmd has no
+    `{concurrency}` (BR-10); None when it has one, runs serially, or isn't a known runner."""
+    cmd = cfg.get("test_cmd", DEFAULT_CONFIG["test_cmd"])
+    if not isinstance(cmd, list):
+        return None
+    items = [str(x) for x in cmd]
+    if any(CONC in x for x in items):
+        return None
+    runner, _ = test_runner(items)
+
+    def value_of(seps, eqs, short=None):
+        for i, t in enumerate(items):
+            if t in seps:
+                return items[i + 1] if i + 1 < len(items) else ""
+            for f in eqs:
+                if t.startswith(f):
+                    return t[len(f):]
+            if short and t.startswith(short) and len(t) > len(short):
+                return t[len(short):]
+        return None
+
+    if runner == "node":
+        if value_of((), ("--test-concurrency=",)) == "1":
+            return None
+        form = "--test-concurrency={concurrency}"
+    elif runner == "pytest":
+        v = value_of(("-n", "--numprocesses"), ("--numprocesses=", "-n="), "-n")
+        if v is None or v in ("0", "1"):
+            return None
+        form = "-n {concurrency}"
+    elif runner in ("jest", "vitest"):
+        serial = {"--runInBand", "-i"} if runner == "jest" else {"--no-file-parallelism"}
+        if serial & set(items) or value_of(("--maxWorkers",) + (("-w",) if runner == "jest" else ()),
+                                           ("--maxWorkers=",)) == "1":
+            return None
+        form = "--maxWorkers={concurrency}"
+    else:
+        return None
+    return (f"test_cmd runs {runner}, which runs test files in parallel, and has no {CONC}: "
+            f"`lightharness.slots` limits how many suite runs share the machine, not how many test files "
+            f"run at once inside one run. Add `{form}` to test_cmd to cap it.")
+
+
+def print_runner_warning(cfg: dict) -> None:
+    w = parallel_runner_warning(cfg)
+    if w:
+        print(f"⚠ {w}")
+
+
+def cmd_amend_config(args):
+    require_human("amend-config")
+    for label, v in (("--name", args.name), ("--reason", args.reason)):
+        if not v.strip():
+            die(f"{label} must not be empty")
+        if re.search(r"[\r\n]|<!--|-->", v):
+            die(f"{label} must be one line, without `<!--` or `-->`")
+    text = contract()
+    st = get_status(text)
+    if st == "Plan":
+        die("status is Plan: the config can still be edited there. Edit config.json, then run `approve` again.")
+    if st not in ("Build", "Review", "Rework"):
+        die(f"status is {st}: amend-config works in Build, Review and Rework, after the plan is approved")
+    ok, msg, _ = approval_state(text)
+    if not ok:
+        die(f"{msg}; amend-config needs a valid plan approval")
+    if not CONFIG.exists():
+        die(f"{LIVE}/config.json is missing")
+    raw = CONFIG.read_text(encoding=UTF8)
+    try:
+        live = json.loads(raw)
+    except ValueError:
+        die(f"{LIVE}/config.json is not valid JSON")
+    if not isinstance(live, dict):
+        die(f"{LIVE}/config.json is not a JSON object")
+    eff, appr = effective_approved_row(), latest("harness: plan-approved")
+    approved = _config_at(eff[1])
+    if approved is None:
+        die("the approved snapshot has no config.json object to compare with; re-approve the plan")
+    plan = _config_at(appr[1]) or {}
+    if _same(approved, live):
+        die("nothing to amend: config.json is the same as the approved one")
+    res = classify_config_change(approved, plan, live)
+    if not res["ok"]:
+        die("can't amend; these changes need re-approval (set-status Plan, then approve):\n  - "
+            + "\n  - ".join(res["refused"]))
+    summary = "; ".join(res["changes"])
+    print(f"Config changes since approval: {summary}")
+    if res["raised"]:
+        print("⚠ Raised timeouts (the reviewer is told): " + ", ".join(res["raised"]))
+    if input(f'Type AMEND to record this as "{args.name}": ').strip() != "AMEND":
+        die("not amended")
+    if not CONFIG.exists() or CONFIG.read_text(encoding=UTF8) != raw:
+        die(f"{LIVE}/config.json changed while waiting; run amend-config again")
+    when = now()
+    meta = {"name": args.name, "reason": args.reason, "when": when, "changes": res["changes"],
+            "raised_timeouts": res["raised"]}
+    note = block("approval").rstrip()
+    set_block("approval", note + f"\n\n**Config amended** by {args.name} at {when}: {summary} — {args.reason}")
+    try:
+        record(f"{AMEND_EVENT} by {args.name}: {summary} — {args.reason}",
+               {"config.json": raw, "config-amend.json": json.dumps(meta, indent=2) + "\n"})
+    except BaseException:
+        set_block("approval", note)  # no audit event, so no note in the contract either
+        raise
+    TEL.update(changes=len(res["changes"]), raised=len(res["raised"]))
+    print("✓ Config amended. The plan approval and the red gate still hold; run `verify`.")
+
+
 def cmd_redgate(args):
     cfg = load_config()
     text = contract()
@@ -3942,6 +4257,7 @@ def cmd_redgate(args):
             + ", ".join(f"{b} [{specs[b]['kind']}]" for b in unswept)
             + ". Write the sweep from the §8.4 entry and tag it with `BR-n [sweep]` in its docstring or title.")
     preserve = [b for b, s in specs.items() if s["kind"] == "Preservation"]
+    print_runner_warning(cfg)
     rc, out, results = run_suite(cfg, "redgate")
     if rc == 0:
         die("tests PASS before implementation — they don't prove anything yet. "
@@ -4150,9 +4466,9 @@ def cmd_telemetry(args):
 
 
 # Commands whose outcome is a telemetry event: gates, stage moves and task lifecycle
-TRACKED = {"check", "set-status", "approve", "unlock-tests", "redgate", "verify", "verdict",
+TRACKED = {"check", "set-status", "approve", "unlock-tests", "amend-config", "redgate", "verify", "verdict",
            "start-task", "finish-task", "telemetry", "probe"}
-HUMAN_ONLY = {"approve", "unlock-tests", "telemetry"}
+HUMAN_ONLY = {"approve", "unlock-tests", "amend-config", "telemetry"}
 
 
 def run_tracked(args):
@@ -4202,6 +4518,8 @@ def main():
     s.add_argument("--name", required=True); s.set_defaults(f=cmd_approve)
     s = sub.add_parser("unlock-tests", help="HUMAN ONLY: unlock red-gate tests for revision")
     s.add_argument("--name", required=True); s.add_argument("--reason", required=True); s.set_defaults(f=cmd_unlock_tests)
+    s = sub.add_parser("amend-config", help="HUMAN ONLY: record a concurrency/timeout change to the approved config")
+    s.add_argument("--name", required=True); s.add_argument("--reason", required=True); s.set_defaults(f=cmd_amend_config)
     s = sub.add_parser("redgate", help="run the red gate and lock the tests")
     s.add_argument("--allow-passing", metavar="REASON", default=""); s.set_defaults(f=cmd_redgate)
     s = sub.add_parser("verify", help="green gate + anti-gaming + anti-drift + traceability")

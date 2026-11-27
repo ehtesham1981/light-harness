@@ -170,6 +170,7 @@ Run these in your own terminal, in the project's main folder, as `python3 "<plug
 ```bash
 approve --task <name> --name "Full Name"                        # approve the plan
 unlock-tests --task <name> --name "Full Name" --reason "..."    # let tests be revised after the red gate
+amend-config --task <name> --name "Full Name" --reason "..."    # record a concurrency/timeout change to the approved config
 forget <name>                                                   # delete a finished task's contract and audit trail
 uninstall [--dry-run] [--force]                                 # remove every trace of Light Harness from this repo
 telemetry opt-in --as "<nickname>" [--repo]                     # attribute your harness events to a nickname you choose
@@ -261,6 +262,13 @@ Telemetry never changes a gate's outcome. If an event can't be written or sent, 
 - **Review speed:** `parallel` (default 3, 1 to 4) is how many sweeper subagents and saved probes run at once. Without the key (configs approved before 1.8), probes run one at a time. `probe_timeout` (default 600) is how many seconds a saved probe may run before it counts as broken. Set them before approval, like the rest of the config.
 - **Suite timeout:** `suite_timeout` (default 3600) is how many seconds a suite run may take. Past it, the harness kills the suite's whole process tree, releases the task's run lock and its run slot, puts the base copies back, and fails the gate with `suite timed out after N s` and exit code 124. That applies to `redgate`, `verify`, `set-status Review`, `verdict pass` and the baseline run by `set-status Build`. A saved probe that runs past `probe_timeout` also has its whole tree killed.
 - **Worker count:** put `{concurrency}` in an argument of `test_cmd` and the harness replaces it with `max(1, cores ÷ slots)` for each run, e.g. `"test_cmd": ["node", "--test", "--test-concurrency={concurrency}"]`. Without the placeholder, `test_cmd` runs unchanged.
+- **Slots vs `{concurrency}`:** `lightharness.slots` limits how many suite runs share the machine at once; it does not limit how many test files one run starts. Only `{concurrency}` in `test_cmd` does that. Without it, `node --test`, jest and vitest run as many files at once as the machine has cores, and so does `pytest -n auto`, whatever slots is set to, so two suites at once can overload the machine. `redgate`, `verify`, the Build baseline and `check plan` warn when `test_cmd` uses one of these runners with no `{concurrency}` (the warning never fails a gate). The explorer suggests it while planning, and the next task starts from the finished task's config.
+- **Changing concurrency or timeouts after approval:** the config is frozen at approval, and `verify` fails if it changes. For changes that only affect how the suite runs, a human can edit `.tasks/<name>/.light-harness/config.json` and run the human-only `amend-config --task <name> --name "Full Name" --reason "..."` in Build, Review or Rework, with no re-approval and no new red gate. It accepts only:
+  - the runner's concurrency argument in `test_cmd`, in either direction: node `--test-concurrency=N`, pytest `-n N` / `--numprocesses N` (`auto`, `logical`), jest and vitest `--maxWorkers=N` (or `{concurrency}` for N). It must sit right after the runner (`--test`, `pytest`, `jest`, `vitest`) or, for pytest, jest and vitest, be the last argument. jest's `-w` and npm-script wrappers (`npm test -- …`) aren't recognised;
+  - `parallel` (1 to 4);
+  - `suite_timeout` and `probe_timeout`: lowered freely, raised up to 3× the value approved with the plan. `verify` lists every raised timeout so the reviewer checks probes and tests that rely on it.
+
+  Anything else (other `test_cmd` arguments such as filters or paths, `test_globs`, `protected_globs`, `red_exit_codes`, `junit_arg`, reporters) is refused with the field named, and needs `set-status Plan` and a new approval. The amendment is recorded in the audit trail (`config-amended by <name>: <changes> — <reason>`, with the new config) and in the contract's approval block; `verify` then compares the config with it. A new `approve` replaces earlier amendments.
 
 ### Sharing the machine between parallel tasks
 
