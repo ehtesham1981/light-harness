@@ -8,6 +8,7 @@ Environment variables go through Python env dicts, never a shell command line (R
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -269,10 +270,12 @@ def test_ac1_br1_sweep_unencodable_paths(tmp_path_factory):
 
 BR2_TOOLS = ["Read", "Edit", "Bash", "Glob"]
 BR2_TARGETS = ["task_file", "task_env", "notask", "outside"]
-# not_executable, unreadable and py_readonly need POSIX file modes (Git Bash doesn't follow chmod for them)
+# not_executable, unreadable and py_readonly need POSIX file modes (Git Bash doesn't follow chmod for them).
+# unreadable also needs a non-root user: root reads a mode-000 file, so the record is simply usable.
+_ROOT = G.PLATFORM == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0
 BR2_STATES = (["usable", "deleted"] + (["not_executable"] if G.PLATFORM == "posix" else []) +
               ["stub_exit_1", "stub_exit_127", "stub_exit_3", "other_os", "not_recorded", "empty", "crlf", "modified"] +
-              (["unreadable", "py_readonly"] if G.PLATFORM == "posix" else []) +
+              ([] if G.PLATFORM != "posix" else ["py_readonly"] if _ROOT else ["unreadable", "py_readonly"]) +
               ["stub_stdout_exit1", "stub_judge_exit1", "stub_killed"])
 BR2_PATHS = ["py39", "old_only", "none"]
 OTHER_OS = "/usr/bin/python3" if G.PLATFORM == "nt" else "C:\\Python39\\python.exe"
@@ -392,8 +395,9 @@ def test_ac2_br2_sweep_fail_closed(tmp_path_factory):
     pool = make_pool(tmp_path_factory, "br2pool")
     jobs = [(tool, target, state, path) for tool in BR2_TOOLS for target in BR2_TARGETS for state in BR2_STATES
             for path in BR2_PATHS]
-    assert len(BR2_STATES) == (16 if G.PLATFORM == "posix" else 13)
-    assert len(jobs) == (768 if G.PLATFORM == "posix" else 624)
+    states = (16 - _ROOT) if G.PLATFORM == "posix" else 13
+    assert len(BR2_STATES) == states
+    assert len(jobs) == states * len(BR2_TOOLS) * len(BR2_TARGETS) * len(BR2_PATHS)  # 768 posix, 624 nt
 
     def run(fx, job):
         tool, target, state, path = job
