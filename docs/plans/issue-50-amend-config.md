@@ -77,6 +77,9 @@ Branch: `algomade/happy-planck-um7j8g` (from `main` @ 195dec5). No version bump 
   via `_json_or_raw`) with the effective approved config (BR-2). A config identical to the latest amendment
   passes; one that differs from it fails with the existing message. With no amendment, behaviour is exactly
   as at base.
+- **BR-6a Only the config reference moves.** An amendment changes only the config verify compares with. The
+  anti-gaming, anti-drift and agent-permission scans and the verify reuse key keep using the `plan-approved`
+  snapshot (review CR-7).
 - **BR-7 Red gate and approval untouched.** After `amend-config`, `approval_state` and `redgate_state`
   return what they returned before (no re-approval, no new red gate). `verdict pass` works as before.
 - **BR-8 Cache.** The verify reuse key already hashes the config, so a stored pass from before the amendment

@@ -560,7 +560,7 @@ def test_ac7a_command_event_human_without_name(make):
 def test_br6_amendment_keeps_plan_approved_code_baseline(make):
     """BR-6 BR-7 (review CR-7): an amendment changes only the config verify compares with. The anti-gaming and
     anti-drift scans still diff against the plan-approved snapshot, so an out-of-scope file committed before the
-    amendment still fails verify afterwards, and committing it afterwards fails too."""
+    amendment still fails verify afterwards (the same class as committing it after the amendment)."""
     lab = make("green")
     (lab.task / "outside_scope.txt").write_text("not in scope\n", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=str(lab.task), check=True, capture_output=True)
