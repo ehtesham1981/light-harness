@@ -267,3 +267,15 @@ def test_ac6_check_plan_failing_exit_unchanged(snaps, tmp_path, tmp_path_factory
     rc, out = lab.drive("check", "plan")
     assert rc == 1, out
     assert "✗" in out
+
+
+@pytest.mark.parametrize("body", ["[]", "null", "\"x\""])
+def test_ac6_check_plan_non_object_config_no_crash(snaps, tmp_path, tmp_path_factory, body):
+    """AC-6 BR-10 (review CR-1): a config.json that is valid JSON but not an object doesn't crash `check plan`
+    through the warning hint: no traceback, and the plan gate's exit code is the one at base (0, the contract is
+    complete)."""
+    lab = _lab(snaps, "plan", tmp_path, tmp_path_factory)
+    lab.config.write_text(body, encoding="utf-8")
+    rc, out = lab.drive("check", "plan")
+    assert "Traceback" not in out, out
+    assert rc == 0 and not _warn_lines(out), out

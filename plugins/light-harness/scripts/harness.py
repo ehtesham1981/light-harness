@@ -3306,15 +3306,15 @@ def verify(write: bool = True, fresh: bool = False, require_anchor: bool = False
     # 6. over-fit: a rework regression test whose inputs all come from its issue's text
     warns += overfit_warnings(issue_rows(text), texts)
 
-    passed = not fails
-    TEL.update(failures=len(fails), warnings=len(warns),
-               fail_kinds=dict(collections.Counter(f.split(":", 1)[0] for f in fails)))
     if ok:
         warns += [f"Config amended after approval: {r} raised (reviewer: check probes and tests that rely on "
                   "the timeout)" for r in raised_timeouts()]
     runner_warn = parallel_runner_warning(cfg)
     if runner_warn:
         warns.append(runner_warn)
+    passed = not fails
+    TEL.update(failures=len(fails), warnings=len(warns),
+               fail_kinds=dict(collections.Counter(f.split(":", 1)[0] for f in fails)))
     report = [f"**Result: {'PASS' if passed else 'FAIL'}** — {now()} (plan {plan_hash(text)})", ""]
     report += [f"- ✓ {i}" for i in info]
     report += [f"- ✗ {f}" for f in fails]
@@ -3846,7 +3846,7 @@ def cmd_check(args):
     if args.stage == "plan":
         try:
             runner_warn = parallel_runner_warning(load_config())
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):  # a broken config is the plan gate's business, not this hint's
             runner_warn = None
         if runner_warn:
             hints.append(runner_warn)
@@ -4213,12 +4213,16 @@ def cmd_amend_config(args):
     if not CONFIG.exists() or CONFIG.read_text(encoding=UTF8) != raw:
         die(f"{LIVE}/config.json changed while waiting; run amend-config again")
     when = now()
-    set_block("approval", block("approval").rstrip()
-              + f"\n\n**Config amended** by {args.name} at {when}: {summary} — {args.reason}")
     meta = {"name": args.name, "reason": args.reason, "when": when, "changes": res["changes"],
             "raised_timeouts": res["raised"]}
-    record(f"{AMEND_EVENT} by {args.name}: {summary} — {args.reason}",
-           {"config.json": raw, "config-amend.json": json.dumps(meta, indent=2) + "\n"})
+    note = block("approval").rstrip()
+    set_block("approval", note + f"\n\n**Config amended** by {args.name} at {when}: {summary} — {args.reason}")
+    try:
+        record(f"{AMEND_EVENT} by {args.name}: {summary} — {args.reason}",
+               {"config.json": raw, "config-amend.json": json.dumps(meta, indent=2) + "\n"})
+    except BaseException:
+        set_block("approval", note)  # no audit event, so no note in the contract either
+        raise
     TEL.update(changes=len(res["changes"]), raised=len(res["raised"]))
     print("✓ Config amended. The plan approval and the red gate still hold; run `verify`.")
 
