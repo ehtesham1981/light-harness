@@ -290,7 +290,8 @@ def _assert_miss_then_run(lab: Lab, part: str, stored: str, extra: dict | None =
 # --- AC-1 -------------------------------------------------------------------------------------------
 def test_ac1_set_status_review_reuses_cached_pass(lab):
     """AC-1 EX-1 BR-2 BR-6: verify passes; nothing changes; `set-status Review` doesn't run the suite and
-    says "cached, key <12 hex>", the key `status` showed; §10.4 says so too. `verdict pass` still runs."""
+    says "cached, key <12 hex>", the key `status` showed; §10.4 says so too. `verdict pass` reuses the
+    anchored pass too (#39 AC-7: updated per its Q-2)."""
     rc, out, ran = lab.verify()
     assert rc == 0 and ran == 1, out
     assert "cached" not in out
@@ -306,12 +307,12 @@ def test_ac1_set_status_review_reuses_cached_pass(lab):
                      out), out
     block = lab.contract.read_text(encoding="utf-8").split("<!-- harness:verify -->", 1)[1].split("<!-- /harness:verify -->", 1)[0]
     assert f"cached, key {k}" in block, block
-    # the final gate never reuses (R-1)
+    # #39: the final gate reuses a pass stored and anchored by a real run on an unchanged key
     _edit(lab.contract, "- [ ] AC-1", "- [x] AC-1", "| RV-1 | Low | Open", "| RV-1 | Low | Resolved",
           "| RV-2 | Low | Open", "| RV-2 | Low | Resolved", "| RV-3 | Low | Open", "| RV-3 | Low | Resolved")
     n = lab.runs()
     out = lab.ok("verdict", "pass")
-    assert lab.runs() == n + 1, f"verdict pass reused a stored run:\n{out}"
+    assert lab.runs() == n, f"verdict pass re-ran the suite on an unchanged, anchored key:\n{out}"
 
 
 # --- AC-2 -------------------------------------------------------------------------------------------
@@ -535,14 +536,16 @@ def test_ac7_docs_drop_30_minute_rule(doc):
 
 def test_ac7_docs_describe_key_reuse():
     """AC-7: README.md's reuse row describes reuse by key: it names the key, the harness version,
-    `verify --fresh`, and that `verdict pass` never reuses; and it has no 30-minute condition."""
+    `verify --fresh`, and that `verdict pass` reuses on an unchanged key while `verdict pass --fresh` re-runs
+    (#39 AC-7: updated per its Q-2); and it has no 30-minute condition."""
     text = (TASK_DIR / "README.md").read_text(encoding="utf-8")
     rows = [l for l in text.splitlines() if l.startswith("|") and re.search(r"reuse", l, re.I)
             and "verify --fresh" in l]
     assert len(rows) == 1, f"expected one README table row about reused verify runs, found {len(rows)}"
     row = rows[0]
     assert re.search(r"\bkey\b", row) and re.search(r"harness version", row, re.I), row
-    assert re.search(r"verdict pass`?\**[^|]{0,80}?\b(never reuses?|always runs)", row), row
+    assert re.search(r"verdict pass`?\**[^|]{0,120}?\breus", row) and "verdict pass --fresh" in row, row
+    assert not re.search(r"verdict pass`?\**[^|]{0,80}?\b(never reuses?|always runs)", row), row
     assert not re.search(r"30[\s-]*min", row, re.I), row
     assert not re.search(r"minutes? old", row, re.I), row
 

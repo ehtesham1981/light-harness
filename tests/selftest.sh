@@ -477,9 +477,9 @@ git add -A; git commit -qm "existing code"
 ok  $H start-task delta
 T="$B/.tasks" flow delta
 check '$H log delta | grep -q "baseline (1 existing"' "baseline event missing"
-check 'EV="$B/.git/light-harness/telemetry/events.jsonl" evq "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"delta\"]==[(\"baseline\",None,\"pass\"),(\"redgate\",None,\"fail\"),(\"verify\",\"miss\",\"pass\"),(\"verify\",\"hit\",\"pass\"),(\"review\",\"bypass\",\"pass\")]"' "suite-run records for delta wrong (expected: baseline at Build, redgate fail, verify miss, set-status Review hit, verdict pass bypass) (#20)"
+check 'EV="$B/.git/light-harness/telemetry/events.jsonl" evq "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"delta\"]==[(\"baseline\",None,\"pass\"),(\"redgate\",None,\"fail\"),(\"verify\",\"miss\",\"pass\"),(\"verify\",\"hit\",\"pass\"),(\"review\",\"hit\",\"pass\")]"' "suite-run records for delta wrong (expected: baseline at Build, redgate fail, verify miss, set-status Review hit, verdict pass hit on the unchanged, anchored key) (#20, #39)"
 check 'EV="$B/.git/light-harness/telemetry/events.jsonl" evq "all(e[\"scope\"]==\"full\" and e[\"env_failures\"]==0 and e[\"duration_s\"]>=0 and (e.get(\"cache\")==\"hit\")==(e[\"duration_s\"]==0) and (\"key\" in e)==(\"cache\" in e) for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"delta\")"' "delta's suite-run records lack scope / env_failures / duration / key (#20)"
-check '$H metrics delta --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); assert (k[\"suite_runs\"],k[\"cache_hits\"],k[\"cache_misses\"],k[\"cache_hit_rate\"])==(4,1,1,0.5) and k[\"suite_minutes\"]>0, k"' "metrics delta --json lacks the suite-run figures (#20)"
+check '$H metrics delta --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); assert (k[\"suite_runs\"],k[\"cache_hits\"],k[\"cache_misses\"],k[\"cache_hit_rate\"])==(3,2,1,2/3) and k[\"suite_minutes\"]>0, k"' "metrics delta --json lacks the suite-run figures (#20, #39: verdict pass is a hit)"
 ok  $H finish-task delta
 check 'grep -q "\"task\":\"delta\"" .git/light-harness/telemetry/events.jsonl && human "$H forget delta" FORGET && ! grep -q "\"task\":\"delta\"" .git/light-harness/telemetry/events.jsonl' "forget didn't drop the task's telemetry events"
 
@@ -1216,8 +1216,8 @@ edit "$K" "| RV-1 | Low | Open" "| RV-1 | Low | Resolved" "| RV-2 | Low | Open" 
 ok  $H verify $X
 s=$(nsuite)
 n=$(runs); ok $H verdict pass $X
-check '[ "$(runs)" = $((n+1)) ] && git show refs/light-harness/tasks/speedy:baseline.json | grep -q "test_ac1"' "verdict pass reused a stored run instead of running fresh, or its baseline lost the passing tests"
-check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"review\",\"bypass\",\"pass\")] and S[0][\"duration_s\"]>0"' "verdict pass not recorded as one review bypass run (#20)"
+check '[ "$(runs)" = $n ] && git show refs/light-harness/tasks/speedy:baseline.json | grep -q "test_ac1"' "verdict pass re-ran the suite on an unchanged, anchored key, or its baseline lost the passing tests (#39)"
+check 'newsuite "$s" "[(e[\"gate\"],e.get(\"cache\"),e[\"result\"]) for e in S]==[(\"review\",\"hit\",\"pass\")] and S[0][\"duration_s\"]==0"' "verdict pass not recorded as one review hit (#20, #39)"
 check '$H metrics speedy --json | "$PYBIN" -c "import json,sys; k=json.load(sys.stdin); E=[json.loads(l) for l in open(sys.argv[1],encoding=\"utf-8\")]; S=[e for e in E if e[\"event\"]==\"suite\" and e.get(\"task\")==\"speedy\"]; h=sum(e.get(\"cache\")==\"hit\" for e in S); m=sum(e.get(\"cache\")==\"miss\" for e in S); assert (k[\"suite_runs\"],k[\"cache_hits\"],k[\"cache_misses\"])==(len(S)-h,h,m) and abs(k[\"cache_hit_rate\"]-h/(h+m))<1e-9 and h>=5, (k, h, m)" "$EV"' "metrics speedy --json figures don't match the suite-run records (#20)"
 check '$H metrics speedy | grep -qE "^  Suite runs +[0-9]+ · cache hit rate [0-9]+% · suite minutes [0-9.]+$" && $H metrics | grep -qE "^  suite runs [0-9]+ · cache hit rate [0-9]+% · suite minutes [0-9.]+$" && $H metrics | grep -qE "^Suite runs +Runs +Hit rate +Minutes$" && $H metrics | grep -qE "^speedy +[0-9]+ +[0-9]+% +[0-9.]+$"' "metrics text lacks the suite-run row, summary line or table (#20)"
 unset ST_COUNT ST_DIR
