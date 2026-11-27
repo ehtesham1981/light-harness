@@ -159,7 +159,7 @@ passes and no test outside that recorded list fails.
    but dying "not implemented"; `classify_config_change`, `effective_approved_config`,
    `parallel_runner_warning` stubbed).
 2. Independent test review against the issue and these ACs.
-3. Implement `classify_config_change(approved, approved_at_plan, live) -> (changes, raised, refusals)`.
+3. Implement `classify_config_change(approved, plan_approved, live) -> {"ok", "changes", "raised", "refused"}`.
 4. Implement `effective_approved_row()` / config and switch `verify` to it; add the ⚠ for raised timeouts.
 5. Implement `cmd_amend_config`, register it, add to `HUMAN_ONLY`/`TRACKED`; approval-block note; status.
 6. Guard entry in `hook_guard.py`.
