@@ -15,7 +15,8 @@ Review speed (1.8):
 - Saved probes run in parallel under `probe_timeout`.
 - `baseline --out <dir>` (a new or empty folder) gives each sweeper its own base copies.
 Parallel tasks share the machine (2.0):
-- Suite and probe runs take a machine-wide run slot (`git config --global lightharness.slots N`, default cores ÷ 8) and wait, saying who is ahead, when all are taken. `{concurrency}` in `test_cmd` becomes cores ÷ slots.
+- Suite and probe runs take a machine-wide run slot (`git config --global lightharness.slots N`, default cores ÷ 8) and wait, saying who is ahead, when all are taken. `{concurrency}` in `test_cmd` becomes cores ÷ slots; slots alone doesn't cap how many test files one run starts, so the gates warn when a parallel runner has no `{concurrency}`.
+- A human can record a concurrency or timeout change after approval with `amend-config --task <name> --name "Full Name" --reason "..."` (human-only; audited; no re-approval or new red gate).
 - A suite past `suite_timeout` (default 3600 s) is killed with its process tree and fails the gate with exit 124. A killed run's lock or slot is taken over at once on every OS, and its orphaned suite is stopped.
 - Each run gets its own empty TEMP folder (`<drive>:\lh-tmp\…` on Windows, `$TMPDIR/lh/…` elsewhere), removed afterwards (one user per machine in this version; see the README).
 Verdict reuse (2.1):
